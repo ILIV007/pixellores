@@ -539,6 +539,9 @@ describe('R10 SafeFetchExecutor fake contract coverage (connector propagation)',
   it('RSS multi-feed: a denial on the SECOND feed aborts with no third call and the PRIOR cursor', async () => {
     const mock = createFetchMock([
       validFeed(RSS_BODY),
+      // ADR-0068: the first feed's one imageless item triggers its
+      // og:image article fetch before the second feed is fetched.
+      { status: 200, bodyText: '<html><head></head><body>no og image</body></html>' },
       { failReason: 'budget_denied' },
       validFeed(RSS_BODY), // must NEVER be consumed
     ]);
@@ -553,14 +556,17 @@ describe('R10 SafeFetchExecutor fake contract coverage (connector propagation)',
       state,
       effects: connectorEffects(mock.fetchFn, {}),
     });
-    expect(mock.calls).toHaveLength(2); // no extra network after denial
+    // ADR-0068: feed 1 + its og:image article fetch + the denied
+    // feed 2 — no extra network after the denial.
+    expect(mock.calls).toHaveLength(3); // no extra network after denial
     expect(output.budgetDenied).toBe(true);
     expect(output.budgetDenialKind).toBe('budget_exhausted');
     expect(output.status).toBe('failed');
     expect(output.failureReason).toBe('budget_exhausted');
     expect(output.items).toHaveLength(0);
     expect(output.cursor).toBe(state.cursor); // PRIOR cursor — no partial progress
-    expect(output.requestCount).toBe(2); // cumulative observed attempts
+    // ADR-0068: feed 1 + its og:image article fetch + the denied feed 2.
+    expect(output.requestCount).toBe(3); // cumulative observed attempts
   });
 
   it('Steam: a denial preserves the SAME rotation window cursor (never rotates ahead)', async () => {

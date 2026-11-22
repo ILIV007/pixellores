@@ -130,6 +130,46 @@ export function createMediaAssetStore(executor: DbExecutor): MediaAssetStore {
       return result.changes >= 1 ? { ok: true } : { ok: false, reason: 'asset_write_failed' };
     },
 
+    async insertUrlAsset(input) {
+      // Idempotent per canonical URL (no UNIQUE index on the column —
+      // ZERO DDL per ADR-0068): the pre-read is the dedup, and a
+      // concurrent insert that wins the race is absorbed by the
+      // post-failure re-read below instead of failing the caller.
+      const existing = await this.findAssetsByUrls([input.canonicalUrl]);
+      if (existing.some((row) => row.canonicalUrl === input.canonicalUrl)) {
+        return { ok: true, kind: 'already_exists' };
+      }
+      try {
+        const result = await executor.run({
+          sql: `INSERT INTO media_assets
+                  (id, source_item_id, type, canonical_url, rights_status, attribution,
+                   status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'validated', ?, ?)`,
+          params: [
+            input.id,
+            input.sourceItemId,
+            input.type,
+            input.canonicalUrl,
+            input.rightsStatus,
+            input.attribution ?? null,
+            input.createdAt,
+            input.updatedAt,
+          ],
+        });
+        if (result.changes >= 1) {
+          return { ok: true, kind: 'inserted' };
+        }
+      } catch {
+        // A failed write is either a lost race (the row now exists)
+        // or a real failure — the re-read tells them apart.
+      }
+      const raced = await this.findAssetsByUrls([input.canonicalUrl]);
+      if (raced.some((row) => row.canonicalUrl === input.canonicalUrl)) {
+        return { ok: true, kind: 'already_exists' };
+      }
+      return { ok: false, reason: 'asset_write_failed' };
+    },
+
     async markUploaded(id, fileId, updatedAtMs) {
       // The blueprint step-10 rule IN ONE TRANSITION: the file_id is saved
       // (the ledger value), the temporary R2 object is cleared (r2_key +

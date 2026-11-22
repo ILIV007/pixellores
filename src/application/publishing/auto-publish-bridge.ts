@@ -47,16 +47,45 @@
  * the ONLY sender, in a later cron step. A `duplicate` enqueue (the
  * same draft bridged twice) is the honest absorption, never a second
  * row.
+ *
+ * ADR-0068 — LANE + CAP (the bridge also shapes WHAT reaches the
+ * outbox, it never just forwards the gate):
+ * - GUIDE LANE: a draft whose source URL carries `/guide/` rides
+ *   the guide lane — at most ONE guide per pass, at P2 priority
+ *   (60). Guides are never dropped; deferred guides stay `ready`.
+ * - CATEGORY CAP: the arp1 40%-of-rolling-six cap runs HERE, over
+ *   the published trail PLUS the categories approved in this pass
+ *   (eventDriven false — the bridge has no story-layer provider).
+ *   An over-cap draft stays `ready` (deferred, never rejected):
+ *   the scheduler remains the enforcement backstop at send time,
+ *   and an unclassifiable draft skips the cap check.
  */
 import type { DbExecutor } from '../../adapters/db/db-executor';
-import { listReadyDrafts } from '../../adapters/db/editorial-store';
+import {
+  findStoryContentType,
+  findStoryReferenceItems,
+  listReadyDrafts,
+} from '../../adapters/db/editorial-store';
 import { approveDraftForAutoPublication } from '../../adapters/db/auto-approval-store';
 import {
   enqueuePublication,
+  listRecentPublishedHistory,
   type EnqueueOutcome,
 } from '../../adapters/db/publication-outbox-store';
 import { getCurrentSoulVersion } from '../../adapters/db/soul-store';
 import { evaluateAutoPublishGate } from '../../domain/publishing/auto-gate';
+import {
+  CATEGORY_ROLLING_WINDOW,
+  enforceCategoryShare,
+  WEEKLY_MIX_WINDOW_MS,
+  type MixCategory,
+} from '../../domain/publishing/anti-robot';
+import { mapContentTypeToMixCategory } from './scheduler-policy';
+import {
+  classifyPostLane,
+  GUIDE_PUBLISH_PRIORITY_SCORE,
+  MAX_GUIDES_PER_BRIDGE_PASS,
+} from '../../domain/publishing/guide-lane';
 import type { PublishMode } from '../../domain/publishing/publishing-settings';
 import type { Logger } from '../../observability/logger';
 
@@ -65,6 +94,9 @@ import type { Logger } from '../../observability/logger';
  * documented "publish within 5–20 minutes" class. See the module header.
  */
 export const AUTO_PUBLISH_PRIORITY_SCORE = 80;
+
+/** The recent published history the cap reads (bounded, newest-first). */
+export const AUTO_PUBLISH_HISTORY_LIMIT = 512;
 
 /** One pass bridges at most this many ready drafts. */
 export const AUTO_PUBLISH_BRIDGE_LIMIT = 5;
@@ -88,6 +120,10 @@ export type AutoPublishBridgeReport =
       readonly requiresReview: number;
       /** Drafts the gate refused for lack of a measurable basis. */
       readonly refused: number;
+      /** Drafts the guide lane deferred this pass (left `ready`). */
+      readonly deferredGuideLane: number;
+      /** Drafts the category cap deferred this pass (left `ready`). */
+      readonly deferredCategoryCap: number;
       /** Drafts that failed the transition or the enqueue. */
       readonly rejected: number;
     };
@@ -111,12 +147,35 @@ export async function bridgeReadyDrafts(input: {
   const drafts = await listReadyDrafts(input.executor, {
     limit: input.limit ?? AUTO_PUBLISH_BRIDGE_LIMIT,
   });
+  // ADR-0068 — the category cap's history: the published trail mapped
+  // to mix categories (the scheduler's own derivation, reused here so
+  // the bridge and the send gate read the same world). An unreadable
+  // history fails the WHOLE pass with zero writes — a cap that cannot
+  // be evaluated never silently passes.
+  const history = await listRecentPublishedHistory(input.executor, {
+    nowMs: input.nowMs,
+    limit: AUTO_PUBLISH_HISTORY_LIMIT,
+  });
+  const publishedCategories: { readonly category: MixCategory; readonly atMs: number }[] = [];
+  for (const entry of history) {
+    if (entry.publishedAtMs < input.nowMs - WEEKLY_MIX_WINDOW_MS) continue;
+    const mapped = mapContentTypeToMixCategory(entry.contentType);
+    if (mapped.ok) {
+      publishedCategories.push({ category: mapped.category, atMs: entry.publishedAtMs });
+    }
+  }
   let approved = 0;
   let enqueued = 0;
   let duplicates = 0;
   let requiresReview = 0;
   let refused = 0;
+  let deferredGuideLane = 0;
+  let deferredCategoryCap = 0;
   let rejected = 0;
+  let guidesApproved = 0;
+  // The categories approved in THIS pass ride the rolling window with
+  // the pass instant — the cap sees the pass as it grows.
+  const approvedCategories: MixCategory[] = [];
   const approvalMode = input.mode === 'safe-auto' ? 'safe_auto' : 'auto';
   for (const draft of drafts) {
     const verdict = evaluateAutoPublishGate(draft.document_json);
@@ -128,6 +187,52 @@ export async function bridgeReadyDrafts(input: {
       refused += 1;
       continue;
     }
+    // ADR-0068 — lane + cap (both leave the draft `ready` on defer).
+    // A lane/cap read failure rejects the draft for this pass —
+    // never an approval on an unevaluated cap.
+    let lane: 'news' | 'guide' = 'news';
+    let category: MixCategory | null = null;
+    try {
+      const contentType = await findStoryContentType(input.executor, draft.story_id);
+      if (contentType !== null) {
+        const mapped = mapContentTypeToMixCategory(contentType);
+        if (mapped.ok) category = mapped.category;
+      }
+      const references = await findStoryReferenceItems(input.executor, draft.story_id, 1);
+      lane = classifyPostLane(references[0]?.canonical_url ?? null);
+    } catch {
+      rejected += 1;
+      input.logger?.warn('publishing.bridge.lane_cap_lookup_failed');
+      continue;
+    }
+    if (lane === 'guide' && guidesApproved >= MAX_GUIDES_PER_BRIDGE_PASS) {
+      deferredGuideLane += 1;
+      continue;
+    }
+    if (category !== null) {
+      // The cap evaluates the six most recent: this pass's
+      // approvals (newest, at the pass instant) plus the newest
+      // published entries — the 512 bound is never approached.
+      const recent = [
+        ...approvedCategories.map((approvedCategory) => ({
+          category: approvedCategory,
+          atMs: input.nowMs,
+        })),
+        ...publishedCategories.slice(-CATEGORY_ROLLING_WINDOW),
+      ];
+      const cap = enforceCategoryShare({
+        nowMs: input.nowMs,
+        category,
+        recent,
+        eventDriven: false,
+      });
+      if (!cap.ok || !cap.value.allowed) {
+        deferredCategoryCap += 1;
+        continue;
+      }
+    }
+    const priorityScore =
+      lane === 'guide' ? GUIDE_PUBLISH_PRIORITY_SCORE : AUTO_PUBLISH_PRIORITY_SCORE;
     const approval = await approveDraftForAutoPublication(input.executor, {
       draftId: draft.id,
       gateVerdict: verdict,
@@ -145,11 +250,13 @@ export async function bridgeReadyDrafts(input: {
       continue;
     }
     approved += 1;
+    if (lane === 'guide') guidesApproved += 1;
+    if (category !== null) approvedCategories.push(category);
     const outcome: EnqueueOutcome = await enqueuePublication(input.executor, {
       publicationId: `pub:auto:${draft.id}`,
       draftId: draft.id,
       destination: input.destination,
-      priorityScore: AUTO_PUBLISH_PRIORITY_SCORE,
+      priorityScore,
       approvalMode,
       nowMs: input.nowMs,
       soulVersion,
@@ -173,6 +280,8 @@ export async function bridgeReadyDrafts(input: {
     duplicates,
     requiresReview,
     refused,
+    deferredGuideLane,
+    deferredCategoryCap,
     rejected,
   };
 }

@@ -239,7 +239,10 @@ describe('full ingestion pipeline', () => {
     expect(state?.last_success_at).toBe(NOW);
     expect(state?.consecutive_failures).toBe(0);
     expect(state?.last_error).toBeNull();
-    expect(state?.requests_today).toBe(1);
+    // ADR-0068: the honest request total is 1 feed fetch + 2 og:image
+    // article fetches (VALID_FEED has two imageless items) — the poll
+    // charges every transport attempt exactly once.
+    expect(state?.requests_today).toBe(3);
     expect(state?.budget_date).not.toBeNull();
 
     // 6. Job terminal: succeeded, durable.
@@ -259,6 +262,11 @@ describe('full ingestion pipeline', () => {
         headers: { 'content-type': 'application/rss+xml', etag: '"etag-1"' },
         bodyText: VALID_FEED,
       },
+      // ADR-0068: the feed's two imageless items trigger their og:image
+      // article fetches before the next poll's 304 — the articles have
+      // no og:image, so the items commit imageless.
+      { status: 200, bodyText: '<html><head></head><body>no og image</body></html>' },
+      { status: 200, bodyText: '<html><head></head><body>no og image</body></html>' },
       { status: 304 },
       { status: 304 },
     ]);

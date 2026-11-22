@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { createBotApiClient, TelegramApiError } from '../../src/adapters/telegram/bot-api-client';
+import {
+  createBotApiClient,
+  TelegramApiError,
+  TelegramRichContentError,
+} from '../../src/adapters/telegram/bot-api-client';
 import { parseTelegramUpdate } from '../../src/adapters/telegram/update-parser';
 import {
   createRichTextEnvelope,
@@ -405,5 +409,73 @@ describe('createBotApiClient — R1.19.1 end-to-end correctness companions', () 
     expect(body['caption_entities']).toEqual([]);
     expect('parse_mode' in body).toBe(false);
     expect('text' in body).toBe(false);
+  });
+});
+
+/**
+ * ADR-0068 — sendPhoto by URL (media by hotlink, no R2): the photo
+ * reference is a file_id OR a bounded https URL; the reply's largest
+ * photo variant file_id is returned for the ledger's reuse.
+ */
+describe('sendPhotoRich — URL reference (ADR-0068)', () => {
+  const photoResult = {
+    ok: true,
+    result: {
+      message_id: 42,
+      photo: [
+        { file_id: 'small-id', width: 100, height: 100 },
+        { file_id: 'large-id', width: 1280, height: 720 },
+      ],
+    },
+  };
+
+  it('sends an https URL as the photo and returns the largest file_id', async () => {
+    const { client, requests } = makeClient(() => jsonResponse(photoResult));
+    const sent = await client.sendPhotoRich({
+      chatId: CHAT_ID,
+      photo: 'https://cdn.example.com/a.jpg',
+      caption: captionEnvelopeFixture(),
+    });
+    expect(sent.messageId).toBe(42);
+    expect(sent.photoFileId).toBe('large-id');
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.url).toBe(`https://api.telegram.org/bot${FAKE_TOKEN}/sendPhoto`);
+    expect(requests[0]?.body['photo']).toBe('https://cdn.example.com/a.jpg');
+    expect(requests[0]?.body['caption']).toBe('تصویر: دمو ✓');
+  });
+
+  it('still accepts a file_id reference', async () => {
+    const { client, requests } = makeClient(() => jsonResponse(photoResult));
+    const sent = await client.sendPhotoRich({ chatId: CHAT_ID, photo: 'AgAC-file-id' });
+    expect(sent.messageId).toBe(42);
+    expect(sent.photoFileId).toBe('large-id');
+    expect(requests[0]?.body['photo']).toBe('AgAC-file-id');
+  });
+
+  it('rejects an http URL typed with zero fetch calls', async () => {
+    const { client, requests } = makeClient(() => jsonResponse(photoResult));
+    await expect(
+      client.sendPhotoRich({ chatId: CHAT_ID, photo: 'http://cdn.example.com/a.jpg' }),
+    ).rejects.toThrowError(TelegramRichContentError);
+    expect(requests).toHaveLength(0);
+  });
+
+  it('rejects an over-long URL typed with zero fetch calls', async () => {
+    const { client, requests } = makeClient(() => jsonResponse(photoResult));
+    const long = `https://cdn.example.com/${'a'.repeat(2040)}.jpg`;
+    await expect(client.sendPhotoRich({ chatId: CHAT_ID, photo: long })).rejects.toThrowError(
+      TelegramRichContentError,
+    );
+    expect(requests).toHaveLength(0);
+  });
+
+  it('a reply without photo variants is still a sent message', async () => {
+    const { client } = makeClient(() => jsonResponse({ ok: true, result: { message_id: 43 } }));
+    const sent = await client.sendPhotoRich({
+      chatId: CHAT_ID,
+      photo: 'https://cdn.example.com/a.jpg',
+    });
+    expect(sent.messageId).toBe(43);
+    expect(sent.photoFileId).toBeUndefined();
   });
 });

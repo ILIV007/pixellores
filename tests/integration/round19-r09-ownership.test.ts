@@ -485,7 +485,9 @@ it('R09-P6: queue outage — the outstanding job survives later passes untouched
   );
   vi.unstubAllGlobals();
   expect(action).toEqual({ action: 'ack', outcome: 'job_completed' });
-  expect(calls).toHaveLength(1); // exactly one external fetch
+  // ADR-0068: one feed fetch + one og:image article fetch for the
+  // feed's one imageless item (the stub returns the same RSS for both).
+  expect(calls).toHaveLength(2); // exactly one poll execution's fetches
 
   const job = await db.first<{ status: string; attempts: number }>({
     sql: 'SELECT status, attempts FROM jobs WHERE id=?',
@@ -528,7 +530,9 @@ it('R09-P7: claim-time acquisition self-heals an unreserved window; foreign owne
     payload: { sourceId: SOURCE, scheduledForMs: 0 },
   });
   expect(outcomeA).toEqual({ kind: 'success' });
-  expect(callsA).toHaveLength(1);
+  // ADR-0068: one feed fetch + one og:image article fetch for the
+  // feed's one imageless item.
+  expect(callsA).toHaveLength(2);
   // The successful OWNED commit releases ownership together with the fresh
   // schedule (one atomic transition).
   expect(await readPollOwnership(db, SOURCE)).toEqual({
@@ -619,7 +623,9 @@ it('R09-P8: crash after commit, before completion — the recovered generation f
     payload: { sourceId: SOURCE, scheduledForMs: 0 },
   });
   expect(first).toEqual({ kind: 'success' });
-  expect(calls).toHaveLength(1);
+  // ADR-0068: one feed fetch + one og:image article fetch for the
+  // feed's one imageless item.
+  expect(calls).toHaveLength(2);
   const afterFirst = await stateRow();
   expect(afterFirst!.cursor).toContain('blog.playstation.com/feed');
   expect(afterFirst!.poll_owner_job_id).toBeNull();
@@ -637,7 +643,7 @@ it('R09-P8: crash after commit, before completion — the recovered generation f
     payload: { sourceId: SOURCE, scheduledForMs: 0 },
   });
   expect(second).toEqual({ kind: 'success' }); // completes honestly
-  expect(calls).toHaveLength(1); // NO second external fetch
+  expect(calls).toHaveLength(2); // NO second external fetch
   const afterSecond = await stateRow(); // NO second commit
   expect(afterSecond!.cursor).toContain('blog.playstation.com/feed');
   expect(afterSecond!.next_poll_at).toBe(afterFirst!.next_poll_at);
@@ -692,7 +698,9 @@ it('R09-P9: crash between fetch and commit — the re-drive fetches AGAIN (at-le
       payload: { sourceId: SOURCE, scheduledForMs: 0 },
     }),
   ).rejects.toThrow();
-  expect(calls).toHaveLength(1); // fetch #1 happened (never recalled)
+  // ADR-0068: one feed fetch + one og:image article fetch for the
+  // feed's one imageless item.
+  expect(calls).toHaveLength(2); // fetch #1 happened (never recalled)
   const afterCrash = await stateRow();
   expect(afterCrash!.poll_owner_job_id).toBe('job-a'); // A1's anchor survives (commit aborted whole)
   expect(afterCrash!.cursor).toBeNull(); // nothing committed
@@ -710,7 +718,8 @@ it('R09-P9: crash between fetch and commit — the re-drive fetches AGAIN (at-le
     payload: { sourceId: SOURCE, scheduledForMs: 0 },
   });
   expect(second).toEqual({ kind: 'success' });
-  expect(calls).toHaveLength(2); // DISCLOSED: at-least-once external fetching
+  // ADR-0068: two executions × (one feed fetch + one og:image fetch).
+  expect(calls).toHaveLength(4); // DISCLOSED: at-least-once external fetching
   const items = await db.first<{ n: number }>({
     sql: 'SELECT COUNT(*) AS n FROM source_items WHERE source_id=?',
     params: [SOURCE],
@@ -1032,7 +1041,9 @@ it('R09-P13: pause composes with ownership — pre-claim D01 pause writes NOTHIN
   );
   vi.unstubAllGlobals();
   expect(onAction).toEqual({ action: 'ack', outcome: 'job_completed' });
-  expect(calls).toHaveLength(1);
+  // ADR-0068: one feed fetch + one og:image article fetch for the
+  // feed's one imageless item.
+  expect(calls).toHaveLength(2);
   const done = await db.first<{ status: string }>({
     sql: 'SELECT status FROM jobs WHERE id=?',
     params: [jobA.id],

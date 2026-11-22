@@ -559,7 +559,11 @@ describe('Round 1.8.1 B3 — observed provider bounds survive a later denial; re
         payload: { sourceId: 'itch_discovery', scheduledForMs: scheduled2 },
       }),
     ).toEqual({ kind: 'success' });
-    expect(rawCalls2).toBe(2); // BOTH deferred feeds refetched — nothing lost
+    // ADR-0068: BOTH deferred feeds refetched — nothing lost — plus
+    // one og:image article fetch per feed (each refetched feed carries
+    // one imageless item, and the stub returns the same RSS for the
+    // article fetch too, so no og:image is found).
+    expect(rawCalls2).toBe(4); // BOTH deferred feeds refetched — nothing lost
     const finalRow = await db.first<{ last_error: string | null; next_poll_at: number }>({
       sql: 'SELECT last_error, next_poll_at FROM source_state WHERE source_id=?',
       params: ['itch_discovery'],

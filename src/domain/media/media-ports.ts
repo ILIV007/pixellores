@@ -27,7 +27,7 @@
  */
 
 import type { MediaRightsInputV1, MediaRightsDecisionV1 } from './media-rights';
-import type { MediaAssetRecordV1 } from './media-usage';
+import type { MediaAssetRecordV1, MediaAssetTypeV1, MediaRightsStatusV1 } from './media-usage';
 
 export interface MediaFetchRequestV1 {
   readonly canonicalUrl: string;
@@ -62,6 +62,24 @@ export interface MediaStoragePort {
 }
 
 /**
+ * A URL-only asset row (ADR-0068 — media by hotlink, no R2): the
+ * source article's image, referenced by canonical URL, never staged
+ * in R2 and with no file_id until its first successful send.
+ */
+export interface UrlAssetInsertV1 {
+  readonly id: string;
+  readonly type: MediaAssetTypeV1;
+  readonly canonicalUrl: string;
+  /** The source item the URL came from (the durable provenance link). */
+  readonly sourceItemId: string;
+  readonly rightsStatus: MediaRightsStatusV1;
+  /** The image host (the attribution echo — D1 only, never rendered). */
+  readonly attribution?: string;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
+
+/**
  * The DURABLE media state over the BLUEPRINT-APPROVED `media_assets`
  * table (migration 0001 — NO parallel tables; ADR-0056). The D1-backed
  * adapter (`src/adapters/db/media-asset-store.ts`) is REAL and the
@@ -75,6 +93,17 @@ export interface MediaAssetStore {
   findAssetsByHashes(hashes: readonly string[]): Promise<readonly MediaAssetRecordV1[]>;
   /** All rows still HOLDING an R2 object whose deadline has passed (bounded). */
   findExpiredAssets(nowMs: number, limit: number): Promise<readonly MediaAssetRecordV1[]>;
+  /**
+   * Insert ONE URL-only asset row (ADR-0068): status 'validated',
+   * no R2 object, no file_id, no deadline. Idempotent per canonical
+   * URL: an existing row for the URL is `already_exists`, never a
+   * second row.
+   */
+  insertUrlAsset(
+    input: UrlAssetInsertV1,
+  ): Promise<
+    { ok: true; kind: 'inserted' | 'already_exists' } | { ok: false; reason: 'asset_write_failed' }
+  >;
   /** Insert ONE staged candidate row (status 'candidate', r2_key set, deadline set). */
   insertAsset(
     record: MediaAssetRecordV1,
