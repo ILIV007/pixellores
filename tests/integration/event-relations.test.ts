@@ -293,6 +293,8 @@ function createHarness(input?: {
         kind: 'ok',
         rawText: JSON.stringify({
           headlineFa: 'تیتر آزمایشی خبر',
+          categoryEmoji: '🔵',
+          trustLabel: '#گزارش‌شده',
           summaryFa: 'خلاصهٔ آزمایشی خبر بر اساس شواهد ارائه‌شده.',
           claims: [
             { text: 'استودیوی آزمایشی از عرضهٔ نسخهٔ جدید خبر داد.', evidenceIds: [evidenceId] },
@@ -1728,6 +1730,8 @@ function createWiringStub(): {
         // A minimal Workers-AI-shaped response (the adapter normalizes it).
         response: JSON.stringify({
           headlineFa: 'تیتر آزمایشی خبر',
+          categoryEmoji: '🔵',
+          trustLabel: '#گزارش‌شده',
           summaryFa: 'خلاصهٔ آزمایشی خبر بر اساس شواهد ارائه‌شده.',
           claims: [
             { text: 'استودیوی آزمایشی از عرضهٔ نسخهٔ جدید خبر داد.', evidenceIds: [evidenceId] },

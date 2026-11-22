@@ -108,7 +108,7 @@ describe('fact guard — determinism and versioned shape', () => {
   });
 });
 
-describe('fact guard — the numbers lens (digits are NEVER folded)', () => {
+describe('fact guard — the numbers lens (digits FOLD for matching, ADR-0066)', () => {
   it('a number present in the excerpt produces NO finding', () => {
     const report = build({
       claims: claims({ text: 'بازی در تاریخ ۱۴۰۳/۰۹/۱۵ منتشر می‌شود.' }),
@@ -130,18 +130,59 @@ describe('fact guard — the numbers lens (digits are NEVER folded)', () => {
     expect(report.claims[0]!.reviewRequired).toBe(true);
   });
 
-  it('Persian and Latin digits are DIFFERENT observations (never equalized)', () => {
+  it('ADR-0066: a Persian-digit claim matches the SAME digits in a Latin excerpt (the live gate bug)', () => {
+    // The midnight-proof case: claims said «۳٫۷۹» / «۲۵» while the English
+    // evidence said «3.79» / «25» — every such draft went to review.
+    const report = build({
+      claims: claims({ text: 'فروش ۳٫۷۹ میلیارد دلار و ۳۲٫۵ میلیون نسخه بود.' }),
+      excerptText: 'Sales reached $3.79 billion and 32.5 million copies.',
+    });
+    expect(findingsOf(report, 0).has('number_not_observed_in_evidence')).toBe(false);
+    expect(report.claims[0]!.reviewRequired).toBe(false);
+  });
+
+  it('ADR-0066: folding is symmetric — a Latin-digit claim matches a Persian excerpt', () => {
     const report = build({
       claims: claims({ text: 'فروش 5 میلیون نسخه بود.' }),
       excerptText: 'فروش ۵ میلیون نسخه بود.',
     });
-    // The excerpt contains the PERSIAN ۵ — the claim's LATIN 5 is a
-    // different byte observation and stays flagged (digits never fold).
+    expect(findingsOf(report, 0).has('number_not_observed_in_evidence')).toBe(false);
+    expect(report.claims[0]!.reviewRequired).toBe(false);
+  });
+
+  it('ADR-0066: Arabic-Indic digits fold too (٠-٩ → 0-9)', () => {
+    const report = build({
+      claims: claims({ text: 'نسخهٔ ٣٫٤ در ٢ دسامبر می‌آید.' }),
+      excerptText: 'Version 3.4 arrives on December 2.',
+    });
+    expect(findingsOf(report, 0).has('number_not_observed_in_evidence')).toBe(false);
+  });
+
+  it('ADR-0066: the finding still reports the claim ORIGINAL digits when truly absent', () => {
+    const report = build({
+      claims: claims({ text: 'فروش ۳٫۷۹ میلیارد دلار بود.' }),
+      excerptText: 'Sales reached $3.5 billion.',
+    });
     expect(findingsOf(report, 0).has('number_not_observed_in_evidence')).toBe(true);
     const finding = report.claims[0]!.findings.find(
       (f) => f.code === 'number_not_observed_in_evidence',
     );
-    expect(finding?.tokens).toEqual(['5']);
+    // The token is the claim's own Persian form — folding never rewrites it.
+    expect(finding?.tokens).toEqual(['۳٫۷۹']);
+  });
+
+  it('ADR-0066: verbatim direct-text matching is UNCHANGED outside the numbers lens', () => {
+    // A quoted span still matches verbatim only — folding does not leak
+    // into the quotation lens: the Persian «۵» inside the quote is NOT
+    // the Latin 5 in the excerpt.
+    const report = build({
+      claims: claims({ text: 'سازنده گفت: «فروش ۵ میلیون نسخه بود».' }),
+      excerptText: 'The studio said sales were 5 million copies.',
+    });
+    expect(findingsOf(report, 0).has('quotation_not_observed_in_evidence')).toBe(true);
+    // ...while the SAME digits observed by the numbers lens produce NO
+    // numbers finding (the lenses are independent).
+    expect(findingsOf(report, 0).has('number_not_observed_in_evidence')).toBe(false);
   });
 
   it('a claim with MANY numbers lists exactly the missing ones, sorted and unique', () => {

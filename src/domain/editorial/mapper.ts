@@ -225,6 +225,14 @@ export const EDITORIAL_DRAFT_WARNINGS = [
  * identity = the only reuse-locator support; every weaker similarity
  * defers to review) under the versioned `mp1` merge policy — never an
  * executed merge, never a threshold, never a publication effect.
+ *
+ * Prompt v2 (ADR-0066): the model's Soul v1 form choice (category emoji
+ * + trust label, validated by the output schema) rides INSIDE the SAME
+ * `document_json` as the ADDITIVE `soulForm` field (`schemaVersion`
+ * stays 1). The RENDER does not consume it yet — a separate fix owns
+ * the Soul form in the render; the draft only carries the choice.
+ * Present on every draft built under prompt v2; absent is the honest
+ * historical (prompt-v1) shape — never backfilled, never invented.
  */
 export function buildDraftDocument(input: {
   readonly sourceItemId: string;
@@ -292,6 +300,13 @@ export function buildDraftDocument(input: {
     readonly candidateAdjudication?: CandidateAdjudicationReport;
     /** Present ONLY when the fact-guard gate is ON (never an empty key). */
     readonly factGuard?: FactGuardReport;
+    /** The model's Soul v1 form choice (prompt v2; validated enums).
+     * Present on every draft built under prompt v2; absent is the honest
+     * prompt-v1 historical shape. The render does not consume it yet. */
+    readonly soulForm: {
+      readonly categoryEmoji: string;
+      readonly trustLabel: string;
+    };
   };
   readonly facts: readonly {
     readonly text: string;
@@ -338,6 +353,10 @@ export function buildDraftDocument(input: {
         ? { candidateAdjudication: input.candidateAdjudication }
         : {}),
       ...(input.factGuard !== undefined ? { factGuard: input.factGuard } : {}),
+      soulForm: {
+        categoryEmoji: input.semanticDraft.categoryEmoji,
+        trustLabel: input.semanticDraft.trustLabel,
+      },
     },
     facts: modelClaims.map((claim) => ({
       text: claim.text,

@@ -90,7 +90,7 @@ describe('versioned prompt contract', () => {
     const second = buildNewsDraftSystemPrompt();
     expect(first).toBe(second);
     expect(first).toContain(AI_PROMPT_VERSION);
-    expect(AI_PROMPT_VERSION).toBe('pixel-news-draft-v1');
+    expect(AI_PROMPT_VERSION).toBe('pixel-news-draft-v2');
   });
 
   it('frames news text as untrusted data and forbids tools/HTML/publishing', () => {
@@ -99,6 +99,26 @@ describe('versioned prompt contract', () => {
     expect(system).toContain('هیچ ابزاری نداری'); // no tools
     expect(system).toContain('Telegram HTML ممنوع'); // no Telegram HTML
     expect(system).toContain('JSON'); // schema contract
+  });
+
+  it('ADR-0066: carries the Soul v1 voice rules (register, تو, anti-clickbait, Iranian angle)', () => {
+    const system = buildNewsDraftSystemPrompt();
+    expect(system).toContain('می‌شه'); // conversational register, not dry journalistic
+    expect(system).toContain('«تو»'); // second-person address to the reader
+    expect(system).toContain('ضد'); // anti-clickbait: headline never bigger than the news
+    expect(system).toContain('کلیک‌بیت');
+    expect(system).toContain('بازی کردم'); // fabricated personal experience is banned
+    expect(system).toContain('زاویهٔ ایرانی'); // Iranian angle where relevant
+  });
+
+  it('ADR-0066: requires exactly one category emoji and one trust label in the output schema', () => {
+    const system = buildNewsDraftSystemPrompt();
+    expect(system).toContain('categoryEmoji');
+    expect(system).toContain('trustLabel');
+    expect(system).toContain('🔴');
+    expect(system).toContain('🎮');
+    expect(system).toContain('#رسمی');
+    expect(system).toContain('#گزارش‌شده');
   });
 
   it('wraps every evidence snippet with its stable id and untrusted markers', () => {
@@ -125,6 +145,8 @@ describe('semantic output schema', () => {
   const VALID = {
     headlineFa: 'تیتر خبر',
     summaryFa: 'خلاصهٔ خبر',
+    categoryEmoji: '🔵',
+    trustLabel: '#گزارش‌شده',
     claims: [{ text: 'ادعای اول', evidenceIds: ['src-1:item-42'] }],
   };
 
@@ -158,6 +180,22 @@ describe('semantic output schema', () => {
       'schema_mismatch',
     );
     expect(rejectCode(JSON.stringify({ headlineFa: 'x', summaryFa: 'y' }))).toBe('schema_mismatch');
+  });
+
+  it('ADR-0066: rejects a missing or out-of-vocabulary category emoji / trust label', () => {
+    const { categoryEmoji: _ce, ...withoutEmoji } = VALID;
+    expect(rejectCode(JSON.stringify(withoutEmoji))).toBe('schema_mismatch');
+    const { trustLabel: _tl, ...withoutLabel } = VALID;
+    expect(rejectCode(JSON.stringify(withoutLabel))).toBe('schema_mismatch');
+    expect(rejectCode(JSON.stringify({ ...VALID, categoryEmoji: '🎲' }))).toBe('schema_mismatch');
+    expect(rejectCode(JSON.stringify({ ...VALID, trustLabel: '#خبر' }))).toBe('schema_mismatch');
+    // Every Soul v1 §3 value parses.
+    for (const categoryEmoji of ['🔴', '🚨', '🏆', '🎮', '🟢', '🔵']) {
+      expect(parseAiSemanticDraftJson(JSON.stringify({ ...VALID, categoryEmoji })).ok).toBe(true);
+    }
+    for (const trustLabel of ['#رسمی', '#تأییدشده', '#گزارش‌شده', '#شایعه', '#لیک', '#تکذیب‌شده']) {
+      expect(parseAiSemanticDraftJson(JSON.stringify({ ...VALID, trustLabel })).ok).toBe(true);
+    }
   });
 
   it('bounds claim count and sizes', () => {

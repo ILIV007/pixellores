@@ -158,6 +158,8 @@ function createHarness(options?: {
             kind: 'ok',
             rawText: JSON.stringify({
               headlineFa: fixedDraft.headlineFa,
+              categoryEmoji: '🔵',
+              trustLabel: '#گزارش‌شده',
               summaryFa: fixedDraft.summaryFa,
               claims: claims.map((claim) => ({
                 text: claim.text,
