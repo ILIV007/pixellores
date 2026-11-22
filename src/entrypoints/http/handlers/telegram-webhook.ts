@@ -51,6 +51,8 @@ import { createAdminQueueDispositionService } from '../../../application/publish
 import { parseAdminPostConfig } from '../../../shared/config/phase10';
 import { parseAiConfig } from '../../../shared/config/phase6';
 import { createWorkersAiAdapter } from '../../../adapters/ai/workers-ai-adapter';
+import { createGeminiAdapter } from '../../../adapters/ai/gemini-adapter';
+import type { AiProvider, AiProviderPort } from '../../../domain/ai/types';
 import { timingSafeEqualStrings } from '../../../shared/security/timing-safe';
 import {
   BoundedReadError,
@@ -300,15 +302,28 @@ export async function handleTelegramWebhook(
   // Slice 4: the inbound AI-admin pipeline is wired ONLY while the admin
   // post gate is ON (it shares the capture surface). The rewriter uses the
   // SAME Workers AI port + budget-authority shape as the editorial draft
-  // service; the Gemini fallback stays UNWIRED in production (its
-  // versioned eligibility is unverified, so the ladder skips it even if
-  // its operator flag were on). The AI flags ship OFF on preview, so the
-  // rewriter defers and the pipeline runs on the cleaned text.
+  // service; the Gemini fallback is WIRED (ADR-0067): the port is built
+  // when GEMINI_API_KEY is present, over the platform fetch and the
+  // validated GEMINI_API_BASE_URL origin — the ladder still gates it on
+  // the operator flag + key + port + PARTIAL eligibility, and the AI flags
+  // ship OFF on preview, so the rewriter defers and the pipeline runs on
+  // the cleaned text until the operator flips the flag after the live test.
   const aiFlags = parseAiConfig(env as Readonly<Record<string, unknown>>);
   const workersAiBindingPresent = env.AI !== undefined;
+  const inboundPorts: Partial<Record<AiProvider, AiProviderPort>> = {};
+  if (workersAiBindingPresent) {
+    inboundPorts['workers-ai'] = createWorkersAiAdapter(env.AI);
+  }
+  if (env.GEMINI_API_KEY !== undefined) {
+    inboundPorts.gemini = createGeminiAdapter(
+      globalThis.fetch.bind(globalThis),
+      env.GEMINI_API_KEY,
+      aiFlags.config.GEMINI_API_BASE_URL,
+    );
+  }
   const inboundRewriter = createAiInboundRewriter({
     executor,
-    ports: workersAiBindingPresent ? { 'workers-ai': createWorkersAiAdapter(env.AI) } : {},
+    ports: inboundPorts,
     clock: systemClock,
     logger: ctx.logger,
     config: {

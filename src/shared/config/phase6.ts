@@ -10,10 +10,15 @@
  * - `AI_GEMINI_ENABLED` ('true' | 'false', default 'false') is the
  *   additional operator gate for the Gemini fallback path. It may be set
  *   'true' ONLY after a documented verification of the CURRENT official
- *   Free-tier eligibility docs (the versioned policy still marks Gemini
- *   eligibility as unverified in this round, so the fallback stays OFF
- *   even with this flag true — unknown eligibility never reaches the
- *   network).
+ *   Free-tier eligibility docs: the versioned policy records Gemini
+ *   eligibility as PARTIAL since ADR-0067 (the free tier exists per the
+ *   2026-11-21 doc-check; the per-project quota is unpublished), so the
+ *   flag is the operator opt-in and the 40/day app cap is the bound.
+ * - `GEMINI_API_BASE_URL` (optional string, default the official origin)
+ *   is the operator-controlled Gemini API origin (ADR-0067): strict
+ *   https-only, no credentials/query/fragment. It exists so a relay/proxy
+ *   origin can be used later without a code change; an invalid present
+ *   value fails the jobs engine closed and never reaches the network.
  * - `EVENT_RELATION_ENABLED` ('true' | 'false', default 'false') is the
  *   INDEPENDENT fail-closed gate for the R1.17 event-relation task
  *   (Phase 5E-1). It NEVER implies AI_ENABLED or EDITORIAL_ENABLED; with
@@ -28,6 +33,18 @@ import { defineConfigSpec, type ConfigSpec } from './spec';
 import { validateConfig, type ConfigIssue, type ConfigValidationResult } from './validate';
 
 export const AI_FLAG_VALUES = ['true', 'false'] as const;
+
+/**
+ * Official Gemini Developer API origin (ADR-0067); the default when
+ * GEMINI_API_BASE_URL is absent. Must stay identical to
+ * GEMINI_API_DEFAULT_ORIGIN in src/adapters/ai/gemini-adapter.ts
+ * (pinned by tests/unit/phase6-config.test.ts).
+ */
+export const GEMINI_API_BASE_URL_DEFAULT = 'https://generativelanguage.googleapis.com';
+
+/** Strict https-origin shape: host, optional port, optional path — no userinfo, query, or fragment. */
+export const GEMINI_API_BASE_URL_PATTERN =
+  /^https:\/\/[A-Za-z0-9._~-]+(?::[0-9]{1,5})?(?:\/[A-Za-z0-9._~%/-]*)?$/;
 
 export const PHASE_6_CONFIG_SPEC: ConfigSpec = defineConfigSpec([
   {
@@ -49,7 +66,18 @@ export const PHASE_6_CONFIG_SPEC: ConfigSpec = defineConfigSpec([
     allowed: [...AI_FLAG_VALUES],
     default: 'false',
     description:
-      'Gemini fallback operator gate (non-secret; ADR-0041). Requires verified Free-tier eligibility; the versioned policy keeps Gemini eligibility unverified this round.',
+      'Gemini fallback operator gate (non-secret; ADR-0041/ADR-0067). Eligibility is PARTIAL (free tier verified in docs 2026-11-21; per-project quota unpublished) — the flag is the operator opt-in, bounded by the 40/day app cap.',
+    phase: 6,
+  },
+  {
+    name: 'GEMINI_API_BASE_URL',
+    type: 'string',
+    required: false,
+    secret: false,
+    default: GEMINI_API_BASE_URL_DEFAULT,
+    pattern: GEMINI_API_BASE_URL_PATTERN,
+    description:
+      'Gemini API origin (non-secret; ADR-0067). Operator-controlled relay origin; strict https-only, no credentials/query/fragment. Default is the official origin.',
     phase: 6,
   },
   {
@@ -70,6 +98,13 @@ export interface AiConfig {
   readonly AI_ENABLED: boolean;
   readonly AI_GEMINI_ENABLED: boolean;
   readonly EVENT_RELATION_ENABLED: boolean;
+  /**
+   * Resolved Gemini API origin (validated or the official default). An
+   * invalid present value is never used: the jobs engine fails closed
+   * on the validation result, and this field resolves to the official
+   * default instead of the invalid value.
+   */
+  readonly GEMINI_API_BASE_URL: string;
 }
 
 /**
@@ -86,6 +121,7 @@ export function parseAiConfig(env: Readonly<Record<string, unknown>>): {
       AI_ENABLED: result.config.AI_ENABLED === 'true',
       AI_GEMINI_ENABLED: result.config.AI_GEMINI_ENABLED === 'true',
       EVENT_RELATION_ENABLED: result.config.EVENT_RELATION_ENABLED === 'true',
+      GEMINI_API_BASE_URL: result.config.GEMINI_API_BASE_URL ?? GEMINI_API_BASE_URL_DEFAULT,
     },
     result,
   };

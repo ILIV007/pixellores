@@ -78,7 +78,7 @@ export interface PixelSecrets {
    * CONDITIONAL (owner round 1.10.6 amendment): the Workers-AI-only path
    * does NOT require a Gemini key. Optional — used only when the Gemini
    * fallback is separately gated on (AI_GEMINI_ENABLED) AND its Free-tier
-   * eligibility is verified in a later round.
+   * eligibility is at least PARTIAL (ADR-0067, docs verified 2026-11-21).
    */
   readonly GEMINI_API_KEY?: string;
   /**
@@ -206,11 +206,20 @@ export interface WorkerEnv {
   readonly AI_ENABLED?: string;
   /**
    * NON-SECRET Gemini fallback operator gate ('true' | 'false'; default
-   * 'false'). Requires verified Free-tier eligibility in addition to the
-   * flag; the versioned policy keeps that eligibility UNVERIFIED in this
-   * round, so the Gemini path stays OFF even when this flag is 'true'.
+   * 'false'). Eligibility is PARTIAL since ADR-0067 (the free tier is
+   * verified in official docs 2026-11-21; the per-project quota is
+   * unpublished) — the flag is the operator opt-in, bounded by the
+   * 40/day app cap; the versioned policy records the partial state.
    */
   readonly AI_GEMINI_ENABLED?: string;
+  /**
+   * NON-SECRET Gemini API origin (optional; default the official
+   * `https://generativelanguage.googleapis.com`). Operator-controlled
+   * relay origin (ADR-0067): strict https-only, no credentials/query/
+   * fragment, validated fail-closed by src/shared/config/phase6.ts.
+   * Never a secret — the origin is not sensitive, only the key is.
+   */
+  readonly GEMINI_API_BASE_URL?: string;
   /**
    * NON-SECRET event-relation task gate ('true' | 'false'; default
    * 'false'; R1.17/Phase 5E-1). INDEPENDENT fail-closed flag for the

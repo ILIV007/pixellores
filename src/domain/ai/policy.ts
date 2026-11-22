@@ -13,11 +13,14 @@
  * verified compatible allowlist, preferably a lightweight default plus one
  * alternate", THIS version ships the lightweight 8B default plus the Qwen3
  * alternate; the 70B-fast candidate intentionally stays out of the active
- * list. Gemini: only gemini-2.5-flash-lite is listed, and its ELIGIBILITY
- * stays UNVERIFIED (see AI_PROVIDER_ELIGIBILITY_V2) — unsupported or
- * unverified candidates stay disabled rather than inventing a free
- * entitlement. gemini-3.1-flash-lite is NOT listed: its support status was
- * not verifiable in this round.
+ * list. Gemini (ai-policy-v2.2.1, ADR-0067): the trio
+ * gemini-3.5-flash-lite (primary) / gemini-3.1-flash-lite (alternate) /
+ * gemini-3.8-flash (fallback). gemini-2.5-flash is DEPRECATED (auto-routes
+ * to 3.5-flash-lite on 2026-12-01) and gemini-2.5-flash-lite is
+ * LEGACY-GATED (past users only) — both removed. Eligibility is PARTIAL
+ * (see AI_PROVIDER_ELIGIBILITY_V2): official docs verified 2026-11-21
+ * that a Free tier exists, but the per-project quota is unpublished, so
+ * the operator flag is the opt-in and the 40/day cap is the bound.
  *
  * SUPERSEDED (ai-policy-v1, 2026-11-20): Cloudflare retired BOTH v1
  * Workers AI ids on 2026-11-20 (the catalog lists
@@ -65,12 +68,21 @@
  * tokens plus thinking headroom. The 60 s wall still covers worst-case
  * primary + fallback, and neuron cost stays well under the 10,000/day
  * free cap (~11 neurons/call at 384 tokens).
+ *
+ * ai-policy-v2.2.1 (2026-11-22, ADR-0067) — Gemini direct-fallback
+ * wiring, models only (bounds unchanged). The allowlist's Gemini entry
+ * moves from the legacy-gated gemini-2.5-flash-lite to the trio above
+ * (official ai.google.dev/gemini-api/docs/models, 2026-11-21). Patch
+ * bump, not v2.3: v2.3 stays reserved for the failover release, which
+ * then bumps v2.2.1 → v2.3. The version string changes because it is
+ * stamped on attempt records — keeping v2.2 would mis-stamp
+ * new-model attempts.
  */
 
 import type { AiProvider } from './types';
 
 /** Version marker for the shipped allowlist/eligibility set. */
-export const AI_POLICY_VERSION = 'ai-policy-v2.2';
+export const AI_POLICY_VERSION = 'ai-policy-v2.2.1';
 
 /** Version marker for the shipped prompt contract (see ./prompt.ts). */
 export const AI_PROMPT_VERSION = 'pixel-news-draft-v1';
@@ -124,7 +136,19 @@ export const AI_MODEL_ALLOWLIST_V2: readonly AiModelRecord[] = [
     requiresEligibility: false,
   },
   {
-    modelId: 'gemini-2.5-flash-lite',
+    modelId: 'gemini-3.5-flash-lite',
+    provider: 'gemini',
+    role: 'primary',
+    requiresEligibility: true,
+  },
+  {
+    modelId: 'gemini-3.1-flash-lite',
+    provider: 'gemini',
+    role: 'alternate',
+    requiresEligibility: true,
+  },
+  {
+    modelId: 'gemini-3.8-flash',
     provider: 'gemini',
     role: 'fallback',
     requiresEligibility: true,
@@ -141,13 +165,32 @@ export const AI_MODEL_ALLOWLIST_V2: readonly AiModelRecord[] = [
  * key/binding alone proves none of them, so the fallback stays OFF until an
  * operator round verifies current official Free-tier docs and records the
  * verification. Unknown eligibility => typed deferred, zero network.
+ * 'partial_free_tier' — Gemini (ADR-0067): the operator round of
+ * 2026-11-21 verified from current official docs that a Free tier
+ * EXISTS, but the per-project quota (and Persian quality) stay
+ * unverified. The fallback is usable ONLY when the operator explicitly
+ * flips AI_GEMINI_ENABLED (the flag is the opt-in) and stays bounded by
+ * the 40/day app cap; the live test is the remaining verification.
  */
 export const AI_PROVIDER_ELIGIBILITY_V2: Readonly<
-  Record<AiProvider, 'binding_gated' | 'unverified_free_tier'>
+  Record<AiProvider, 'binding_gated' | 'unverified_free_tier' | 'partial_free_tier'>
 > = {
   'workers-ai': 'binding_gated',
-  gemini: 'unverified_free_tier',
+  gemini: 'partial_free_tier',
 };
+
+/**
+ * Default per-provider eligibility derived from THIS policy version —
+ * the single source of truth for the three AI services (draft,
+ * event-relation, inbound rewriter). A future `verified_free_tier`
+ * state must extend this mapping; unknown eligibility stays `false`.
+ */
+export function defaultProviderEligibility(): Record<AiProvider, boolean> {
+  return {
+    'workers-ai': AI_PROVIDER_ELIGIBILITY_V2['workers-ai'] === 'binding_gated',
+    gemini: AI_PROVIDER_ELIGIBILITY_V2.gemini === 'partial_free_tier',
+  };
+}
 
 /**
  * Conservative PER-PROVIDER app request-ATTEMPT caps per Tehran day,

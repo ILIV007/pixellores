@@ -338,6 +338,7 @@ function createHarness(input?: {
     config: {
       eventRelationEnabled: relationEnabled,
       aiEnabled,
+      geminiEnabled: false,
       workersAiBindingPresent: true,
       geminiApiKeyPresent: false,
     },
