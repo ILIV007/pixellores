@@ -494,7 +494,7 @@ describe('slice 6 — the near-dup pipeline over REAL D1', () => {
     });
   });
 
-  it('ADR-0067: the handler stamps working_headline from the item title, so the next same-title item merges', async () => {
+  it('ADR-0068: the handler stamps working_headline from the item title, so the next same-title item merges', async () => {
     const chain = await createChain({
       script: async (_callIndex, input) => okOutcome(input, 'تریلر GTA VI فردا منتشر می‌شود.'),
     });
@@ -515,7 +515,7 @@ describe('slice 6 — the near-dup pipeline over REAL D1', () => {
     expect(await chain.draftCount()).toBe(1);
 
     // THE FIX: the handler-created story carries the item title as its
-    // working headline — before ADR-0067 it was NULL, so the near-dup
+    // working headline — before ADR-0068 it was NULL, so the near-dup
     // scan skipped every candidate and story_merges stayed empty.
     const story = await chain.executor.first<{
       readonly id: string;

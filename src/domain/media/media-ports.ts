@@ -62,7 +62,7 @@ export interface MediaStoragePort {
 }
 
 /**
- * A URL-only asset row (ADR-0067 — media by hotlink, no R2): the
+ * A URL-only asset row (ADR-0068 — media by hotlink, no R2): the
  * source article's image, referenced by canonical URL, never staged
  * in R2 and with no file_id until its first successful send.
  */
@@ -94,7 +94,7 @@ export interface MediaAssetStore {
   /** All rows still HOLDING an R2 object whose deadline has passed (bounded). */
   findExpiredAssets(nowMs: number, limit: number): Promise<readonly MediaAssetRecordV1[]>;
   /**
-   * Insert ONE URL-only asset row (ADR-0067): status 'validated',
+   * Insert ONE URL-only asset row (ADR-0068): status 'validated',
    * no R2 object, no file_id, no deadline. Idempotent per canonical
    * URL: an existing row for the URL is `already_exists`, never a
    * second row.

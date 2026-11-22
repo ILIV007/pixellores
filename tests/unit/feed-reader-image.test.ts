@@ -7,7 +7,7 @@ import {
 } from '../../src/domain/media/image-url';
 
 /**
- * ADR-0067 — media by hotlink (no R2): the feed reader carries the
+ * ADR-0068 — media by hotlink (no R2): the feed reader carries the
  * item image (RSS enclosure / media:content / media:thumbnail, Atom
  * enclosure link) as `imageUrl`, and the pure image-URL helpers
  * validate it. An item with no usable image has `imageUrl: null` —
@@ -25,7 +25,7 @@ function atomEntry(inner: string): string {
   return `<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom"><title>T</title><entry><id>e1</id><title>Item</title><link rel="alternate" href="https://example.com/a"/>${inner}</entry></feed>`;
 }
 
-describe('parseFeedDocument — item image (ADR-0067)', () => {
+describe('parseFeedDocument — item image (ADR-0068)', () => {
   it('takes an RSS enclosure url', () => {
     const parsed = parseFeedDocument(
       rssItem(`<enclosure url="${IMG}" type="image/jpeg" length="123"/>`),
@@ -98,7 +98,7 @@ describe('parseFeedDocument — item image (ADR-0067)', () => {
   });
 });
 
-describe('image-url helpers (ADR-0067)', () => {
+describe('image-url helpers (ADR-0068)', () => {
   it('isHttpImageUrl accepts https only, bounded, no spaces', () => {
     expect(isHttpImageUrl(IMG)).toBe(true);
     expect(isHttpImageUrl('http://cdn.example.com/a.jpg')).toBe(false);

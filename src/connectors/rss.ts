@@ -49,7 +49,7 @@ interface FeedCursorEntry {
 type FeedCursor = Record<string, FeedCursorEntry>;
 
 /**
- * ADR-0067 — og:image resolution bounds. At most two article fetches
+ * ADR-0068 — og:image resolution bounds. At most two article fetches
  * per feed per poll, freshest-first: the feed is newer-first, so the
  * first imageless items are the ones most likely new. Each fetch
  * charges ONE source/day ingestion unit (the same authority as the
@@ -114,7 +114,7 @@ function parseCursor(cursor: string | null): FeedCursor {
 
 /**
  * Resolve `og:image` for the freshest imageless items of one feed
- * (ADR-0067). At most `OG_IMAGE_MAX_PER_FEED` article fetches, in
+ * (ADR-0068). At most `OG_IMAGE_MAX_PER_FEED` article fetches, in
  * feed order (newer-first). Every outcome is fail-soft: a failed
  * fetch skips that article, a budget denial or a transport throw
  * stops og:image for the feed — the parsed items always survive,
@@ -322,7 +322,7 @@ export function createRssConnector(): SourceConnector {
           lastModified: lastModified === null ? null : lastModified.slice(0, 128),
         };
         const stripDownloads = config['stripDownloadLinks'] === true;
-        // ADR-0067: og:image for the freshest imageless items — the
+        // ADR-0068: og:image for the freshest imageless items — the
         // feed items commit with or without an image (see resolveOgImages).
         const withImages = await resolveOgImages({
           items: parsed.feed.items,

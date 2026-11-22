@@ -533,7 +533,7 @@ it('R191-H6: recovery — once exact v4 metadata returns, the same handler path 
   expect(await stateRow()).toEqual(stale);
   // …while the CURRENT generation acquires the window and polls honestly.
   const recovered = await invokeHandler(db, 2);
-  // ADR-0067: 1 feed fetch + 1 og:image article fetch for the feed's
+  // ADR-0068: 1 feed fetch + 1 og:image article fetch for the feed's
   // one imageless item (the stub returns the same RSS for both).
   expect(recovered.raw).toBe(2);
   expect(recovered.items).toBe(1);
@@ -560,7 +560,7 @@ it('R191-H7 CONTROL: readable exact v3 keeps the documented legacy handler behav
     appliedSchemaVersion: 3,
   });
   const result = await invokeHandler(db, 1);
-  // ADR-0067: 1 feed fetch + 1 og:image article fetch for the feed's
+  // ADR-0068: 1 feed fetch + 1 og:image article fetch for the feed's
   // one imageless item (the stub returns the same RSS for both).
   expect(result.raw).toBe(2);
   expect(result.items).toBe(1);

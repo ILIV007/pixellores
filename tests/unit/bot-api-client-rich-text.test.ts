@@ -413,11 +413,11 @@ describe('createBotApiClient — R1.19.1 end-to-end correctness companions', () 
 });
 
 /**
- * ADR-0067 — sendPhoto by URL (media by hotlink, no R2): the photo
+ * ADR-0068 — sendPhoto by URL (media by hotlink, no R2): the photo
  * reference is a file_id OR a bounded https URL; the reply's largest
  * photo variant file_id is returned for the ledger's reuse.
  */
-describe('sendPhotoRich — URL reference (ADR-0067)', () => {
+describe('sendPhotoRich — URL reference (ADR-0068)', () => {
   const photoResult = {
     ok: true,
     result: {

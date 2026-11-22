@@ -1971,7 +1971,7 @@ export function createEditorialPrepareDraftHandler(
           story: {
             id: storyId,
             storyKey,
-            // ADR-0067 (the dead near-dup check): the story's working
+            // ADR-0068 (the dead near-dup check): the story's working
             // headline IS the source item's title (already bounded
             // ≤ 512 at ingestion). The nd1 scan compares the incoming
             // item's title against this headline — with NULL here

@@ -215,7 +215,7 @@ describe('R05 RSS: strongest Retry-After lower bound across feeds', () => {
         headers: { 'content-type': 'application/xml' },
         bodyText: VALID_RSS_FEED,
       },
-      // ADR-0067: the successful feed's one imageless item triggers its
+      // ADR-0068: the successful feed's one imageless item triggers its
       // og:image article fetch before the rate-limited feed is fetched.
       { status: 200, bodyText: '<html><head></head><body>no og image</body></html>' },
       { status: 429, headers: { 'retry-after': '300' } },
@@ -229,7 +229,7 @@ describe('R05 RSS: strongest Retry-After lower bound across feeds', () => {
     expect(result.status).toBe('rate_limited');
     expect(result.items).toHaveLength(1); // the successful feed's durable items survive
     expect(result.retryAfterSeconds).toBe(300); // and so does the strongest bound
-    // ADR-0067: 1 feed + 1 og:image article fetch + 1 rate-limited feed.
+    // ADR-0068: 1 feed + 1 og:image article fetch + 1 rate-limited feed.
     expect(result.requestCount).toBe(3);
     expect(result.malformedCount).toBe(0);
   });

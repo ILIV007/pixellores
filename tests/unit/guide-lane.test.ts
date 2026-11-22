@@ -6,7 +6,7 @@ import {
 } from '../../src/domain/publishing/guide-lane';
 
 /**
- * ADR-0067 — quality fix #5: the guide lane. A `/guide/` path
+ * ADR-0068 — quality fix #5: the guide lane. A `/guide/` path
  * segment makes a guide; anything else is news. Guides are KEPT —
  * the lane only shapes order (at most one per bridge pass, P2).
  */

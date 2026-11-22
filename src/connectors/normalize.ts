@@ -223,7 +223,7 @@ export function buildRawProvenance(fields: {
   readonly publishedRaw: string | null;
   readonly fetchedAtMs: number;
   readonly originLabel: string;
-  /** ADR-0067: the feed/og:image image URL (bounded https, else absent). */
+  /** ADR-0068: the feed/og:image image URL (bounded https, else absent). */
   readonly imageUrl?: string | null;
 }): Record<string, unknown> {
   const provenance: Record<string, unknown> = {
@@ -266,7 +266,7 @@ export async function normalizeRawItem(input: {
     readonly author: string | null;
     readonly publishedRaw: string | null;
     readonly guidPermalink?: string | null;
-    /** ADR-0067: the feed/og:image image URL (validated upstream). */
+    /** ADR-0068: the feed/og:image image URL (validated upstream). */
     readonly imageUrl?: string | null;
   };
   readonly stripDownloads: boolean;
@@ -286,7 +286,7 @@ export async function normalizeRawItem(input: {
     }
     // Unsafe/absent canonical URL: item still persists, dedup by id/hash.
   }
-  // ADR-0067: the image URL is re-validated at the persistence
+  // ADR-0068: the image URL is re-validated at the persistence
   // boundary — an invalid value never reaches raw_json or the output.
   const validatedImageUrl: string | null =
     raw.imageUrl !== undefined && raw.imageUrl !== null && isHttpImageUrl(raw.imageUrl)
@@ -361,6 +361,6 @@ export interface NormalizedItemOut {
   readonly publishedAtMs: number | null;
   readonly contentHash: string;
   readonly rawJson: Record<string, unknown>;
-  /** ADR-0067: the validated image URL, else null (never fetched here). */
+  /** ADR-0068: the validated image URL, else null (never fetched here). */
   readonly imageUrl: string | null;
 }

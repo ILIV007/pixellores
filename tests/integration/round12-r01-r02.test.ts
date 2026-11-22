@@ -309,7 +309,7 @@ describe('R01: conditional HTTP responses through the REAL safe-http port', () =
     });
     expect(out1.status).toBe('changed');
     expect(out1.items).toHaveLength(1);
-    // ADR-0067: 1 feed fetch + 1 og:image article fetch for the feed's
+    // ADR-0068: 1 feed fetch + 1 og:image article fetch for the feed's
     // one imageless item (the raw mock's exhausted queue skips it).
     expect(out1.requestCount).toBe(2);
     const cursor1 = JSON.parse(out1.cursor ?? '{}') as Record<string, { etag: string | null }>;
@@ -399,7 +399,7 @@ describe('R01: conditional HTTP responses through the REAL safe-http port', () =
     });
     expect(out.status).toBe('changed');
     expect(out.items).toHaveLength(1);
-    // ADR-0067: 2 feed requests (the 302 + the real feed) + 1 og:image
+    // ADR-0068: 2 feed requests (the 302 + the real feed) + 1 og:image
     // article fetch for the feed's one imageless item.
     expect(out.requestCount).toBe(3);
     expect(redirecting.calls[1]!.url).toBe('https://blog.playstation.com/feed-real');

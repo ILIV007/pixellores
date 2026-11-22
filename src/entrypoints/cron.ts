@@ -237,7 +237,7 @@ export async function handleScheduled(
                     // bridges the scheduler's structural content shape.
                     content: input.content as RichTextEnvelope,
                   }),
-                // ADR-0067: the single-photo send rides the same client;
+                // ADR-0068: the single-photo send rides the same client;
                 // the caption cast mirrors the message one above.
                 sendPhotoRich: (input) =>
                   botApi.sendPhotoRich({
@@ -247,7 +247,7 @@ export async function handleScheduled(
                       input.caption === undefined ? undefined : (input.caption as RichTextEnvelope),
                   }),
               },
-        // ADR-0067: the ledger for the single-photo path (the album
+        // ADR-0068: the ledger for the single-photo path (the album
         // media seam stays unwired here — the ledger may exist alone).
         mediaAssets: createMediaAssetStore(executor),
         sendGate: { enabled: mode === 'auto' || mode === 'safe-auto' },

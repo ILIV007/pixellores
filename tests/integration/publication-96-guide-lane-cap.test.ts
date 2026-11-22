@@ -7,7 +7,7 @@ import { buildFactGuardReport } from '../../src/domain/editorial/fact-guard';
 import { createLogger } from '../../src/observability/logger';
 
 /**
- * ADR-0067 — the bridge's lane + cap (quality fix #5):
+ * ADR-0068 — the bridge's lane + cap (quality fix #5):
  * - GUIDE LANE: at most ONE guide per pass, at P2 priority (60);
  *   further guides stay `ready` (deferred, never dropped).
  * - CATEGORY CAP: the arp1 40%-of-rolling-six cap runs in the
@@ -189,7 +189,7 @@ beforeEach(async () => {
   await seedSoulPointer();
 });
 
-describe('bridge guide lane + category cap (ADR-0067)', () => {
+describe('bridge guide lane + category cap (ADR-0068)', () => {
   it('enqueues at most one guide per pass, at P2 priority; the second guide stays ready', async () => {
     await seedReadyDraft({
       storyId: 's-g1',

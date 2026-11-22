@@ -1,5 +1,5 @@
 /**
- * The guide lane (ADR-0067 — quality fix #5).
+ * The guide lane (ADR-0068 — quality fix #5).
  *
  * PURE, DETERMINISTIC, OFFLINE: a post is a GUIDE iff its source
  * item's canonical URL carries a `/guide/` path segment (e.g. the VGC

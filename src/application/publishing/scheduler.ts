@@ -126,7 +126,7 @@ export interface PublicationChannelTransport {
     };
   }): Promise<{ readonly messageId: number }>;
   /**
-   * ADR-0067: the single-photo send (optional — a transport without it
+   * ADR-0068: the single-photo send (optional — a transport without it
    * keeps the old text-only behavior). The caption is a REQUIRED-kind
    * 'caption' envelope; the photo is a file_id or a bounded https URL.
    * The reply carries the photo's file_id when Telegram returns one.
@@ -319,7 +319,7 @@ export function createPublicationScheduler(deps: {
   readonly mediaTransport?: PublicationMediaGroupTransport;
   /**
    * The ledger the album binding is verified against — REQUIRED with
-   * the media seam. ADR-0067: it ALSO serves the single-photo path
+   * the media seam. ADR-0068: it ALSO serves the single-photo path
    * (URL-asset insert + file_id save), so it may exist WITHOUT the
    * media seam; the media seam still requires it (pair rule below).
    */
@@ -357,7 +357,7 @@ export function createPublicationScheduler(deps: {
   }
   // THE PAIR RULE (fail-closed): a media-group seam without the ledger it
   // binds to is a construction-time misconfiguration — the wiring can
-  // never half-exist. ADR-0067: the ledger MAY exist without the seam
+  // never half-exist. ADR-0068: the ledger MAY exist without the seam
   // (the single-photo path uses the ledger alone); the reverse is still
   // forbidden.
   if (deps.mediaTransport !== undefined && deps.mediaAssets === undefined) {
@@ -715,7 +715,7 @@ export function createPublicationScheduler(deps: {
   }
 
   /**
-   * ADR-0067 — the editorial single-photo resolution (the photo is
+   * ADR-0068 — the editorial single-photo resolution (the photo is
    * resolved BEFORE the send-started marker, so every failure here
    * degrades to the text send with the row still claimable):
    *   draft → story → first reference source item → its stored
@@ -971,7 +971,7 @@ export function createPublicationScheduler(deps: {
           }
         : { publicationId: row.id, draftId: row.draft_id, outcome: 'fence_rejected' };
     }
-    // ADR-0067: the photo is resolved BEFORE the send-started marker —
+    // ADR-0068: the photo is resolved BEFORE the send-started marker —
     // a photo miss degrades to the text send with the row still
     // claimable (the resolver never throws; every reason is logged).
     const photo = await resolveEditorialPhoto({ row, render, nowMs });
@@ -1061,7 +1061,7 @@ export function createPublicationScheduler(deps: {
         nowMs,
       });
       if (terminal.kind === 'written') {
-        // ADR-0067: after the delivery proof — a URL send saves its
+        // ADR-0068: after the delivery proof — a URL send saves its
         // returned file_id for reuse, and the usage row records the
         // photo on this publication. Best-effort: a ledger failure
         // here never un-sends the post (the next send re-resolves

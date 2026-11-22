@@ -559,7 +559,7 @@ describe('Round 1.8.1 B3 — observed provider bounds survive a later denial; re
         payload: { sourceId: 'itch_discovery', scheduledForMs: scheduled2 },
       }),
     ).toEqual({ kind: 'success' });
-    // ADR-0067: BOTH deferred feeds refetched — nothing lost — plus
+    // ADR-0068: BOTH deferred feeds refetched — nothing lost — plus
     // one og:image article fetch per feed (each refetched feed carries
     // one imageless item, and the stub returns the same RSS for the
     // article fetch too, so no og:image is found).

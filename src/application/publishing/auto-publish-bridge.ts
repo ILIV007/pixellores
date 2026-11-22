@@ -48,7 +48,7 @@
  * same draft bridged twice) is the honest absorption, never a second
  * row.
  *
- * ADR-0067 — LANE + CAP (the bridge also shapes WHAT reaches the
+ * ADR-0068 — LANE + CAP (the bridge also shapes WHAT reaches the
  * outbox, it never just forwards the gate):
  * - GUIDE LANE: a draft whose source URL carries `/guide/` rides
  *   the guide lane — at most ONE guide per pass, at P2 priority
@@ -147,7 +147,7 @@ export async function bridgeReadyDrafts(input: {
   const drafts = await listReadyDrafts(input.executor, {
     limit: input.limit ?? AUTO_PUBLISH_BRIDGE_LIMIT,
   });
-  // ADR-0067 — the category cap's history: the published trail mapped
+  // ADR-0068 — the category cap's history: the published trail mapped
   // to mix categories (the scheduler's own derivation, reused here so
   // the bridge and the send gate read the same world). An unreadable
   // history fails the WHOLE pass with zero writes — a cap that cannot
@@ -187,7 +187,7 @@ export async function bridgeReadyDrafts(input: {
       refused += 1;
       continue;
     }
-    // ADR-0067 — lane + cap (both leave the draft `ready` on defer).
+    // ADR-0068 — lane + cap (both leave the draft `ready` on defer).
     // A lane/cap read failure rejects the draft for this pass —
     // never an approval on an unevaluated cap.
     let lane: 'news' | 'guide' = 'news';

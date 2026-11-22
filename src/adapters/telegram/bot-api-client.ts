@@ -104,7 +104,7 @@ export class TelegramApiError extends Error {
 export interface TelegramSentMessage {
   readonly messageId: number;
   /**
-   * ADR-0067: the largest-variant file_id of a sent photo, when the
+   * ADR-0068: the largest-variant file_id of a sent photo, when the
    * response carries one (sendPhoto only). Absent = the response had
    * no usable photo variant — the ledger never requires it.
    */
@@ -195,7 +195,7 @@ export interface TelegramSendRichInput {
 
 /**
  * R1.21 — the SINGLE-media sends. The media is referenced by its Telegram
- * file_id (opaque, already bounded upstream) — or, since ADR-0067, by a
+ * file_id (opaque, already bounded upstream) — or, since ADR-0068, by a
  * bounded https URL the Bot API fetches itself (the source-article
  * hotlink path); the caption is a REQUIRED-kind 'caption' envelope or
  * absent (a media post without a caption is valid). A caption envelope
@@ -206,7 +206,7 @@ export interface TelegramSendRichInput {
 export interface TelegramSendPhotoRichInput {
   readonly chatId: number | string;
   /**
-   * ADR-0067: a Telegram file_id of the photo (opaque reference) OR a
+   * ADR-0068: a Telegram file_id of the photo (opaque reference) OR a
    * bounded https URL (the Bot API fetches it — the hotlink path).
    * A URL is never logged and never interpreted beyond this gate.
    */
@@ -546,7 +546,7 @@ export function createBotApiClient(
   }
 
   /**
-   * ADR-0067: the sendPhoto reply parser — the message_id plus the
+   * ADR-0068: the sendPhoto reply parser — the message_id plus the
    * LARGEST photo variant's file_id when the response carries one.
    * A response without a usable message id is invalid (null); a
    * response without a photo variant is still a sent message — the
@@ -641,7 +641,7 @@ export function createBotApiClient(
   }
 
   /**
-   * ADR-0067: the single-photo reference gate — a file_id (the R1.21
+   * ADR-0068: the single-photo reference gate — a file_id (the R1.21
    * shape above) OR a bounded https URL (the hotlink path: the Bot
    * API fetches it). The URL bound is 2048 chars (the
    * `media_assets.canonical_url` bound); a URL-shaped reference that
@@ -830,7 +830,7 @@ export function createBotApiClient(
     },
 
     // ---- R1.21: single-media sends (file_id + caption envelope) --------
-    // ADR-0067: sendPhoto also accepts a bounded https URL (hotlink) —
+    // ADR-0068: sendPhoto also accepts a bounded https URL (hotlink) —
     // the reference gate above decides which shape it is.
     async sendPhotoRich(input) {
       // Reference re-checked at the boundary (bounded printable ASCII

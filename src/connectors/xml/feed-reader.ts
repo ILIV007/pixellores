@@ -9,7 +9,7 @@
  * - Atom entry: id → link[rel=alternate, else first link] → title →
  *               published else updated → summary/content → author/name
  *
- * IMAGE (ADR-0067): the first https image URL wins, in document order:
+ * IMAGE (ADR-0068): the first https image URL wins, in document order:
  * - RSS item: `enclosure` / `media:content` / `media:thumbnail` `url`
  *   attribute (the local names are `enclosure`, `content`,
  *   `thumbnail` — the scanner strips the prefix);
@@ -78,7 +78,7 @@ function freshDraft(): ItemDraft {
 
 /**
  * The RSS media element local names whose `url` attribute carries the
- * item image (ADR-0067). `content` is `media:content` here — RSS has
+ * item image (ADR-0068). `content` is `media:content` here — RSS has
  * no bare `<content>` element, and `content:encoded` arrives as
  * `encoded` (already a body field).
  */

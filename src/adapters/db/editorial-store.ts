@@ -149,7 +149,7 @@ export async function markSourceItemQueued(
 }
 
 /**
- * ADR-0067: the durable provenance (`raw_json`) of one source item —
+ * ADR-0068: the durable provenance (`raw_json`) of one source item —
  * the carrier of the feed/og:image image URL (`imageUrl`). A missing
  * row or a missing value is null — never a throw.
  */
@@ -166,7 +166,7 @@ export async function findSourceItemRawJson(
 }
 
 /**
- * ADR-0067: the content type of one story — the bridge's category-cap
+ * ADR-0068: the content type of one story — the bridge's category-cap
  * input. A missing row is null (the caller treats it as unclassifiable
  * and skips the cap check; the scheduler stays the backstop).
  */
@@ -192,7 +192,7 @@ export async function findStoryContentType(
  */
 export interface ReadyDraftRow {
   readonly id: string;
-  /** ADR-0067: the owning story — the bridge's lane + cap input. */
+  /** ADR-0068: the owning story — the bridge's lane + cap input. */
   readonly story_id: string;
   readonly document_json: string;
   readonly created_at: number;

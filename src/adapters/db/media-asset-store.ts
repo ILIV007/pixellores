@@ -132,7 +132,7 @@ export function createMediaAssetStore(executor: DbExecutor): MediaAssetStore {
 
     async insertUrlAsset(input) {
       // Idempotent per canonical URL (no UNIQUE index on the column —
-      // ZERO DDL per ADR-0067): the pre-read is the dedup, and a
+      // ZERO DDL per ADR-0068): the pre-read is the dedup, and a
       // concurrent insert that wins the race is absorbed by the
       // post-failure re-read below instead of failing the caller.
       const existing = await this.findAssetsByUrls([input.canonicalUrl]);

@@ -237,7 +237,7 @@ describe('normalizeRawItem', () => {
     }
   });
 
-  it('carries a valid imageUrl through and into rawJson provenance (ADR-0067)', async () => {
+  it('carries a valid imageUrl through and into rawJson provenance (ADR-0068)', async () => {
     const result = await normalizeRawItem({
       connector: 'rss',
       sourceId: 'playstation_blog',
@@ -264,7 +264,7 @@ describe('normalizeRawItem', () => {
     }
   });
 
-  it('drops a non-https imageUrl instead of storing it (ADR-0067)', async () => {
+  it('drops a non-https imageUrl instead of storing it (ADR-0068)', async () => {
     const result = await normalizeRawItem({
       connector: 'rss',
       sourceId: 'playstation_blog',

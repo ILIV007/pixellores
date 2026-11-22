@@ -1,5 +1,5 @@
 /**
- * Source-article image URLs (ADR-0067 — media by hotlink, no R2).
+ * Source-article image URLs (ADR-0068 — media by hotlink, no R2).
  *
  * PURE, DETERMINISTIC, OFFLINE: the bounded validation + extraction of
  * the image URL a feed item carries (feed enclosure / media:content /
@@ -37,7 +37,7 @@ export function isHttpImageUrl(value: unknown): value is string {
  * string or an already-parsed object). Anything unparseable, missing,
  * or failing the URL bound yields null — never a throw, never a guess.
  * The stored field is the flat `imageUrl` key written by the
- * normalizer (ADR-0067); a nested or differently-shaped value is not
+ * normalizer (ADR-0068); a nested or differently-shaped value is not
  * one.
  */
 export function extractImageUrlFromRawJson(rawJson: unknown): string | null {

@@ -485,7 +485,7 @@ it('R09-P6: queue outage — the outstanding job survives later passes untouched
   );
   vi.unstubAllGlobals();
   expect(action).toEqual({ action: 'ack', outcome: 'job_completed' });
-  // ADR-0067: one feed fetch + one og:image article fetch for the
+  // ADR-0068: one feed fetch + one og:image article fetch for the
   // feed's one imageless item (the stub returns the same RSS for both).
   expect(calls).toHaveLength(2); // exactly one poll execution's fetches
 
@@ -530,7 +530,7 @@ it('R09-P7: claim-time acquisition self-heals an unreserved window; foreign owne
     payload: { sourceId: SOURCE, scheduledForMs: 0 },
   });
   expect(outcomeA).toEqual({ kind: 'success' });
-  // ADR-0067: one feed fetch + one og:image article fetch for the
+  // ADR-0068: one feed fetch + one og:image article fetch for the
   // feed's one imageless item.
   expect(callsA).toHaveLength(2);
   // The successful OWNED commit releases ownership together with the fresh
@@ -623,7 +623,7 @@ it('R09-P8: crash after commit, before completion — the recovered generation f
     payload: { sourceId: SOURCE, scheduledForMs: 0 },
   });
   expect(first).toEqual({ kind: 'success' });
-  // ADR-0067: one feed fetch + one og:image article fetch for the
+  // ADR-0068: one feed fetch + one og:image article fetch for the
   // feed's one imageless item.
   expect(calls).toHaveLength(2);
   const afterFirst = await stateRow();
@@ -698,7 +698,7 @@ it('R09-P9: crash between fetch and commit — the re-drive fetches AGAIN (at-le
       payload: { sourceId: SOURCE, scheduledForMs: 0 },
     }),
   ).rejects.toThrow();
-  // ADR-0067: one feed fetch + one og:image article fetch for the
+  // ADR-0068: one feed fetch + one og:image article fetch for the
   // feed's one imageless item.
   expect(calls).toHaveLength(2); // fetch #1 happened (never recalled)
   const afterCrash = await stateRow();
@@ -718,7 +718,7 @@ it('R09-P9: crash between fetch and commit — the re-drive fetches AGAIN (at-le
     payload: { sourceId: SOURCE, scheduledForMs: 0 },
   });
   expect(second).toEqual({ kind: 'success' });
-  // ADR-0067: two executions × (one feed fetch + one og:image fetch).
+  // ADR-0068: two executions × (one feed fetch + one og:image fetch).
   expect(calls).toHaveLength(4); // DISCLOSED: at-least-once external fetching
   const items = await db.first<{ n: number }>({
     sql: 'SELECT COUNT(*) AS n FROM source_items WHERE source_id=?',
@@ -1041,7 +1041,7 @@ it('R09-P13: pause composes with ownership — pre-claim D01 pause writes NOTHIN
   );
   vi.unstubAllGlobals();
   expect(onAction).toEqual({ action: 'ack', outcome: 'job_completed' });
-  // ADR-0067: one feed fetch + one og:image article fetch for the
+  // ADR-0068: one feed fetch + one og:image article fetch for the
   // feed's one imageless item.
   expect(calls).toHaveLength(2);
   const done = await db.first<{ status: string }>({

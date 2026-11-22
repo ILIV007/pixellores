@@ -219,7 +219,7 @@ describe('rss connector — fetch contract', () => {
     };
     const mock = createFetchMock([
       { status: 200, headers: { 'content-type': 'application/xml' }, bodyText: VALID_FEED },
-      // ADR-0067: the healthy feed's one imageless item triggers its
+      // ADR-0068: the healthy feed's one imageless item triggers its
       // og:image article fetch BEFORE the next feed is fetched — the
       // article has no og:image, so the item commits imageless.
       { status: 200, bodyText: '<html><head></head><body>no og image</body></html>' },
@@ -254,12 +254,12 @@ describe('rss connector — fetch contract', () => {
 });
 
 /**
- * ADR-0067 — og:image (media by hotlink, no R2): imageless feed items
+ * ADR-0068 — og:image (media by hotlink, no R2): imageless feed items
  * get one article fetch each (max 2 per feed, freshest-first) to read
  * og:image; every failure is fail-soft — the items commit with or
  * without an image, and a budget denial stops og:image for the poll.
  */
-describe('rss connector — og:image (ADR-0067)', () => {
+describe('rss connector — og:image (ADR-0068)', () => {
   const feedTwoImageless = `<?xml version="1.0"?><rss version="2.0"><channel><title>PS Blog</title>
 <item><title>One</title><link>https://blog.playstation.com/article/one</link><guid isPermaLink="false">ps-1</guid><pubDate>Mon, 06 Oct 2025 10:00:00 +0000</pubDate></item>
 <item><title>Two</title><link>https://blog.playstation.com/article/two</link><guid isPermaLink="false">ps-2</guid><pubDate>Mon, 06 Oct 2025 09:00:00 +0000</pubDate></item>

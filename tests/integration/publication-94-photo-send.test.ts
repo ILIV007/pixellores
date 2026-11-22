@@ -17,7 +17,7 @@ import { createLogger } from '../../src/observability/logger';
 import { fixedClock, type MutableClock } from '../../src/shared/time/clock';
 
 /**
- * ADR-0067 — the single-photo send (media by hotlink, no R2): when a
+ * ADR-0068 — the single-photo send (media by hotlink, no R2): when a
  * ready draft's story has a source item carrying an image URL, the
  * scheduler sends the post as a PHOTO (sendPhoto, URL or saved
  * file_id) with the rendered text as caption, and records the ledger
@@ -191,7 +191,7 @@ beforeEach(async () => {
   draftVersionCounter = 0;
 });
 
-describe('publication-94 photo send (ADR-0067)', () => {
+describe('publication-94 photo send (ADR-0068)', () => {
   it('sends a photo when a validated asset exists, saves the file_id, records the usage', async () => {
     await insertStory('s-photo-1');
     await insertDraft('d-photo-1', 's-photo-1');

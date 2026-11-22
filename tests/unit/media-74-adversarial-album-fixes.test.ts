@@ -110,7 +110,7 @@ function makePorts(
         rows.push({ ...(record as unknown as FakeRow) });
         return { ok: true };
       },
-      // ADR-0067: the URL-asset insert (hotlink, no R2) — the fake
+      // ADR-0068: the URL-asset insert (hotlink, no R2) — the fake
       // mirrors the store: idempotent per canonical URL, `validated`.
       insertUrlAsset: async (record) => {
         const existing = rows.find((r) => r.canonicalUrl === record.canonicalUrl);

@@ -1,10 +1,10 @@
-# ADR-0067: source-article photos by hotlink (no R2) + guide lane + bridge category cap
+# ADR-0068: source-article photos by hotlink (no R2) + guide lane + bridge category cap
 
 - Status: Accepted
 - Date: 2026-11-22
 - Round: quality fixes #3 + #5 (schema 11 — ZERO DDL, no migration)
 - Owner decisions: 2026-11-22 ~07:46 — «عکس منبع اوکیه، راهنما هم خوبه» (source-article photos OK; guides are good, keep them)
-- Note: ADR-0066 is reserved for the v2.3 failover design (z.ai re-run in flight); this ADR takes 0067 to avoid a numbering collision.
+- Note: ADR-0066 is digit folding + Soul v1 in prompt (PR #27) and ADR-0067 is the Gemini direct fallback (PR #28); this ADR takes 0068. (It was first written as 0067 in this PR; renumbered 2026-11-22 before merge when the collision with PR #28 was found.)
 
 ## Context
 
