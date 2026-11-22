@@ -6,6 +6,7 @@ import {
   AI_POLICY_VERSION,
   AI_PROMPT_VERSION,
   AI_PROVIDER_ELIGIBILITY_V2,
+  defaultProviderEligibility,
   isAllowedModel,
   listModelsForProvider,
 } from '../../src/domain/ai/policy';
@@ -21,14 +22,18 @@ import {
  * ADR-0041). These pin the fail-closed/free-only policy surface.
  */
 
-describe('AI model policy (ai-policy-v2.2)', () => {
-  it('ships a small immutable allowlist: CF primary + CF alternate + conditional Gemini', () => {
-    expect(AI_MODEL_ALLOWLIST_V2).toHaveLength(3);
+describe('AI model policy (ai-policy-v2.2.1)', () => {
+  it('ships a small immutable allowlist: CF primary + CF alternate + Gemini trio', () => {
+    expect(AI_MODEL_ALLOWLIST_V2).toHaveLength(5);
     expect(listModelsForProvider('workers-ai').map((model) => model.role)).toEqual([
       'primary',
       'alternate',
     ]);
-    expect(listModelsForProvider('gemini').map((model) => model.role)).toEqual(['fallback']);
+    expect(listModelsForProvider('gemini').map((model) => model.role)).toEqual([
+      'primary',
+      'alternate',
+      'fallback',
+    ]);
   });
 
   it('uses only explicit model ids — never the literal "auto"', () => {
@@ -38,12 +43,23 @@ describe('AI model policy (ai-policy-v2.2)', () => {
     }
   });
 
-  it('marks the Gemini fallback as eligibility-gated', () => {
+  it('marks the Gemini fallback as eligibility-gated (PARTIAL since ADR-0067)', () => {
     const gemini = listModelsForProvider('gemini');
-    expect(gemini).toHaveLength(1);
-    expect(gemini[0]?.requiresEligibility).toBe(true);
-    expect(AI_PROVIDER_ELIGIBILITY_V2.gemini).toBe('unverified_free_tier');
+    expect(gemini).toHaveLength(3);
+    expect(gemini.map((model) => model.modelId)).toEqual([
+      'gemini-3.5-flash-lite',
+      'gemini-3.1-flash-lite',
+      'gemini-3.8-flash',
+    ]);
+    for (const model of gemini) {
+      expect(model.requiresEligibility).toBe(true);
+    }
+    expect(AI_PROVIDER_ELIGIBILITY_V2.gemini).toBe('partial_free_tier');
     expect(AI_PROVIDER_ELIGIBILITY_V2['workers-ai']).toBe('binding_gated');
+  });
+
+  it('derives the default eligibility from the versioned policy', () => {
+    expect(defaultProviderEligibility()).toEqual({ 'workers-ai': true, gemini: true });
   });
 
   it('rejects unknown model ids for every provider', () => {
@@ -51,8 +67,15 @@ describe('AI model policy (ai-policy-v2.2)', () => {
     expect(isAllowedModel('workers-ai', '@cf/qwen/qwen3.8-27b')).toBe(true);
     expect(isAllowedModel('workers-ai', 'auto')).toBe(false);
     expect(isAllowedModel('workers-ai', 'gpt-4o')).toBe(false);
-    expect(isAllowedModel('gemini', 'gemini-2.5-flash-lite')).toBe(true);
+    expect(isAllowedModel('gemini', 'gemini-3.5-flash-lite')).toBe(true);
+    expect(isAllowedModel('gemini', 'gemini-3.1-flash-lite')).toBe(true);
+    expect(isAllowedModel('gemini', 'gemini-3.8-flash')).toBe(true);
     expect(isAllowedModel('gemini', 'gemini-pro-unlisted')).toBe(false);
+  });
+
+  it('rejects the retired Gemini ids (2.5-flash deprecated, 2.5-flash-lite legacy-gated)', () => {
+    expect(isAllowedModel('gemini', 'gemini-2.5-flash')).toBe(false);
+    expect(isAllowedModel('gemini', 'gemini-2.5-flash-lite')).toBe(false);
   });
 
   it('rejects the retired ai-policy-v1 Workers AI ids (Cloudflare decommission 2026-11-20)', () => {
@@ -77,10 +100,11 @@ describe('AI model policy (ai-policy-v2.2)', () => {
     // ai-policy-v2.1: workers-ai 40 → 120 — the v2 cap was exhausted by
     // deadline failures (33/40 burned 2026-11-21 before any draft
     // succeeded); 12–18 posts/day × up to 2 attempts + retries + test
-    // windows needs the headroom. Gemini stays 40 (fallback, unverified).
+    // windows needs the headroom. Gemini stays 40 (fallback, PARTIAL
+    // eligibility — ADR-0067).
     expect(AI_DAILY_REQUEST_ATTEMPT_CAPS['workers-ai']).toBe(120);
     expect(AI_DAILY_REQUEST_ATTEMPT_CAPS.gemini).toBe(40);
-    expect(AI_POLICY_VERSION).toBe('ai-policy-v2.2');
+    expect(AI_POLICY_VERSION).toBe('ai-policy-v2.2.1');
   });
 });
 

@@ -107,6 +107,7 @@ function pairRequest(pairId: 'erp-1' | 'erp-2', sideBStoryId: string) {
 const enabledConfig: EventRelationServiceConfig = {
   eventRelationEnabled: true,
   aiEnabled: true,
+  geminiEnabled: false,
   workersAiBindingPresent: true,
   geminiApiKeyPresent: false,
 };
@@ -280,7 +281,7 @@ describe('createEventRelationService — the bounded step', () => {
       ports: { 'workers-ai': workersPort, gemini: geminiPort },
       clock: fixedClock,
       logger: silentLogger,
-      config: { ...enabledConfig, geminiApiKeyPresent: true },
+      config: { ...enabledConfig, geminiEnabled: true, geminiApiKeyPresent: true },
       eligibility: { 'workers-ai': true, gemini: true },
     });
     const outcome = await service.evaluateEventRelations({
@@ -301,6 +302,31 @@ describe('createEventRelationService — the bounded step', () => {
     }
     expect(workersPort.calls).toBe(2);
     expect(geminiPort.calls).toBe(1);
+  });
+
+  it('skips Gemini when the operator flag is OFF even with key + port + eligibility', async () => {
+    const workersPort = createFakePort('workers-ai', [
+      { kind: 'ok', rawText: 'not json' },
+      { kind: 'ok', rawText: 'also not json' },
+    ]);
+    const geminiPort = createFakePort('gemini', [{ kind: 'ok', rawText: 'still not json' }]);
+    const service = createEventRelationService({
+      executor: createFakeExecutor(),
+      ports: { 'workers-ai': workersPort, gemini: geminiPort },
+      clock: fixedClock,
+      logger: silentLogger,
+      // geminiEnabled stays false (enabledConfig default) although the key,
+      // the port, and eligibility are all present (ADR-0067 gate parity
+      // with the draft service and the rewriter).
+      config: { ...enabledConfig, geminiApiKeyPresent: true },
+      eligibility: { 'workers-ai': true, gemini: true },
+    });
+    const outcome = await service.evaluateEventRelations({
+      pairs: [pairRequest('erp-1', 'edst_a')],
+    });
+    expect(outcome.kind).toBe('decisions');
+    expect(workersPort.calls).toBe(2);
+    expect(geminiPort.calls).toBe(0);
   });
 
   it('passes the 16 KiB bundle bound and the pair cap to the request schema', async () => {

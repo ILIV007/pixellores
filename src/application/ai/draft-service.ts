@@ -81,6 +81,7 @@ import {
   AI_DAILY_REQUEST_ATTEMPT_CAPS,
   AI_POLICY_VERSION,
   AI_PROMPT_VERSION,
+  defaultProviderEligibility,
   listModelsForProvider,
 } from '../../domain/ai/policy';
 import { buildNewsDraftSystemPrompt, buildNewsDraftUserPrompt } from '../../domain/ai/prompt';
@@ -135,8 +136,9 @@ export interface AiDraftServiceDeps {
   readonly config: AiDraftServiceConfig;
   /**
    * Eligibility view (per provider). Defaults to the versioned policy
-   * (Gemini false — unverified Free tier); only a future round with
-   * documented verification flips it. Injectable for deterministic tests.
+   * (ADR-0067: Gemini PARTIAL — docs-verified free tier, per-project
+   * quota unpublished; the operator flag is the opt-in). Injectable for
+   * deterministic tests.
    */
   readonly eligibility?: Readonly<Record<AiProvider, boolean>>;
   /**
@@ -159,7 +161,7 @@ interface Candidate {
 }
 
 function defaultEligibility(): Record<AiProvider, boolean> {
-  return { 'workers-ai': true, gemini: false };
+  return defaultProviderEligibility();
 }
 
 export function createAiDraftService(deps: AiDraftServiceDeps): AiDraftService {

@@ -56,6 +56,7 @@ import {
   AI_BOUNDS,
   AI_DAILY_REQUEST_ATTEMPT_CAPS,
   AI_POLICY_VERSION,
+  defaultProviderEligibility,
   listModelsForProvider,
 } from '../../domain/ai/policy';
 import type {
@@ -106,8 +107,9 @@ export interface AiInboundRewriterDeps {
 /** Rewritten text bound: the formatter chunks it; this is the sanity cap. */
 export const INBOUND_REWRITE_MAX_CHARS = 8192;
 
+/** Default eligibility is the versioned policy (ADR-0067) — see policy.ts. */
 function defaultEligibility(): Record<AiProvider, boolean> {
-  return { 'workers-ai': true, gemini: false };
+  return defaultProviderEligibility();
 }
 
 function stripFence(text: string): string {
