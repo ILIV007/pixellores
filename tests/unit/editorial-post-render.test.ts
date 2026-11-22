@@ -34,7 +34,7 @@ function documentJson(overrides: Record<string, unknown> = {}): string {
 }
 
 describe('R1.22 — renderEditorialPostText (pure, deterministic, honest)', () => {
-  it('renders headline + summary + claims + unverified note + source, with ONE bold headline entity', () => {
+  it('renders headline + summary + claims + unverified note + house footer, with NO source line', () => {
     const outcome = renderEditorialPostText(documentJson());
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
@@ -46,7 +46,7 @@ describe('R1.22 — renderEditorialPostText (pure, deterministic, honest)', () =
         SUMMARY,
         `• ${CLAIM}`,
         EDITORIAL_POST_LABELS.unverifiedNote,
-        `${EDITORIAL_POST_LABELS.sourcePrefix}منبع رسمی دمو`,
+        EDITORIAL_POST_LABELS.footer,
       ].join('\n\n'),
     );
 
@@ -56,13 +56,23 @@ describe('R1.22 — renderEditorialPostText (pure, deterministic, honest)', () =
     expect(outcome.envelope.text).toBe(outcome.text);
     expect(outcome.envelope.entities).toEqual([
       { type: 'bold', offset: 0, length: HEADLINE.length },
+      {
+        type: 'blockquote',
+        offset: outcome.text.length - EDITORIAL_POST_LABELS.footer.length,
+        length: EDITORIAL_POST_LABELS.footer.length,
+      },
     ]);
 
     // The unverified status is PRESERVED in the post text itself.
     expect(outcome.text).toContain(EDITORIAL_POST_LABELS.unverifiedNote);
     expect(outcome.text).toContain(CLAIM);
-    // The source is an attribution line, never presented as verification.
-    expect(outcome.text).toContain(`${EDITORIAL_POST_LABELS.sourcePrefix}منبع رسمی دمو`);
+    // The stored source attribution is NEVER rendered: no source line of
+    // any form (owner order 2026-11-22), even though the document carries
+    // a sourceReport with a source name.
+    expect(outcome.text).not.toContain('منبع رسمی دمو');
+    expect(outcome.text).not.toContain('منبع');
+    // The house footer closes the post.
+    expect(outcome.text.endsWith(EDITORIAL_POST_LABELS.footer)).toBe(true);
   });
 
   it('is deterministic: the same document bytes render to the same text and entities', () => {
@@ -89,7 +99,7 @@ describe('R1.22 — renderEditorialPostText (pure, deterministic, honest)', () =
     }
   });
 
-  it('renders a document without claims/source as headline+summary+note only (nothing invented)', () => {
+  it('renders a document without claims/source as headline+summary+note+footer only (nothing invented)', () => {
     const outcome = renderEditorialPostText(
       JSON.stringify({
         schemaVersion: 1,
@@ -100,7 +110,9 @@ describe('R1.22 — renderEditorialPostText (pure, deterministic, honest)', () =
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     expect(outcome.text).toBe(
-      [HEADLINE, SUMMARY, EDITORIAL_POST_LABELS.unverifiedNote].join('\n\n'),
+      [HEADLINE, SUMMARY, EDITORIAL_POST_LABELS.unverifiedNote, EDITORIAL_POST_LABELS.footer].join(
+        '\n\n',
+      ),
     );
   });
 
