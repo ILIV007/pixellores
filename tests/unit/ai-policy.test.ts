@@ -6,6 +6,7 @@ import {
   AI_POLICY_VERSION,
   AI_PROMPT_VERSION,
   AI_PROVIDER_ELIGIBILITY_V2,
+  defaultProviderEligibility,
   isAllowedModel,
   listModelsForProvider,
 } from '../../src/domain/ai/policy';
@@ -21,14 +22,18 @@ import {
  * ADR-0041). These pin the fail-closed/free-only policy surface.
  */
 
-describe('AI model policy (ai-policy-v2.2)', () => {
-  it('ships a small immutable allowlist: CF primary + CF alternate + conditional Gemini', () => {
-    expect(AI_MODEL_ALLOWLIST_V2).toHaveLength(3);
+describe('AI model policy (ai-policy-v2.2.1)', () => {
+  it('ships a small immutable allowlist: CF primary + CF alternate + Gemini trio', () => {
+    expect(AI_MODEL_ALLOWLIST_V2).toHaveLength(5);
     expect(listModelsForProvider('workers-ai').map((model) => model.role)).toEqual([
       'primary',
       'alternate',
     ]);
-    expect(listModelsForProvider('gemini').map((model) => model.role)).toEqual(['fallback']);
+    expect(listModelsForProvider('gemini').map((model) => model.role)).toEqual([
+      'primary',
+      'alternate',
+      'fallback',
+    ]);
   });
 
   it('uses only explicit model ids — never the literal "auto"', () => {
@@ -38,12 +43,23 @@ describe('AI model policy (ai-policy-v2.2)', () => {
     }
   });
 
-  it('marks the Gemini fallback as eligibility-gated', () => {
+  it('marks the Gemini fallback as eligibility-gated (PARTIAL since ADR-0067)', () => {
     const gemini = listModelsForProvider('gemini');
-    expect(gemini).toHaveLength(1);
-    expect(gemini[0]?.requiresEligibility).toBe(true);
-    expect(AI_PROVIDER_ELIGIBILITY_V2.gemini).toBe('unverified_free_tier');
+    expect(gemini).toHaveLength(3);
+    expect(gemini.map((model) => model.modelId)).toEqual([
+      'gemini-3.5-flash-lite',
+      'gemini-3.1-flash-lite',
+      'gemini-3.8-flash',
+    ]);
+    for (const model of gemini) {
+      expect(model.requiresEligibility).toBe(true);
+    }
+    expect(AI_PROVIDER_ELIGIBILITY_V2.gemini).toBe('partial_free_tier');
     expect(AI_PROVIDER_ELIGIBILITY_V2['workers-ai']).toBe('binding_gated');
+  });
+
+  it('derives the default eligibility from the versioned policy', () => {
+    expect(defaultProviderEligibility()).toEqual({ 'workers-ai': true, gemini: true });
   });
 
   it('rejects unknown model ids for every provider', () => {
@@ -51,8 +67,15 @@ describe('AI model policy (ai-policy-v2.2)', () => {
     expect(isAllowedModel('workers-ai', '@cf/qwen/qwen3.8-27b')).toBe(true);
     expect(isAllowedModel('workers-ai', 'auto')).toBe(false);
     expect(isAllowedModel('workers-ai', 'gpt-4o')).toBe(false);
-    expect(isAllowedModel('gemini', 'gemini-2.5-flash-lite')).toBe(true);
+    expect(isAllowedModel('gemini', 'gemini-3.5-flash-lite')).toBe(true);
+    expect(isAllowedModel('gemini', 'gemini-3.1-flash-lite')).toBe(true);
+    expect(isAllowedModel('gemini', 'gemini-3.8-flash')).toBe(true);
     expect(isAllowedModel('gemini', 'gemini-pro-unlisted')).toBe(false);
+  });
+
+  it('rejects the retired Gemini ids (2.5-flash deprecated, 2.5-flash-lite legacy-gated)', () => {
+    expect(isAllowedModel('gemini', 'gemini-2.5-flash')).toBe(false);
+    expect(isAllowedModel('gemini', 'gemini-2.5-flash-lite')).toBe(false);
   });
 
   it('rejects the retired ai-policy-v1 Workers AI ids (Cloudflare decommission 2026-11-20)', () => {
@@ -77,10 +100,11 @@ describe('AI model policy (ai-policy-v2.2)', () => {
     // ai-policy-v2.1: workers-ai 40 → 120 — the v2 cap was exhausted by
     // deadline failures (33/40 burned 2026-11-21 before any draft
     // succeeded); 12–18 posts/day × up to 2 attempts + retries + test
-    // windows needs the headroom. Gemini stays 40 (fallback, unverified).
+    // windows needs the headroom. Gemini stays 40 (fallback, PARTIAL
+    // eligibility — ADR-0067).
     expect(AI_DAILY_REQUEST_ATTEMPT_CAPS['workers-ai']).toBe(120);
     expect(AI_DAILY_REQUEST_ATTEMPT_CAPS.gemini).toBe(40);
-    expect(AI_POLICY_VERSION).toBe('ai-policy-v2.2');
+    expect(AI_POLICY_VERSION).toBe('ai-policy-v2.2.1');
   });
 });
 
@@ -90,7 +114,7 @@ describe('versioned prompt contract', () => {
     const second = buildNewsDraftSystemPrompt();
     expect(first).toBe(second);
     expect(first).toContain(AI_PROMPT_VERSION);
-    expect(AI_PROMPT_VERSION).toBe('pixel-news-draft-v1');
+    expect(AI_PROMPT_VERSION).toBe('pixel-news-draft-v2');
   });
 
   it('frames news text as untrusted data and forbids tools/HTML/publishing', () => {
@@ -99,6 +123,26 @@ describe('versioned prompt contract', () => {
     expect(system).toContain('هیچ ابزاری نداری'); // no tools
     expect(system).toContain('Telegram HTML ممنوع'); // no Telegram HTML
     expect(system).toContain('JSON'); // schema contract
+  });
+
+  it('ADR-0066: carries the Soul v1 voice rules (register, تو, anti-clickbait, Iranian angle)', () => {
+    const system = buildNewsDraftSystemPrompt();
+    expect(system).toContain('می‌شه'); // conversational register, not dry journalistic
+    expect(system).toContain('«تو»'); // second-person address to the reader
+    expect(system).toContain('ضد'); // anti-clickbait: headline never bigger than the news
+    expect(system).toContain('کلیک‌بیت');
+    expect(system).toContain('بازی کردم'); // fabricated personal experience is banned
+    expect(system).toContain('زاویهٔ ایرانی'); // Iranian angle where relevant
+  });
+
+  it('ADR-0066: requires exactly one category emoji and one trust label in the output schema', () => {
+    const system = buildNewsDraftSystemPrompt();
+    expect(system).toContain('categoryEmoji');
+    expect(system).toContain('trustLabel');
+    expect(system).toContain('🔴');
+    expect(system).toContain('🎮');
+    expect(system).toContain('#رسمی');
+    expect(system).toContain('#گزارش‌شده');
   });
 
   it('wraps every evidence snippet with its stable id and untrusted markers', () => {
@@ -125,6 +169,8 @@ describe('semantic output schema', () => {
   const VALID = {
     headlineFa: 'تیتر خبر',
     summaryFa: 'خلاصهٔ خبر',
+    categoryEmoji: '🔵',
+    trustLabel: '#گزارش‌شده',
     claims: [{ text: 'ادعای اول', evidenceIds: ['src-1:item-42'] }],
   };
 
@@ -158,6 +204,22 @@ describe('semantic output schema', () => {
       'schema_mismatch',
     );
     expect(rejectCode(JSON.stringify({ headlineFa: 'x', summaryFa: 'y' }))).toBe('schema_mismatch');
+  });
+
+  it('ADR-0066: rejects a missing or out-of-vocabulary category emoji / trust label', () => {
+    const { categoryEmoji: _ce, ...withoutEmoji } = VALID;
+    expect(rejectCode(JSON.stringify(withoutEmoji))).toBe('schema_mismatch');
+    const { trustLabel: _tl, ...withoutLabel } = VALID;
+    expect(rejectCode(JSON.stringify(withoutLabel))).toBe('schema_mismatch');
+    expect(rejectCode(JSON.stringify({ ...VALID, categoryEmoji: '🎲' }))).toBe('schema_mismatch');
+    expect(rejectCode(JSON.stringify({ ...VALID, trustLabel: '#خبر' }))).toBe('schema_mismatch');
+    // Every Soul v1 §3 value parses.
+    for (const categoryEmoji of ['🔴', '🚨', '🏆', '🎮', '🟢', '🔵']) {
+      expect(parseAiSemanticDraftJson(JSON.stringify({ ...VALID, categoryEmoji })).ok).toBe(true);
+    }
+    for (const trustLabel of ['#رسمی', '#تأییدشده', '#گزارش‌شده', '#شایعه', '#لیک', '#تکذیب‌شده']) {
+      expect(parseAiSemanticDraftJson(JSON.stringify({ ...VALID, trustLabel })).ok).toBe(true);
+    }
   });
 
   it('bounds claim count and sizes', () => {

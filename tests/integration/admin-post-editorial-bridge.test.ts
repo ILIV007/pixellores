@@ -62,15 +62,21 @@ const PIPELINE_SUMMARY =
   'استودیوی نمونه از انتشار به‌روزرسانی بزرگ بازی نمونه خبر داد؛ این به‌روزرسانی بخش داستانی تازه و بهبود عملکرد را به همراه دارد.';
 const PIPELINE_CLAIM =
   'به‌روزرسانی بزرگ بازی نمونه با بخش داستانی تازه و بهبود عملکرد در دسترس قرار گرفت.';
-const PIPELINE_SOURCE_NAME = 'دموی منبع رسمی';
 const EXPECTED_POST_TEXT = [
   PIPELINE_HEADLINE,
   PIPELINE_SUMMARY,
   `• ${PIPELINE_CLAIM}`,
   EDITORIAL_POST_LABELS.unverifiedNote,
-  `${EDITORIAL_POST_LABELS.sourcePrefix}${PIPELINE_SOURCE_NAME}`,
+  EDITORIAL_POST_LABELS.footer,
 ].join('\n\n');
-const EXPECTED_POST_ENTITIES = [{ type: 'bold', offset: 0, length: PIPELINE_HEADLINE.length }];
+const EXPECTED_POST_ENTITIES = [
+  { type: 'bold', offset: 0, length: PIPELINE_HEADLINE.length },
+  {
+    type: 'blockquote',
+    offset: EXPECTED_POST_TEXT.length - EDITORIAL_POST_LABELS.footer.length,
+    length: EDITORIAL_POST_LABELS.footer.length,
+  },
+];
 
 interface RecordedApiCall {
   readonly url: string;

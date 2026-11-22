@@ -57,8 +57,35 @@ export interface AiDraftRequest {
 export interface AiSemanticDraft {
   readonly headlineFa: string;
   readonly summaryFa: string;
+  /**
+   * Soul v1 §3 form, prompt v2: exactly ONE category emoji and ONE trust
+   * label per draft, chosen by the model from the FIXED Soul lists below.
+   * The RENDER owns their display (a separate fix); the draft only
+   * carries the model's choice, validated by the output schema.
+   */
+  readonly categoryEmoji: SoulCategoryEmoji;
+  readonly trustLabel: SoulTrustLabel;
   readonly claims: readonly AiSemanticClaim[];
 }
+
+/**
+ * Soul v1 §3 — the FIXED category-emoji vocabulary (colors carry meaning,
+ * never decoration): 🔴 rumor/breaking, 🚨 official + important, 🏆
+ * award/record, 🎮 trailer/gameplay, 🟢 good news/free, 🔵 ordinary news.
+ */
+export const SOUL_CATEGORY_EMOJIS = ['🔴', '🚨', '🏆', '🎮', '🟢', '🔵'] as const;
+export type SoulCategoryEmoji = (typeof SOUL_CATEGORY_EMOJIS)[number];
+
+/** Soul v1 §3 — the FIXED trust-label vocabulary (exactly one per post). */
+export const SOUL_TRUST_LABELS = [
+  '#رسمی',
+  '#تأییدشده',
+  '#گزارش‌شده',
+  '#شایعه',
+  '#لیک',
+  '#تکذیب‌شده',
+] as const;
+export type SoulTrustLabel = (typeof SOUL_TRUST_LABELS)[number];
 
 export interface AiSemanticClaim {
   readonly text: string;

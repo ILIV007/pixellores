@@ -78,6 +78,8 @@ import { createEditorialPrepareDraftHandler } from '../editorial/prepare-draft-h
 import { createAiDraftService } from '../ai/draft-service';
 import { createEventRelationService } from '../ai/event-relation-service';
 import { createWorkersAiAdapter } from '../../adapters/ai/workers-ai-adapter';
+import { createGeminiAdapter } from '../../adapters/ai/gemini-adapter';
+import type { AiProvider, AiProviderPort } from '../../domain/ai/types';
 import { createConnectorRegistry } from '../../connectors/registry';
 
 export type EngineResolution =
@@ -205,12 +207,24 @@ export function resolveJobsEngine(env: WorkerEnv, logger?: Logger): EngineResolu
     // while EDITORIAL_ENABLED is on. It wires the EXISTING AI draft
     // service (ADR-0041) over the REAL D1 budget authority; the Workers AI
     // port is built only when the native binding is present. The Gemini
-    // fallback stays UNWIRED in production: its versioned eligibility is
-    // unverified (ADR-0041), so the service's own ladder skips it even if
-    // its operator flag were on — no live network can be reached through
-    // this wiring while the shipped flags are false.
+    // fallback is WIRED (ADR-0067): the port is built when GEMINI_API_KEY
+    // is present, over the platform fetch and the validated
+    // GEMINI_API_BASE_URL origin — but the service's own ladder still
+    // gates it on the operator flag + key + port + PARTIAL eligibility,
+    // and the shipped flag is false, so no live network is reached
+    // through this wiring until the operator flips it after the live test.
     const workersAiBindingPresent = env.AI !== undefined;
-    const ports = workersAiBindingPresent ? { 'workers-ai': createWorkersAiAdapter(env.AI) } : {};
+    const ports: Partial<Record<AiProvider, AiProviderPort>> = {};
+    if (workersAiBindingPresent) {
+      ports['workers-ai'] = createWorkersAiAdapter(env.AI);
+    }
+    if (env.GEMINI_API_KEY !== undefined) {
+      ports.gemini = createGeminiAdapter(
+        globalThis.fetch.bind(globalThis),
+        env.GEMINI_API_KEY,
+        ai.config.GEMINI_API_BASE_URL,
+      );
+    }
     const aiService = createAiDraftService({
       executor,
       ports,
@@ -237,6 +251,7 @@ export function resolveJobsEngine(env: WorkerEnv, logger?: Logger): EngineResolu
       config: {
         eventRelationEnabled: ai.config.EVENT_RELATION_ENABLED,
         aiEnabled: ai.config.AI_ENABLED,
+        geminiEnabled: ai.config.AI_GEMINI_ENABLED,
         workersAiBindingPresent,
         geminiApiKeyPresent: env.GEMINI_API_KEY !== undefined,
       },

@@ -272,6 +272,8 @@ describe('event relations demo — offline runner (R1.17 Phase 5E-1)', () => {
           kind: 'ok',
           rawText: JSON.stringify({
             headlineFa: 'تیتر دموی مصنوعی',
+            categoryEmoji: '🔵',
+            trustLabel: '#گزارش‌شده',
             summaryFa: 'خلاصهٔ دموی مصنوعی؛ خروجی مدل یک فیکسچر آفلاین است.',
             claims: [
               { text: 'استودیوی آزمایشی از رویداد تازه خبر داد.', evidenceIds: [evidenceId] },
@@ -302,6 +304,7 @@ describe('event relations demo — offline runner (R1.17 Phase 5E-1)', () => {
       config: {
         eventRelationEnabled: true,
         aiEnabled: true,
+        geminiEnabled: false,
         workersAiBindingPresent: true,
         geminiApiKeyPresent: false,
       },

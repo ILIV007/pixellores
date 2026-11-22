@@ -167,6 +167,8 @@ async function createChain(claimByCallIndex: (callIndex: number) => string): Pro
         kind: 'ok',
         rawText: JSON.stringify({
           headlineFa: 'تیتر زنجیرهٔ سرتاسری ۰۹',
+          categoryEmoji: '🔵',
+          trustLabel: '#گزارش‌شده',
           summaryFa: 'خلاصهٔ زنجیرهٔ سرتاسری ۰۹ بر اساس شواهد ارائه‌شده.',
           claims: [{ text: claimByCallIndex(callIndex), evidenceIds: [evidenceId] }],
         }),

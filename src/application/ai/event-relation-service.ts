@@ -46,7 +46,11 @@ import { awaitWithDeadline, type DeadlineTimeoutScheduler } from '../../shared/t
 import type { Logger } from '../../observability/logger';
 import type { DbExecutor } from '../../adapters/db/db-executor';
 import { authorizeAiRequestAttempt, recordAiUsage } from '../../adapters/db/ai-budget-store';
-import { AI_DAILY_REQUEST_ATTEMPT_CAPS, listModelsForProvider } from '../../domain/ai/policy';
+import {
+  AI_DAILY_REQUEST_ATTEMPT_CAPS,
+  defaultProviderEligibility,
+  listModelsForProvider,
+} from '../../domain/ai/policy';
 import {
   EVENT_RELATION_BOUNDS,
   EVENT_RELATION_PROMPT_VERSION,
@@ -103,6 +107,11 @@ export interface EventRelationServiceConfig {
    * fail-closed; the independent feature flag never bypasses the global
    * inference kill switch. */
   readonly aiEnabled: boolean;
+  /** Validated AI_GEMINI_ENABLED operator gate (parseAiConfig, ADR-0067).
+   * The draft service and the rewriter already gate Gemini on it; the
+   * relation service gains the same gate so it cannot reach Gemini
+   * through the shared ports object on eligibility alone. */
+  readonly geminiEnabled: boolean;
   /** Whether the native Workers AI binding is present in the runtime. */
   readonly workersAiBindingPresent: boolean;
   /** Whether a Gemini API key is configured (presence only). */
@@ -134,7 +143,7 @@ export interface EventRelationServiceDeps {
   readonly clock: Clock;
   readonly logger: Logger;
   readonly config: EventRelationServiceConfig;
-  /** Eligibility view (defaults to the versioned policy — Gemini false). */
+  /** Eligibility view (defaults to the versioned policy — ADR-0067). */
   readonly eligibility?: Readonly<Record<AiProvider, boolean>>;
   readonly deadlineScheduler?: DeadlineTimeoutScheduler;
 }
@@ -151,8 +160,9 @@ interface Candidate {
   readonly modelId: string;
 }
 
+/** Default eligibility is the versioned policy (ADR-0067) — see policy.ts. */
 function defaultEligibility(): Record<AiProvider, boolean> {
-  return { 'workers-ai': true, gemini: false };
+  return defaultProviderEligibility();
 }
 
 export function createEventRelationService(deps: EventRelationServiceDeps): EventRelationService {
@@ -200,6 +210,9 @@ export function createEventRelationService(deps: EventRelationServiceDeps): Even
           continue;
         }
       } else {
+        if (!deps.config.geminiEnabled) {
+          continue;
+        }
         if (!eligibility.gemini || deps.ports.gemini === undefined) {
           continue;
         }

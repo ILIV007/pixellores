@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   buildEndpointUrl,
   createGeminiAdapter,
+  GEMINI_API_DEFAULT_ORIGIN,
   GeminiAdapter,
+  normalizeGeminiBaseUrl,
   parseRetryAfterMs,
   type AiHttpTransport,
 } from '../../src/adapters/ai/gemini-adapter';
@@ -30,13 +32,77 @@ function jsonRes(status: number, body: unknown, headers: Record<string, string> 
 
 describe('Gemini adapter — endpoint and secret hygiene', () => {
   it('builds the strict official endpoint with the model id percent-encoded', () => {
-    const url = buildEndpointUrl('gemini-2.5-flash-lite');
+    const url = buildEndpointUrl('gemini-3.5-flash-lite');
     expect(url).toBe(
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent',
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent',
     );
     expect(buildEndpointUrl('weird/model id')).toBe(
       'https://generativelanguage.googleapis.com/v1beta/models/weird%2Fmodel%20id:generateContent',
     );
+  });
+
+  it('defaults to the official origin and pins it as a constant', () => {
+    expect(GEMINI_API_DEFAULT_ORIGIN).toBe('https://generativelanguage.googleapis.com');
+    expect(buildEndpointUrl('gemini-3.5-flash-lite')).toBe(
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent',
+    );
+  });
+
+  it('accepts an operator relay origin and normalizes trailing slashes', () => {
+    expect(buildEndpointUrl('gemini-3.5-flash-lite', 'https://relay.example.com/gemini')).toBe(
+      'https://relay.example.com/gemini/v1beta/models/gemini-3.5-flash-lite:generateContent',
+    );
+    expect(buildEndpointUrl('gemini-3.5-flash-lite', 'https://relay.example.com/gemini/')).toBe(
+      'https://relay.example.com/gemini/v1beta/models/gemini-3.5-flash-lite:generateContent',
+    );
+    expect(normalizeGeminiBaseUrl('https://relay.example.com:8443/')).toBe(
+      'https://relay.example.com:8443',
+    );
+  });
+
+  it('rejects non-https, credentialed, and query/fragment origins (fail closed)', () => {
+    for (const bad of [
+      'http://relay.example.com',
+      'https://user:pass@relay.example.com',
+      'https://relay.example.com?x=1',
+      'https://relay.example.com#frag',
+      'not a url',
+      '',
+      'https://',
+    ]) {
+      expect(() => normalizeGeminiBaseUrl(bad)).toThrow('invalid_gemini_base_url');
+      expect(() => buildEndpointUrl('gemini-3.5-flash-lite', bad)).toThrow(
+        'invalid_gemini_base_url',
+      );
+      expect(() => new GeminiAdapter(async () => jsonRes(200, {}), 'k', bad)).toThrow(
+        'invalid_gemini_base_url',
+      );
+    }
+  });
+
+  it('sends a relay-origin request to the relay, key still header-only', async () => {
+    const seen: { url: string; init: RequestInit }[] = [];
+    const transport: AiHttpTransport = async (url, init) => {
+      seen.push({ url, init });
+      return jsonRes(200, { candidates: [{ content: { parts: [{ text: '{"ok":true}' }] } }] });
+    };
+    const adapter = createGeminiAdapter(
+      transport,
+      'test-only-not-a-real-key',
+      'https://relay.example.com/gemini',
+    );
+    const outcome = await adapter.complete({
+      modelId: 'gemini-3.5-flash-lite',
+      messages: [{ role: 'user', content: 'user text' }],
+      maxOutputTokens: 768,
+      deadlineAtMs: OK_DEADLINE,
+    });
+    expect(outcome.kind).toBe('ok');
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.url).toBe(
+      'https://relay.example.com/gemini/v1beta/models/gemini-3.5-flash-lite:generateContent',
+    );
+    expect(seen[0]?.url.includes('test-only-not-a-real-key')).toBe(false);
   });
 
   it('sends the key ONLY in the x-goog-api-key header — never in the URL', async () => {
@@ -47,7 +113,7 @@ describe('Gemini adapter — endpoint and secret hygiene', () => {
     };
     const adapter = createGeminiAdapter(transport, 'test-only-not-a-real-key');
     const outcome = await adapter.complete({
-      modelId: 'gemini-2.5-flash-lite',
+      modelId: 'gemini-3.5-flash-lite',
       messages: [
         { role: 'system', content: 'system text' },
         { role: 'user', content: 'user text' },
@@ -78,7 +144,7 @@ describe('Gemini adapter — endpoint and secret hygiene', () => {
       jsonRes(403, { error: { message: 'API key invalid. Key: test-only-not-a-real-key' } });
     const adapter = createGeminiAdapter(transport, 'test-only-not-a-real-key');
     const outcome = await adapter.complete({
-      modelId: 'gemini-2.5-flash-lite',
+      modelId: 'gemini-3.5-flash-lite',
       messages: [{ role: 'user', content: 'x' }],
       maxOutputTokens: 768,
       deadlineAtMs: OK_DEADLINE,
@@ -90,7 +156,7 @@ describe('Gemini adapter — endpoint and secret hygiene', () => {
 
 describe('Gemini adapter — status and body classification', () => {
   const BASE = {
-    modelId: 'gemini-2.5-flash-lite',
+    modelId: 'gemini-3.5-flash-lite',
     messages: [{ role: 'user' as const, content: 'x' }],
     maxOutputTokens: 768,
     deadlineAtMs: OK_DEADLINE,
@@ -388,7 +454,7 @@ describe('Workers AI adapter — binding boundary', () => {
 
 describe('Gemini adapter — wall deadline covers headers AND body (round 1.10.6.1, finding B)', () => {
   const BASE = {
-    modelId: 'gemini-2.5-flash-lite',
+    modelId: 'gemini-3.5-flash-lite',
     messages: [{ role: 'user' as const, content: 'x' }],
     maxOutputTokens: 768,
   };

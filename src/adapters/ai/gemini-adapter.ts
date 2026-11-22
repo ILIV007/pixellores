@@ -3,12 +3,14 @@
  * over the existing GEMINI_API_KEY through a bounded, injected HTTP
  * transport.
  *
- * Security/robustness contract (round 1.10.6 §4):
+ * Security/robustness contract (round 1.10.6 §4, base origin ADR-0067):
  * - The key travels ONLY in the `x-goog-api-key` request header — NEVER in
  *   a URL/query string, never in any log, error, or outcome.
- * - Strict HTTPS to the official endpoint; the model id is the ONLY
- *   caller-controlled path segment and is percent-encoded. No arbitrary
- *   host may be supplied by callers or by model output.
+ * - Strict HTTPS to the configured origin — the official endpoint by
+ *   default; an operator-controlled relay origin via GEMINI_API_BASE_URL
+ *   (ADR-0067). The origin is validated at construction (https only, no
+ *   credentials/query/fragment) and is NEVER caller- or model-controlled.
+ *   No arbitrary host may be supplied by callers or by model output.
  * - `redirect: 'error'` — a redirect is refused outright instead of being
  *   followed to an untrusted host.
  * - The response body is read with the shared bounded reader (strict byte
@@ -33,7 +35,7 @@ import {
 } from '../../shared/http/bounded-reader';
 
 /** Official Gemini Developer API origin (v1beta generateContent). */
-const GEMINI_API_ORIGIN = 'https://generativelanguage.googleapis.com';
+export const GEMINI_API_DEFAULT_ORIGIN = 'https://generativelanguage.googleapis.com';
 const GEMINI_API_PATH_TEMPLATE = '/v1beta/models/:model:generateContent';
 
 /** Strict response byte cap for the Gemini JSON body. */
@@ -53,11 +55,17 @@ const REFUSAL_FINISH_REASONS = new Set([
 
 export class GeminiAdapter implements AiProviderPort {
   readonly provider = 'gemini' as const;
+  private readonly baseUrl: string;
 
   constructor(
     private readonly transport: AiHttpTransport,
     private readonly apiKey: string,
-  ) {}
+    baseUrl: string = GEMINI_API_DEFAULT_ORIGIN,
+  ) {
+    // Fail closed at construction, before any network: an invalid origin
+    // never reaches a request. The error message never carries the value.
+    this.baseUrl = normalizeGeminiBaseUrl(baseUrl);
+  }
 
   async complete(input: {
     readonly modelId: string;
@@ -74,7 +82,7 @@ export class GeminiAdapter implements AiProviderPort {
       return { kind: 'deadline_exceeded' };
     }
 
-    const url = buildEndpointUrl(input.modelId);
+    const url = buildEndpointUrl(input.modelId, this.baseUrl);
     const systemParts = input.messages.filter((message) => message.role === 'system');
     const userParts = input.messages.filter((message) => message.role === 'user');
     const body = JSON.stringify({
@@ -160,10 +168,39 @@ export class GeminiAdapter implements AiProviderPort {
   }
 }
 
-/** Build the strict official endpoint URL (model id percent-encoded). */
-export function buildEndpointUrl(modelId: string): string {
+/**
+ * Validate + normalize a Gemini API origin (ADR-0067). Strict https only,
+ * no credentials, no query/fragment; trailing slashes are stripped so the
+ * path template never double-slashes. Throws a stable, value-free error
+ * on any violation — fail closed at construction, before any network.
+ */
+export function normalizeGeminiBaseUrl(value: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error('invalid_gemini_base_url');
+  }
+  if (
+    parsed.protocol !== 'https:' ||
+    parsed.username !== '' ||
+    parsed.password !== '' ||
+    parsed.search !== '' ||
+    parsed.hash !== '' ||
+    parsed.hostname === ''
+  ) {
+    throw new Error('invalid_gemini_base_url');
+  }
+  return `${parsed.origin}${parsed.pathname.replace(/\/+$/, '')}`;
+}
+
+/** Build the strict endpoint URL (model id percent-encoded). */
+export function buildEndpointUrl(
+  modelId: string,
+  baseUrl: string = GEMINI_API_DEFAULT_ORIGIN,
+): string {
   const encoded = encodeURIComponent(modelId);
-  return `${GEMINI_API_ORIGIN}${GEMINI_API_PATH_TEMPLATE.replace(':model', encoded)}`;
+  return `${normalizeGeminiBaseUrl(baseUrl)}${GEMINI_API_PATH_TEMPLATE.replace(':model', encoded)}`;
 }
 
 /** Parse a numeric Retry-After (seconds) into ms; absent/invalid => undefined. */
@@ -277,9 +314,18 @@ export function interpretGeminiBody(bodyText: string): AiCallOutcome {
 }
 
 /**
- * Factory for the production port. The injected transport defaults to the
- * runtime global fetch (strict HTTPS origin enforced by the URL builder).
+ * Factory for the production port. The optional base URL defaults to the
+ * official origin; any other origin must pass normalizeGeminiBaseUrl
+ * (ADR-0067) — the transport is the injected platform fetch.
  */
-export function createGeminiAdapter(transport: AiHttpTransport, apiKey: string): AiProviderPort {
-  return new GeminiAdapter(transport, apiKey);
+export function createGeminiAdapter(
+  transport: AiHttpTransport,
+  apiKey: string,
+  baseUrl?: string,
+): AiProviderPort {
+  return new GeminiAdapter(
+    transport,
+    apiKey,
+    baseUrl === undefined ? GEMINI_API_DEFAULT_ORIGIN : baseUrl,
+  );
 }
