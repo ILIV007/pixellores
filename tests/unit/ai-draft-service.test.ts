@@ -111,6 +111,8 @@ const silentLogger = createLogger({ level: 'error', sink: () => undefined });
 
 const VALID_DRAFT_JSON = JSON.stringify({
   headlineFa: 'تیتر خبر',
+  categoryEmoji: '🔵',
+  trustLabel: '#گزارش‌شده',
   summaryFa: 'خلاصهٔ خبر',
   claims: [{ text: 'ادعای اول', evidenceIds: ['ev-1'] }],
 });
@@ -225,7 +227,7 @@ describe('AI draft service — ladder, budget, and outcomes', () => {
       expect(outcome.usage[0]).toMatchObject({
         provider: 'workers-ai',
         modelId: '@cf/google/gemma-4-26b-a4b-it',
-        promptVersion: 'pixel-news-draft-v1',
+        promptVersion: 'pixel-news-draft-v2',
         inputTokens: 120,
         outputTokens: 64,
       });
@@ -350,6 +352,8 @@ describe('AI draft service — ladder, budget, and outcomes', () => {
   it('unknown evidence references are rejected as invalid output', async () => {
     const forged = JSON.stringify({
       headlineFa: 'تیتر',
+      categoryEmoji: '🔵',
+      trustLabel: '#گزارش‌شده',
       summaryFa: 'خلاصه',
       claims: [{ text: 'ادعا', evidenceIds: ['ev-999'] }],
     });

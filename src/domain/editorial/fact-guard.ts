@@ -11,8 +11,10 @@
  * excerpt that produced the draft:
  * - witness: the claim's evidence basis (no references at all /
  *   references that are not the verified snapshot's evidence id);
- * - numbers: number tokens (Persian ۰-۹, Arabic-Indic ٠-٩, Latin 0-9,
- *   digits NEVER folded into each other) observed verbatim in the excerpt;
+ * - numbers: number tokens (Persian ۰-۹, Arabic-Indic ٠-٩, Latin 0-9)
+ *   observed in the excerpt AFTER digit folding (ADR-0066: Persian and
+ *   Arabic-Indic digits fold to Latin, ٫→. and ٬→, — the numbers lens
+ *   ONLY; every other lens still matches verbatim);
  * - quotation: quoted spans («…», "…", “…”, ‘…’) whose inner text is (or
  *   is not) observed verbatim in the excerpt; unclosed/empty/over-cap
  *   spans are typed honest notes, never invented content;
@@ -44,7 +46,21 @@
  * THE ONE LIMITED NORMALIZATION is inherited from the Evidence Guard
  * (`normalizeForDirectTextMatch`: NFC + whitespace collapse + trim). It
  * deliberately does NOT fold case, digits, Arabic/Persian letter variants
- * or negations.
+ * or negations — with ONE documented exception (ADR-0066): the NUMBERS
+ * lens folds digits for MATCHING only (Persian/Arabic-Indic → Latin,
+ * ٫→., ٬→,). The verbatim rule stays for direct text match everywhere
+ * else, and a finding still reports the claim's ORIGINAL digits.
+ *
+ * VERSION NOTE (ADR-0066): the report version stays 1. The schema and
+ * the reader contract are byte-identical; only the numbers-lens matching
+ * function changed, and only in the false-positive direction (a finding
+ * disappears only when the SAME digits are present in the excerpt in
+ * another script). Bumping the version would strand every stored v1
+ * report as `unsupported_version` at the auto-gate — and the bridge
+ * reads STORED reports only, it never re-runs the guard, so no
+ * re-evaluation path exists to rebuild them. Stored pre-0066 reports
+ * keep their old findings; the folded lens applies to drafts built
+ * after this change.
  *
  * The result is a VERSIONED report (`factGuardVersion: 1`) that rides
  * INSIDE `drafts.document_json` of the SAME fenced atomic commit (additive
@@ -214,6 +230,28 @@ const TOKEN_CHAR = /[\p{L}\p{N}\p{M}\u200c]/u;
 
 /** Number token: digit runs with optional decimal/thousand separators. */
 const NUMBER_TOKEN = /[\d۰-۹٠-٩]+(?:[.,٬٫][\d۰-۹٠-٩]+)*/gu;
+
+/**
+ * Fold digits for NUMBERS-LENS matching only (ADR-0066): Persian digits
+ * ۰-۹ and Arabic-Indic digits ٠-٩ fold to Latin 0-9; the Arabic decimal
+ * separator ٫ folds to '.' and the thousand separator ٬ folds to ','.
+ * A 1:1 code-point map, so a folded token is a substring of the folded
+ * excerpt exactly when the excerpt carries the same digits in any script.
+ * The claim's ORIGINAL token is what a finding reports — folding never
+ * rewrites stored text, it only decides whether the number is observed.
+ */
+function foldDigitsForNumberMatch(text: string): string {
+  return text.replace(/[\u0660-\u0669\u06F0-\u06F9\u066B\u066C]/g, (ch) => {
+    const code = ch.codePointAt(0)!;
+    if (code >= 0x0660 && code <= 0x0669) {
+      return String(code - 0x0660);
+    }
+    if (code >= 0x06f0 && code <= 0x06f9) {
+      return String(code - 0x06f0);
+    }
+    return code === 0x066b ? '.' : ',';
+  });
+}
 
 /** The quoted-span shapes (bounded set; unmatched = typed note, not crash). */
 const QUOTED_SPANS: readonly { readonly open: string; readonly close: string }[] = [
@@ -406,11 +444,18 @@ export function buildFactGuardReport(input: FactGuardInput): FactGuardReport {
 
     const normalizedClaim = normalizeForDirectTextMatch(claim.text);
 
-    // ---- Numbers lens (digits NEVER folded; Persian ≠ Latin ≠ Arabic-Indic).
+    // ---- Numbers lens (ADR-0066: digits FOLD for matching in this lens
+    //      ONLY — Persian/Arabic-Indic → Latin, ٫→., ٬→,; a Persian-digit
+    //      claim matches the same digits in a Latin excerpt, and vice
+    //      versa. The verbatim rule stays everywhere else, and the finding
+    //      still reports the claim's ORIGINAL digits).
     const claimNumbers = [...normalizedClaim.matchAll(NUMBER_TOKEN)].map((m) => m[0]);
     const capped = claimNumbers.length > FACT_GUARD_MAX_NUMBER_TOKENS;
     const scanned = claimNumbers.slice(0, FACT_GUARD_MAX_NUMBER_TOKENS);
-    const missingNumbers = sortUnique(scanned.filter((n) => !normalizedExcerpt.includes(n)));
+    const foldedExcerpt = foldDigitsForNumberMatch(normalizedExcerpt);
+    const missingNumbers = sortUnique(
+      scanned.filter((n) => !foldedExcerpt.includes(foldDigitsForNumberMatch(n))),
+    );
     if (missingNumbers.length > 0) {
       findings.push({
         lens: 'numbers',

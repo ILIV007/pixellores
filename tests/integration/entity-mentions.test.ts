@@ -124,6 +124,8 @@ function createHarness(): Harness {
         kind: 'ok',
         rawText: JSON.stringify({
           headlineFa: 'تیتر آزمایشی خبر',
+          categoryEmoji: '🔵',
+          trustLabel: '#گزارش‌شده',
           summaryFa: 'خلاصهٔ آزمایشی خبر بر اساس شواهد ارائه‌شده.',
           claims: [
             { text: 'استودیوی آزمایشی از عرضهٔ نسخهٔ جدید خبر داد.', evidenceIds: [evidenceId] },

@@ -314,6 +314,8 @@ describe('conservative mapping (ADR-0042 §2)', () => {
       semanticDraft: {
         headlineFa: 'تیتر مدل',
         summaryFa: 'خلاصه مدل',
+        categoryEmoji: '🔵',
+        trustLabel: '#گزارش‌شده',
         claims: [{ text: 'ادعای مدل', evidenceIds: [ITEM_ID] }],
       },
       evidenceGuard: GUARD_REPORT,
@@ -342,6 +344,31 @@ describe('conservative mapping (ADR-0042 §2)', () => {
     expect(document.warnings).toContain('fact_guard_pending');
   });
 
+  it('ADR-0066: carries the model Soul v1 form choice additively (schemaVersion stays 1)', () => {
+    const document = buildDraftDocument({
+      sourceItemId: ITEM_ID,
+      sourceName: 'منبع رسمی',
+      excerpt,
+      semanticDraft: {
+        headlineFa: 'تیتر مدل',
+        summaryFa: 'خلاصه مدل',
+        categoryEmoji: '🚨',
+        trustLabel: '#رسمی',
+        claims: [{ text: 'ادعای مدل', evidenceIds: [ITEM_ID] }],
+      },
+      evidenceGuard: GUARD_REPORT,
+      candidateDiscovery: NO_CANDIDATES_REPORT,
+      candidateAssessment: NO_CANDIDATES_ASSESSMENT,
+      entityMentions: NO_MENTIONS_REPORT,
+      eventRelation: DISABLED_EVENT_RELATION_REPORT,
+    });
+    expect(document.document.schemaVersion).toBe(1);
+    expect(document.document.soulForm).toEqual({
+      categoryEmoji: '🚨',
+      trustLabel: '#رسمی',
+    });
+  });
+
   it('embeds the versioned Evidence Guard report additively (R1.12, 5B)', () => {
     const document = buildDraftDocument({
       sourceItemId: ITEM_ID,
@@ -350,6 +377,8 @@ describe('conservative mapping (ADR-0042 §2)', () => {
       semanticDraft: {
         headlineFa: 'تیتر مدل',
         summaryFa: 'خلاصه مدل',
+        categoryEmoji: '🔵',
+        trustLabel: '#گزارش‌شده',
         claims: [{ text: 'ادعای مدل', evidenceIds: [ITEM_ID] }],
       },
       evidenceGuard: GUARD_REPORT,
@@ -381,6 +410,8 @@ describe('conservative mapping (ADR-0042 §2)', () => {
       semanticDraft: {
         headlineFa: 'تیتر مدل',
         summaryFa: 'خلاصه مدل',
+        categoryEmoji: '🔵',
+        trustLabel: '#گزارش‌شده',
         claims: [{ text: 'ادعای مدل', evidenceIds: [ITEM_ID] }],
       },
       evidenceGuard: GUARD_REPORT,
@@ -411,6 +442,8 @@ describe('conservative mapping (ADR-0042 §2)', () => {
       semanticDraft: {
         headlineFa: 'تیتر مدل',
         summaryFa: 'خلاصه مدل',
+        categoryEmoji: '🔵',
+        trustLabel: '#گزارش‌شده',
         claims: [{ text: 'ادعای مدل', evidenceIds: [ITEM_ID] }],
       },
       evidenceGuard: GUARD_REPORT,
@@ -471,6 +504,8 @@ describe('AI outcome mapping (ADR-0042 §5)', () => {
     draft: {
       headlineFa: 'h',
       summaryFa: 's',
+      categoryEmoji: '🔵',
+      trustLabel: '#گزارش‌شده',
       claims: [{ text: 'c', evidenceIds: [ITEM_ID] }],
     },
     usage: [],
@@ -540,7 +575,7 @@ describe('AI outcome mapping (ADR-0042 §5)', () => {
           {
             provider: 'workers-ai',
             modelId: '@cf/google/gemma-4-26b-a4b-it',
-            promptVersion: 'pixel-news-draft-v1',
+            promptVersion: 'pixel-news-draft-v2',
             inputTokens: 100,
             outputTokens: 30,
           },
@@ -549,7 +584,7 @@ describe('AI outcome mapping (ADR-0042 §5)', () => {
           {
             provider: 'workers-ai',
             modelId: '@cf/google/gemma-4-26b-a4b-it',
-            promptVersion: 'pixel-news-draft-v1',
+            promptVersion: 'pixel-news-draft-v2',
             outcome: 'succeeded',
             durationMs: 25,
           },
@@ -577,7 +612,7 @@ describe('AI outcome mapping (ADR-0042 §5)', () => {
           {
             provider: 'workers-ai',
             modelId: '@cf/google/gemma-4-26b-a4b-it',
-            promptVersion: 'pixel-news-draft-v1',
+            promptVersion: 'pixel-news-draft-v2',
             outcome: 'invalid_output',
             durationMs: 12,
           },
@@ -615,7 +650,7 @@ describe('AI outcome mapping (ADR-0042 §5)', () => {
           {
             provider: 'workers-ai',
             modelId: '@cf/qwen/qwen3.8-27b',
-            promptVersion: 'pixel-news-draft-v1',
+            promptVersion: 'pixel-news-draft-v2',
             outcome: 'refused',
             durationMs: 9,
           },

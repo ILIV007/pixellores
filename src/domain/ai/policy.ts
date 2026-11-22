@@ -72,8 +72,11 @@ import type { AiProvider } from './types';
 /** Version marker for the shipped allowlist/eligibility set. */
 export const AI_POLICY_VERSION = 'ai-policy-v2.2';
 
-/** Version marker for the shipped prompt contract (see ./prompt.ts). */
-export const AI_PROMPT_VERSION = 'pixel-news-draft-v1';
+/** Version marker for the shipped prompt contract (see ./prompt.ts).
+ * v2 (ADR-0066): the Soul v1 voice rules + the category-emoji/trust-label
+ * output fields. v1 prompts are still readable history — the version is
+ * stamped on every ai_run, so a v1/v2 mix is always attributable. */
+export const AI_PROMPT_VERSION = 'pixel-news-draft-v2';
 
 /** Validated, testable application bounds (round 1.10.6 instruction §3). */
 export const AI_BOUNDS = {
