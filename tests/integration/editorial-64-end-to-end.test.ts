@@ -323,6 +323,8 @@ function tracedDraftJson(userContent: string | undefined, tag: string): string {
     'missing-evidence-id';
   return JSON.stringify({
     headlineFa: `تیتر سرتاسری ${tag}`,
+    categoryEmoji: '🔵',
+    trustLabel: '#گزارش‌شده',
     summaryFa: `خلاصهٔ سرتاسری ${tag} بر اساس شواهد ارائه‌شده.`,
     claims: [
       {
@@ -476,6 +478,8 @@ describe('Phase 6.4 — failure paths along the REAL end-to-end chain', () => {
         kind: 'ok',
         rawText: JSON.stringify({
           headlineFa: 'تیتر با ارجاع ناشناس',
+          categoryEmoji: '🔵',
+          trustLabel: '#گزارش‌شده',
           summaryFa: 'خلاصهٔ آزمون ارجاع ناشناس.',
           claims: [
             {
@@ -559,6 +563,8 @@ describe('Phase 6.4 — failure paths along the REAL end-to-end chain', () => {
         kind: 'ok',
         rawText: JSON.stringify({
           headlineFa: 'تیتر بدون ادعای مرتبط',
+          categoryEmoji: '🔵',
+          trustLabel: '#گزارش‌شده',
           summaryFa: 'خلاصهٔ بدون ادعای مرتبط با شواهد.',
           claims: [],
         }),

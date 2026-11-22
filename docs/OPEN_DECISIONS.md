@@ -16,6 +16,8 @@ ADR. New unresolved decisions would be added here with status Open.
 | OD-007 | `degraded` readiness semantics                     | Closed   | 2026-10-02 | ADR-0015 |
 | OD-008 | Worker name and environment resources              | Closed   | 2026-10-02 | ADR-0016 |
 | OD-009 | Source-data retention enforcement (`storeRawDays`) | **Open** | —          | —        |
+| OD-010 | The media rights-EVIDENCE model                    | **Open** | —          | —        |
+| OD-011 | House footer + no source line in channel posts     | Closed   | 2026-11-22 | —        |
 
 ---
 
@@ -285,3 +287,29 @@ allowlist as a shortcut; do NOT map provenance to clearance again.
 
 **Decision:** none yet — **Open**. No ADR filed; this entry records the
 required decision only.
+
+---
+
+## OD-011 — House footer + no source line in channel posts — **CLOSED**
+
+**Decided:** owner order, 2026-11-22 ~07:37 («فوتر باید مثل بقییه چنل هامون باشه، منبع هم نمیخواد!»).
+
+**Decision:** every published channel post ends with the house footer — the
+single blockquote line `> 👾 @pixellores` — and carries NO source line at
+all (no source text, no source link, in any rendering path). This SUPERSEDES
+the old rule "source links only for very official/important news" and the
+blueprint's "optional source line" (PIXEL_PERSONA_PROMPTS_v1.md); the
+blueprint itself is left untouched per AGENTS.md §1.
+
+**Implementation:** `renderEditorialPostText`
+(`src/domain/admin-post/editorial-post-render.ts`) is the single choke point
+for the editorial path — scheduler, auto-gate, correction render (footer
+preserved via entity shift), and admin preview all flow through it — so the
+change lands there only: the source section is no longer composed and the
+footer is appended as a trailing `blockquote` entity over `👾 @pixellores`
+(the same wire form as the inbound flow's `<blockquote>` footer). The
+inbound flow already rendered exactly this footer and no source line. Source
+data is NOT deleted from D1: the document's `sourceReport` stays stored for
+provenance (and its shape is still validated) — it is simply never rendered.
+No ADR: no architecture changed, only rendered content, by explicit owner
+order.

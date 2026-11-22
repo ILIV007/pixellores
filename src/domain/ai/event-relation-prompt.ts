@@ -3,7 +3,7 @@
  * (Phase 5E-1 — R1.17, ADR-0045).
  *
  * A SEPARATE, FIXED, versioned artifact — the `news_draft` prompt
- * (pixel-news-draft-v1) is never reused or reshaped. Side texts are
+ * (pixel-news-draft-v2) is never reused or reshaped. Side texts are
  * UNTRUSTED DATA, never instructions: the model cannot change policy,
  * output schema, side identities, or call tools. It must NOT emit Telegram
  * HTML and must NOT issue merge/publish/trust commands. A verdict is a

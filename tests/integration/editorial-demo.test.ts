@@ -123,6 +123,8 @@ describe('editorial demo — offline source→draft runner', () => {
           kind: 'ok',
           rawText: JSON.stringify({
             headlineFa: 'به‌روزرسانی بزرگ بازی نمونه با بخش داستانی تازه منتشر شد',
+            categoryEmoji: '🔵',
+            trustLabel: '#گزارش‌شده',
             summaryFa:
               'استودیوی نمونه از انتشار به‌روزرسانی بزرگ بازی نمونه خبر داد؛ این به‌روزرسانی بخش داستانی تازه و بهبود عملکرد را به همراه دارد.',
             claims: [

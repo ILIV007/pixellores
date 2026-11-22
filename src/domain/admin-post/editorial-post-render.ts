@@ -10,9 +10,18 @@
  *   unsupported-version document is a TYPED failure — nothing is guessed,
  *   repaired, or fabricated from other rows.
  * - The render composes ONLY the document's own stored fields: the Persian
- *   headline, the Persian summary, the model claims and the source
- *   attribution. Empty optional sections are composed as absent — never
- *   filled with invented content.
+ *   headline, the Persian summary, and the model claims. Empty optional
+ *   sections are composed as absent — never filled with invented content.
+ * - NO source line is rendered, ever (owner order 2026-11-22 — footer like
+ *   the other house channels, no source in posts at all; this supersedes
+ *   the old "source links only for very official/important news" rule).
+ *   The source attribution stays STORED in the document for provenance
+ *   (and its shape is still validated) — it is simply never composed into
+ *   the post text.
+ * - The house footer is deterministic and added by the renderer, never by
+ *   the model: the trailing `👾 @pixellores` line rides a blockquote
+ *   entity — the same house pattern as the other channels
+ *   (`> 🌀 @ILIVIR3`, `> @TradeAgentIV`, `🪼 @PROXIV3`).
  * - The unverified status is PRESERVED, not laundered: the model claims are
  *   rendered with a fixed explicit unverified note. A claim entry that is
  *   not exactly the mapper's `status: 'unverified'` shape fails the render
@@ -24,13 +33,14 @@
  *   explicit failure — a shortened "something like the original" post is
  *   never produced.
  * - Determinism: the same document bytes always render to the same text and
- *   the same single bold-headline entity (UTF-16 offsets), so the same
- *   editorial draft version always fingerprints identically.
+ *   the same two entities (the bold headline, the footer blockquote), so the
+ *   same editorial draft version always fingerprints identically.
  *
  * The raw source excerpt is deliberately NOT part of the post: the channel
  * carries the editorial OUTPUT; the full evidence excerpt stays in the
  * editorial draft, reachable through the durable provenance link and the
- * /drafts detail surface.
+ * /drafts detail surface. Neither is the source NAME rendered: no source
+ * line of any form reaches a post.
  */
 import {
   createRichTextEnvelope,
@@ -42,7 +52,8 @@ import {
 /** Fixed Persian labels — stable authored constants, never user content. */
 export const EDITORIAL_POST_LABELS = {
   unverifiedNote: 'وضعیت: ادعاهای بالا از خروجی مدل هستند و هنوز تأیید نشده‌اند (unverified).',
-  sourcePrefix: 'منبع گزارش: ',
+  /** The house footer line — rendered as a trailing blockquote entity. */
+  footer: '👾 @pixellores',
 } as const;
 
 /** The claim shape the R1.12 mapper writes — re-validated here verbatim. */
@@ -130,8 +141,10 @@ export function renderEditorialPostText(documentJson: string): EditorialPostRend
   // An absent summary is an honestly absent section (never invented) —
   // normalized to the empty string for the composition below.
   const summary: string = rawSummary ?? '';
+  // The source attribution is STORED provenance only: its shape is still
+  // validated (a malformed document fails), but it is NEVER rendered into
+  // the post (owner order 2026-11-22: no source in posts at all).
   const sourceReport = parsed['sourceReport'];
-  let sourceName = '';
   if (sourceReport !== undefined) {
     if (!isPlainObject(sourceReport)) {
       return { ok: false, reason: 'malformed_document' };
@@ -140,7 +153,6 @@ export function renderEditorialPostText(documentJson: string): EditorialPostRend
     if (rawSourceName !== undefined && typeof rawSourceName !== 'string') {
       return { ok: false, reason: 'malformed_document' };
     }
-    sourceName = rawSourceName ?? '';
   }
   const claims = readClaims(parsed['modelClaims']);
   if (claims === null) {
@@ -148,7 +160,7 @@ export function renderEditorialPostText(documentJson: string): EditorialPostRend
   }
 
   // Deterministic composition: headline -> summary -> claims -> unverified
-  // note -> source. Sections the document does not carry are absent —
+  // note -> house footer. Sections the document does not carry are absent —
   // nothing is invented to fill them.
   const sections: string[] = [headline];
   if (summary.length > 0) {
@@ -158,16 +170,18 @@ export function renderEditorialPostText(documentJson: string): EditorialPostRend
     sections.push(`• ${claim.text}`);
   }
   sections.push(EDITORIAL_POST_LABELS.unverifiedNote);
-  if (sourceName.length > 0) {
-    sections.push(`${EDITORIAL_POST_LABELS.sourcePrefix}${sourceName}`);
-  }
+  sections.push(EDITORIAL_POST_LABELS.footer);
   const text = sections.join('\n\n');
 
-  // ONE entity: the bold headline at offset 0. The length is the headline's
-  // UTF-16 code-unit count — the exact unit the envelope contract offsets
-  // are expressed in.
+  // TWO entities: the bold headline at offset 0, and the blockquote over
+  // the trailing footer line (the footer starts its own line by
+  // construction — the '\n\n' separator precedes it). Lengths are the
+  // headline's / footer's UTF-16 code-unit counts — the exact unit the
+  // envelope contract offsets are expressed in.
+  const footerOffset = text.length - EDITORIAL_POST_LABELS.footer.length;
   const entities: readonly RichTextEntity[] = [
     { type: 'bold', offset: 0, length: headline.length },
+    { type: 'blockquote', offset: footerOffset, length: EDITORIAL_POST_LABELS.footer.length },
   ];
   const outcome = createRichTextEnvelope({ kind: 'text', text, entities });
   if (!outcome.ok) {
