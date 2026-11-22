@@ -103,6 +103,12 @@ export class TelegramApiError extends Error {
 
 export interface TelegramSentMessage {
   readonly messageId: number;
+  /**
+   * ADR-0067: the largest-variant file_id of a sent photo, when the
+   * response carries one (sendPhoto only). Absent = the response had
+   * no usable photo variant — the ledger never requires it.
+   */
+  readonly photoFileId?: string;
 }
 export interface TelegramSendMessageInput {
   /**
@@ -189,15 +195,21 @@ export interface TelegramSendRichInput {
 
 /**
  * R1.21 — the SINGLE-media sends. The media is referenced by its Telegram
- * file_id (opaque, already bounded upstream); the caption is a REQUIRED-kind
- * 'caption' envelope or absent (a media post without a caption is valid).
- * A caption envelope here is carried as `caption` + `caption_entities` with
- * NO parse_mode; there is no text field and no text entities on a media
- * send — kind mismatches fail typed BEFORE fetch.
+ * file_id (opaque, already bounded upstream) — or, since ADR-0067, by a
+ * bounded https URL the Bot API fetches itself (the source-article
+ * hotlink path); the caption is a REQUIRED-kind 'caption' envelope or
+ * absent (a media post without a caption is valid). A caption envelope
+ * here is carried as `caption` + `caption_entities` with NO parse_mode;
+ * there is no text field and no text entities on a media send — kind
+ * mismatches fail typed BEFORE fetch.
  */
 export interface TelegramSendPhotoRichInput {
   readonly chatId: number | string;
-  /** Telegram file_id of the photo (opaque reference, never a URL here). */
+  /**
+   * ADR-0067: a Telegram file_id of the photo (opaque reference) OR a
+   * bounded https URL (the Bot API fetches it — the hotlink path).
+   * A URL is never logged and never interpreted beyond this gate.
+   */
   readonly photo: string;
   /** kind must be 'caption'. Absent = the photo is sent without a caption. */
   readonly caption?: RichTextEnvelope;
@@ -533,6 +545,22 @@ export function createBotApiClient(
     return messageId === undefined ? null : { messageId };
   }
 
+  /**
+   * ADR-0067: the sendPhoto reply parser — the message_id plus the
+   * LARGEST photo variant's file_id when the response carries one.
+   * A response without a usable message id is invalid (null); a
+   * response without a photo variant is still a sent message — the
+   * file_id is the ledger's reuse value, never a send requirement.
+   */
+  function parseSentPhotoMessage(result: unknown): TelegramSentMessage | null {
+    const base = parseSentMessage(result);
+    if (base === null || !isRecord(result)) return null;
+    const photo = result['photo'];
+    if (!Array.isArray(photo)) return base;
+    const photoFileId = largestPhotoFileIdFromWire(photo);
+    return photoFileId === undefined ? base : { ...base, photoFileId };
+  }
+
   /** Bounded non-throwing file_id shape check (the media-group parser). */
   function isBoundedFileIdWire(value: unknown): value is string {
     if (typeof value !== 'string' || value.length === 0 || value.length > 256) return false;
@@ -610,6 +638,39 @@ export function createBotApiClient(
       }
     }
     return fileId;
+  }
+
+  /**
+   * ADR-0067: the single-photo reference gate — a file_id (the R1.21
+   * shape above) OR a bounded https URL (the hotlink path: the Bot
+   * API fetches it). The URL bound is 2048 chars (the
+   * `media_assets.canonical_url` bound); a URL-shaped reference that
+   * is not https (http://, ftp://, ...) is never a file_id and is
+   * rejected typed, before any fetch.
+   */
+  function requireMediaReference(reference: string): string {
+    if (typeof reference !== 'string' || reference.length === 0) {
+      throw new TelegramRichContentError('invalid_content');
+    }
+    if (reference.startsWith('https://')) {
+      if (reference.length > 2048) {
+        throw new TelegramRichContentError('invalid_content');
+      }
+      for (let index = 0; index < reference.length; index += 1) {
+        const code = reference.charCodeAt(index);
+        if (code <= 0x20 || code >= 0x7f) {
+          throw new TelegramRichContentError('invalid_content');
+        }
+      }
+      return reference;
+    }
+    if (reference.includes('://')) {
+      // A URL-shaped reference that is not https (http, ftp, ...) is
+      // never a file_id — the Bot API would fail it server-side, so
+      // it is rejected typed here, before any fetch.
+      throw new TelegramRichContentError('invalid_content');
+    }
+    return requireFileId(reference);
   }
 
   /**
@@ -769,10 +830,13 @@ export function createBotApiClient(
     },
 
     // ---- R1.21: single-media sends (file_id + caption envelope) --------
+    // ADR-0067: sendPhoto also accepts a bounded https URL (hotlink) —
+    // the reference gate above decides which shape it is.
     async sendPhotoRich(input) {
-      // file_id re-checked at the boundary (bounded printable ASCII): a
-      // malformed reference fails typed with ZERO fetch calls.
-      const photo = requireFileId(input.photo);
+      // Reference re-checked at the boundary (bounded printable ASCII
+      // file_id, or a bounded https URL): a malformed reference fails
+      // typed with ZERO fetch calls.
+      const photo = requireMediaReference(input.photo);
       const caption =
         input.caption === undefined
           ? undefined
@@ -789,7 +853,7 @@ export function createBotApiClient(
               }
             : {}),
         },
-        parseSentMessage,
+        parseSentPhotoMessage,
       );
     },
 

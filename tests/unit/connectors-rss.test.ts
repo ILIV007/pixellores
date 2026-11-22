@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createRssConnector } from '../../src/connectors/rss';
+import { createRssConnector, extractOgImage } from '../../src/connectors/rss';
 import { createFetchMock, connectorEffects } from '../helpers/fetch-mock';
 
 /**
@@ -219,6 +219,10 @@ describe('rss connector — fetch contract', () => {
     };
     const mock = createFetchMock([
       { status: 200, headers: { 'content-type': 'application/xml' }, bodyText: VALID_FEED },
+      // ADR-0067: the healthy feed's one imageless item triggers its
+      // og:image article fetch BEFORE the next feed is fetched — the
+      // article has no og:image, so the item commits imageless.
+      { status: 200, bodyText: '<html><head></head><body>no og image</body></html>' },
       { failReason: 'timeout' },
     ]);
     const connector = rssConnector();
@@ -246,5 +250,134 @@ describe('rss connector — fetch contract', () => {
     });
     const headers = JSON.stringify(mock.calls[0]?.headers ?? {});
     expect(headers).not.toContain('should-not-appear');
+  });
+});
+
+/**
+ * ADR-0067 — og:image (media by hotlink, no R2): imageless feed items
+ * get one article fetch each (max 2 per feed, freshest-first) to read
+ * og:image; every failure is fail-soft — the items commit with or
+ * without an image, and a budget denial stops og:image for the poll.
+ */
+describe('rss connector — og:image (ADR-0067)', () => {
+  const feedTwoImageless = `<?xml version="1.0"?><rss version="2.0"><channel><title>PS Blog</title>
+<item><title>One</title><link>https://blog.playstation.com/article/one</link><guid isPermaLink="false">ps-1</guid><pubDate>Mon, 06 Oct 2025 10:00:00 +0000</pubDate></item>
+<item><title>Two</title><link>https://blog.playstation.com/article/two</link><guid isPermaLink="false">ps-2</guid><pubDate>Mon, 06 Oct 2025 09:00:00 +0000</pubDate></item>
+</channel></rss>`;
+  const feedThreeImageless = `<?xml version="1.0"?><rss version="2.0"><channel><title>PS Blog</title>
+<item><title>One</title><link>https://blog.playstation.com/article/one</link><guid isPermaLink="false">ps-1</guid><pubDate>Mon, 06 Oct 2025 10:00:00 +0000</pubDate></item>
+<item><title>Two</title><link>https://blog.playstation.com/article/two</link><guid isPermaLink="false">ps-2</guid><pubDate>Mon, 06 Oct 2025 09:00:00 +0000</pubDate></item>
+<item><title>Three</title><link>https://blog.playstation.com/article/three</link><guid isPermaLink="false">ps-3</guid><pubDate>Mon, 06 Oct 2025 08:00:00 +0000</pubDate></item>
+</channel></rss>`;
+  const articleWithOg = (img: string) =>
+    `<html><head><meta property="og:image" content="${img}"/></head><body>x</body></html>`;
+  const fetchInput = {
+    sourceId: SOURCE_ID,
+    config: CONFIG,
+    state: { etag: null, lastModified: null, cursor: null },
+  } as const;
+
+  it('extractOgImage reads the meta tag in either quote style or order', () => {
+    expect(
+      extractOgImage('<meta property="og:image" content="https://cdn.example.com/a.jpg"/>'),
+    ).toBe('https://cdn.example.com/a.jpg');
+    expect(
+      extractOgImage("<meta content='https://cdn.example.com/b.jpg' property='og:image'/>"),
+    ).toBe('https://cdn.example.com/b.jpg');
+    expect(extractOgImage('<meta property="og:image" content="/relative.jpg"/>')).toBeNull();
+    expect(extractOgImage('<meta property="og:image" content="http://x/y.jpg"/>')).toBeNull();
+    expect(extractOgImage('<html><head></head></html>')).toBeNull();
+  });
+
+  it('resolves og:image for imageless items and counts requests honestly', async () => {
+    const mock = createFetchMock([
+      {
+        status: 200,
+        headers: { 'content-type': 'application/rss+xml' },
+        bodyText: feedTwoImageless,
+      },
+      { status: 200, bodyText: articleWithOg('https://cdn.example.com/one.jpg') },
+      { status: 200, bodyText: articleWithOg('https://cdn.example.com/two.jpg') },
+    ]);
+    const result = await rssConnector().fetch({
+      ...fetchInput,
+      effects: connectorEffects(mock.fetchFn),
+    });
+    expect(result.status).toBe('changed');
+    if (result.status === 'changed') {
+      expect(result.items).toHaveLength(2);
+      expect(result.items[0]?.imageUrl).toBe('https://cdn.example.com/one.jpg');
+      expect(result.items[1]?.imageUrl).toBe('https://cdn.example.com/two.jpg');
+      expect(result.requestCount).toBe(3);
+    }
+    expect(mock.calls).toHaveLength(3);
+    expect(mock.calls[1]?.url).toBe('https://blog.playstation.com/article/one');
+  });
+
+  it('fetches at most two article pages per feed', async () => {
+    const mock = createFetchMock([
+      {
+        status: 200,
+        headers: { 'content-type': 'application/rss+xml' },
+        bodyText: feedThreeImageless,
+      },
+      { status: 200, bodyText: articleWithOg('https://cdn.example.com/one.jpg') },
+      { status: 200, bodyText: articleWithOg('https://cdn.example.com/two.jpg') },
+    ]);
+    const result = await rssConnector().fetch({
+      ...fetchInput,
+      effects: connectorEffects(mock.fetchFn),
+    });
+    expect(result.status).toBe('changed');
+    if (result.status === 'changed') {
+      expect(result.items).toHaveLength(3);
+      expect(result.items[0]?.imageUrl).toBe('https://cdn.example.com/one.jpg');
+      expect(result.items[1]?.imageUrl).toBe('https://cdn.example.com/two.jpg');
+      expect(result.items[2]?.imageUrl).toBeNull();
+    }
+    expect(mock.calls).toHaveLength(3);
+  });
+
+  it('a budget denial stops og:image for the poll, items still commit', async () => {
+    const mock = createFetchMock([
+      {
+        status: 200,
+        headers: { 'content-type': 'application/rss+xml' },
+        bodyText: feedTwoImageless,
+      },
+      { failReason: 'budget_denied' },
+    ]);
+    const result = await rssConnector().fetch({
+      ...fetchInput,
+      effects: connectorEffects(mock.fetchFn),
+    });
+    expect(result.status).toBe('changed');
+    if (result.status === 'changed') {
+      expect(result.items).toHaveLength(2);
+      expect(result.items[0]?.imageUrl).toBeNull();
+      expect(result.items[1]?.imageUrl).toBeNull();
+    }
+    expect(mock.calls).toHaveLength(2);
+  });
+
+  it('an article without og:image leaves the item imageless but committed', async () => {
+    const mock = createFetchMock([
+      {
+        status: 200,
+        headers: { 'content-type': 'application/rss+xml' },
+        bodyText: feedTwoImageless,
+      },
+      { status: 200, bodyText: '<html><head><title>No og</title></head></html>' },
+      { status: 200, bodyText: articleWithOg('https://cdn.example.com/two.jpg') },
+    ]);
+    const result = await rssConnector().fetch({
+      ...fetchInput,
+      effects: connectorEffects(mock.fetchFn),
+    });
+    expect(result.status).toBe('changed');
+    if (result.status === 'changed') {
+      expect(result.items[0]?.imageUrl).toBeNull();
+      expect(result.items[1]?.imageUrl).toBe('https://cdn.example.com/two.jpg');
+    }
   });
 });

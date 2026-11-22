@@ -237,6 +237,58 @@ describe('normalizeRawItem', () => {
     }
   });
 
+  it('carries a valid imageUrl through and into rawJson provenance (ADR-0067)', async () => {
+    const result = await normalizeRawItem({
+      connector: 'rss',
+      sourceId: 'playstation_blog',
+      originLabel: 'https://blog.playstation.com/feed/',
+      raw: {
+        id: 'ps-img',
+        link: 'https://blog.playstation.com/article/img',
+        title: 'With image',
+        bodyText: 'Body',
+        author: null,
+        publishedRaw: null,
+        guidPermalink: null,
+        imageUrl: 'https://cdn.example.com/a.jpg',
+      },
+      stripDownloads: false,
+      nowMs: NOW,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.item.imageUrl).toBe('https://cdn.example.com/a.jpg');
+      expect((result.item.rawJson as { imageUrl?: unknown }).imageUrl).toBe(
+        'https://cdn.example.com/a.jpg',
+      );
+    }
+  });
+
+  it('drops a non-https imageUrl instead of storing it (ADR-0067)', async () => {
+    const result = await normalizeRawItem({
+      connector: 'rss',
+      sourceId: 'playstation_blog',
+      originLabel: 'https://blog.playstation.com/feed/',
+      raw: {
+        id: 'ps-noimg',
+        link: 'https://blog.playstation.com/article/noimg',
+        title: 'Without image',
+        bodyText: 'Body',
+        author: null,
+        publishedRaw: null,
+        guidPermalink: null,
+        imageUrl: 'http://cdn.example.com/a.jpg',
+      },
+      stripDownloads: false,
+      nowMs: NOW,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.item.imageUrl).toBeNull();
+      expect((result.item.rawJson as { imageUrl?: unknown }).imageUrl).toBeUndefined();
+    }
+  });
+
   it('synthesizes an external id when the feed has none', async () => {
     const result = await normalizeRawItem({
       connector: 'rss',

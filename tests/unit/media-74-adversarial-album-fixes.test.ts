@@ -110,6 +110,23 @@ function makePorts(
         rows.push({ ...(record as unknown as FakeRow) });
         return { ok: true };
       },
+      // ADR-0067: the URL-asset insert (hotlink, no R2) — the fake
+      // mirrors the store: idempotent per canonical URL, `validated`.
+      insertUrlAsset: async (record) => {
+        const existing = rows.find((r) => r.canonicalUrl === record.canonicalUrl);
+        if (existing !== undefined) return { ok: true, kind: 'already_exists' as const };
+        const row: FakeRow = {
+          id: record.id,
+          type: record.type,
+          canonicalUrl: record.canonicalUrl,
+          rightsStatus: record.rightsStatus,
+          status: 'validated',
+          createdAt: record.createdAt,
+          updatedAt: record.updatedAt,
+        };
+        rows.push(row);
+        return { ok: true, kind: 'inserted' as const };
+      },
       markUploaded: async (id, fileId, at) => {
         if (options.markUploadedFails) return { ok: false, reason: 'asset_write_failed' };
         const row = rows.find((r) => r.id === id);

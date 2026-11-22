@@ -149,6 +149,40 @@ export async function markSourceItemQueued(
 }
 
 /**
+ * ADR-0067: the durable provenance (`raw_json`) of one source item —
+ * the carrier of the feed/og:image image URL (`imageUrl`). A missing
+ * row or a missing value is null — never a throw.
+ */
+export async function findSourceItemRawJson(
+  executor: DbExecutor,
+  sourceItemId: string,
+): Promise<string | null> {
+  const row = await executor.first<{ raw_json: string | null }>({
+    sql: `SELECT raw_json FROM source_items WHERE id = ?`,
+    params: [sourceItemId],
+  });
+  if (row === null || row.raw_json === null) return null;
+  return row.raw_json;
+}
+
+/**
+ * ADR-0067: the content type of one story — the bridge's category-cap
+ * input. A missing row is null (the caller treats it as unclassifiable
+ * and skips the cap check; the scheduler stays the backstop).
+ */
+export async function findStoryContentType(
+  executor: DbExecutor,
+  storyId: string,
+): Promise<string | null> {
+  const row = await executor.first<{ content_type: string | null }>({
+    sql: `SELECT content_type FROM stories WHERE id = ?`,
+    params: [storyId],
+  });
+  if (row === null || row.content_type === null) return null;
+  return row.content_type;
+}
+
+/**
  * Slice 9 — the ready-draft scan for the draft→publication bridge
  * (Link 4). The bounded, oldest-first read of drafts in `ready` status
  * awaiting an approval decision. Only `ready` drafts are listed: an
@@ -158,6 +192,8 @@ export async function markSourceItemQueued(
  */
 export interface ReadyDraftRow {
   readonly id: string;
+  /** ADR-0067: the owning story — the bridge's lane + cap input. */
+  readonly story_id: string;
   readonly document_json: string;
   readonly created_at: number;
 }
@@ -168,7 +204,7 @@ export async function listReadyDrafts(
 ): Promise<readonly ReadyDraftRow[]> {
   const limit = Math.max(1, Math.min(25, Math.floor(input.limit)));
   const rows = await executor.query<ReadyDraftRow>({
-    sql: `SELECT id, document_json, created_at FROM drafts
+    sql: `SELECT id, story_id, document_json, created_at FROM drafts
            WHERE status = 'ready'
            ORDER BY created_at ASC, id ASC
            LIMIT ?`,

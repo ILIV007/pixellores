@@ -493,4 +493,57 @@ describe('slice 6 — the near-dup pipeline over REAL D1', () => {
       last_error: 'editorial_negative_cache_skip',
     });
   });
+
+  it('ADR-0067: the handler stamps working_headline from the item title, so the next same-title item merges', async () => {
+    const chain = await createChain({
+      script: async (_callIndex, input) => okOutcome(input, 'تریلر GTA VI فردا منتشر می‌شود.'),
+    });
+    await seedEntity(chain.executor, {
+      id: 'ent-gta-vi',
+      name: 'GTA VI',
+      alias: 'GTA VI',
+    });
+    await seedItem(chain.executor, {
+      id: 'nd-item-first',
+      title: 'GTA 6 earns $3.79 billion in one day',
+      body: 'Rockstar says the GTA VI launch earned $3.79 billion in one day.',
+    });
+    await chain.enqueue('nd-item-first');
+    const first = await chain.drain();
+    expect(first[0]?.startsWith('ack')).toBe(true);
+    expect(chain.portCalls).toHaveLength(1);
+    expect(await chain.draftCount()).toBe(1);
+
+    // THE FIX: the handler-created story carries the item title as its
+    // working headline — before ADR-0067 it was NULL, so the near-dup
+    // scan skipped every candidate and story_merges stayed empty.
+    const story = await chain.executor.first<{
+      readonly id: string;
+      readonly working_headline: string | null;
+    }>({
+      sql: 'SELECT id, working_headline FROM stories ORDER BY created_at ASC LIMIT 1',
+    });
+    expect(story?.working_headline).toBe('GTA 6 earns $3.79 billion in one day');
+
+    // The same title again (different body) now merges instead of
+    // drafting a second post: zero new AI calls, one merge row.
+    await seedItem(chain.executor, {
+      id: 'nd-item-second',
+      title: 'GTA 6 earns $3.79 billion in one day',
+      body: 'GTA VI day-one sales reached $3.79 billion, Rockstar announced.',
+    });
+    await chain.enqueue('nd-item-second');
+    const second = await chain.drain();
+    expect(second[0]?.startsWith('ack')).toBe(true);
+    expect(chain.portCalls).toHaveLength(1);
+    expect(await chain.draftCount()).toBe(1);
+    expect(await chain.merges()).toEqual([
+      {
+        disposition: 'merged_as_update',
+        method: 'deterministic',
+        canonical_story_id: story?.id,
+      },
+    ]);
+    expect(await chain.itemStatus('nd-item-second')).toBe('duplicate');
+  });
 });

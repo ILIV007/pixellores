@@ -94,6 +94,12 @@ import { planPublicationTime } from '../../domain/publishing/publication-schedul
 import type { MixCategory } from '../../domain/publishing/anti-robot';
 import { renderEditorialPostText } from '../../domain/admin-post/editorial-post-render';
 import { contentTextHash } from '../../domain/publishing/publication-identity';
+import { findSourceItemRawJson, findStoryReferenceItems } from '../../adapters/db/editorial-store';
+import { extractImageUrlFromRawJson, imageUrlHost } from '../../domain/media/image-url';
+import {
+  createRichTextEnvelope,
+  type RichTextEnvelope,
+} from '../../domain/telegram/rich-text-envelope';
 import {
   discriminateAlbumDocument,
   deriveAlbumSendPlan,
@@ -119,6 +125,21 @@ export interface PublicationChannelTransport {
       readonly entities: readonly unknown[];
     };
   }): Promise<{ readonly messageId: number }>;
+  /**
+   * ADR-0067: the single-photo send (optional — a transport without it
+   * keeps the old text-only behavior). The caption is a REQUIRED-kind
+   * 'caption' envelope; the photo is a file_id or a bounded https URL.
+   * The reply carries the photo's file_id when Telegram returns one.
+   */
+  sendPhotoRich?: (input: {
+    readonly chatId: number | string;
+    readonly photo: string;
+    readonly caption?: {
+      readonly kind: string;
+      readonly text: string;
+      readonly entities: readonly unknown[];
+    };
+  }) => Promise<{ readonly messageId: number; readonly photoFileId?: string }>;
 }
 
 /** ONE message of a media-group reply, IN ORDINAL ORDER (the ADR-0060 seam). */
@@ -296,8 +317,16 @@ export function createPublicationScheduler(deps: {
    * send-capable media seam without the ledger it binds to.
    */
   readonly mediaTransport?: PublicationMediaGroupTransport;
-  /** The ledger the album binding is verified against — REQUIRED with the media seam. */
-  readonly mediaAssets?: Pick<MediaAssetStore, 'findAssetsByUrls'>;
+  /**
+   * The ledger the album binding is verified against — REQUIRED with
+   * the media seam. ADR-0067: it ALSO serves the single-photo path
+   * (URL-asset insert + file_id save), so it may exist WITHOUT the
+   * media seam; the media seam still requires it (pair rule below).
+   */
+  readonly mediaAssets?: Pick<
+    MediaAssetStore,
+    'findAssetsByUrls' | 'insertUrlAsset' | 'markUploaded'
+  >;
   /**
    * Slice 6 — the P0 auto-pin seam. OPTIONAL: without it, a sent P0 is
    * never pinned (the panel toggle alone cannot pin). When present, a
@@ -327,9 +356,11 @@ export function createPublicationScheduler(deps: {
     throw new AppError('config_invalid');
   }
   // THE PAIR RULE (fail-closed): a media-group seam without the ledger it
-  // binds to (or the reverse) is a construction-time misconfiguration —
-  // the wiring can never half-exist.
-  if ((deps.mediaTransport === undefined) !== (deps.mediaAssets === undefined)) {
+  // binds to is a construction-time misconfiguration — the wiring can
+  // never half-exist. ADR-0067: the ledger MAY exist without the seam
+  // (the single-photo path uses the ledger alone); the reverse is still
+  // forbidden.
+  if (deps.mediaTransport !== undefined && deps.mediaAssets === undefined) {
     throw new AppError('config_invalid');
   }
   const scanLimit = Math.max(1, Math.min(64, Math.floor(deps.scanLimit ?? DEFAULT_SCAN_LIMIT)));
@@ -683,6 +714,119 @@ export function createPublicationScheduler(deps: {
     return { ok: true, decision, priorityClass: jitter.priorityClass };
   }
 
+  /**
+   * ADR-0067 — the editorial single-photo resolution (the photo is
+   * resolved BEFORE the send-started marker, so every failure here
+   * degrades to the text send with the row still claimable):
+   *   draft → story → first reference source item → its stored
+   *   `raw_json.imageUrl` → the `media_assets` row by canonical URL
+   *   (an uploaded row reuses its file_id; a validated row sends by
+   *   URL; no row → one URL asset is inserted, validated /
+   *   attribution_required) → the send-time rights gate → the
+   *   rendered text as a `caption` envelope (the envelope itself
+   *   enforces the 1024-unit caption cap).
+   * A missing seam, a missing image, an unusable ledger row, a
+   * refused rights echo, or an over-long caption all degrade to
+   * text — never a dead-letter, never a throw: the photo is an
+   * enhancement, the post is the requirement.
+   */
+  type EditorialPhotoPlan =
+    | { readonly kind: 'none'; readonly reason: string }
+    | {
+        readonly kind: 'photo';
+        readonly photo: string;
+        readonly caption: RichTextEnvelope;
+        readonly assetId: string;
+        /** True when the send rides the URL (a file_id is saved after). */
+        readonly sentByUrl: boolean;
+      };
+
+  async function resolveEditorialPhoto(input: {
+    readonly row: PublicationRow;
+    readonly render: { readonly envelope: RichTextEnvelope; readonly text: string };
+    readonly nowMs: number;
+  }): Promise<EditorialPhotoPlan> {
+    if (deps.mediaAssets === undefined || deps.transport?.sendPhotoRich === undefined) {
+      return { kind: 'none', reason: 'photo_seam_absent' };
+    }
+    try {
+      const sourceItems = await findStoryReferenceItems(deps.executor, input.row.story_id, 1);
+      const sourceItem = sourceItems[0];
+      if (sourceItem === undefined) {
+        return { kind: 'none', reason: 'photo_no_source_item' };
+      }
+      const rawJson = await findSourceItemRawJson(deps.executor, sourceItem.id);
+      const imageUrl = rawJson === null ? null : extractImageUrlFromRawJson(rawJson);
+      if (imageUrl === null) {
+        return { kind: 'none', reason: 'photo_no_image' };
+      }
+      const assets = await deps.mediaAssets.findAssetsByUrls([imageUrl]);
+      const candidates = assets.filter((asset) => asset.canonicalUrl === imageUrl);
+      const usable = candidates.filter(
+        (asset) =>
+          isPublishableRightsStatus(asset.rightsStatus) &&
+          ((asset.status === 'uploaded' && asset.telegramFileId !== undefined) ||
+            asset.status === 'validated'),
+      );
+      let asset =
+        usable.find((candidate) => candidate.status === 'uploaded') ??
+        usable.find((candidate) => candidate.status === 'validated');
+      if (asset === undefined) {
+        if (candidates.some((candidate) => !isPublishableRightsStatus(candidate.rightsStatus))) {
+          return { kind: 'none', reason: 'photo_rights_not_publishable' };
+        }
+        if (candidates.length > 0) {
+          // A ledger row owns this URL in another lifecycle (e.g. an
+          // R2-staged candidate) — the photo path never forks it.
+          return { kind: 'none', reason: 'photo_ledger_row_unusable' };
+        }
+        const created = await deps.mediaAssets.insertUrlAsset({
+          id: `mda:${randomToken()}`,
+          type: 'photo',
+          canonicalUrl: imageUrl,
+          sourceItemId: sourceItem.id,
+          rightsStatus: 'attribution_required',
+          attribution: imageUrlHost(imageUrl) ?? undefined,
+          createdAt: input.nowMs,
+          updatedAt: input.nowMs,
+        });
+        if (!created.ok) {
+          return { kind: 'none', reason: 'photo_ledger_write_failed' };
+        }
+        const reRead = await deps.mediaAssets.findAssetsByUrls([imageUrl]);
+        asset = reRead.find(
+          (candidate) =>
+            candidate.canonicalUrl === imageUrl &&
+            isPublishableRightsStatus(candidate.rightsStatus) &&
+            candidate.status === 'validated',
+        );
+        if (asset === undefined) {
+          return { kind: 'none', reason: 'photo_ledger_write_failed' };
+        }
+      }
+      const caption = createRichTextEnvelope({
+        kind: 'caption',
+        text: input.render.text,
+        entities: input.render.envelope.entities,
+      });
+      if (!caption.ok) {
+        return { kind: 'none', reason: 'photo_caption_invalid' };
+      }
+      const sentByUrl = asset.telegramFileId === undefined;
+      return {
+        kind: 'photo',
+        photo: asset.telegramFileId ?? imageUrl,
+        caption: caption.envelope,
+        assetId: asset.id,
+        sentByUrl,
+      };
+    } catch {
+      // A D1 failure degrades to text — the publication must never
+      // fail because its photo lookup did.
+      return { kind: 'none', reason: 'photo_resolution_failed' };
+    }
+  }
+
   async function sendClaimed(
     row: PublicationRow,
     generation: number,
@@ -827,6 +971,13 @@ export function createPublicationScheduler(deps: {
           }
         : { publicationId: row.id, draftId: row.draft_id, outcome: 'fence_rejected' };
     }
+    // ADR-0067: the photo is resolved BEFORE the send-started marker —
+    // a photo miss degrades to the text send with the row still
+    // claimable (the resolver never throws; every reason is logged).
+    const photo = await resolveEditorialPhoto({ row, render, nowMs });
+    if (photo.kind === 'none') {
+      deps.logger.debug('publication.scheduler.photo_fallback', { reason: photo.reason });
+    }
     // THE DURABLE SEND-STARTED MARKER (the d65d811 P1-1 fix): the last
     // write BEFORE any network effect — the machine's `mark_send_started`
     // (claimed -> publishing) with the in-flight lease extension. From
@@ -846,10 +997,20 @@ export function createPublicationScheduler(deps: {
       return { publicationId: row.id, draftId: row.draft_id, outcome: 'fence_rejected' };
     }
     try {
-      const sent = await deps.transport.sendMessageRich({
-        chatId: destination,
-        content: render.envelope,
-      });
+      // The two sends share one result shape (the photo send adds
+      // the optional file_id); the annotation keeps the union honest
+      // for the ledger save below.
+      const sent: { readonly messageId: number; readonly photoFileId?: string } =
+        photo.kind === 'photo' && deps.transport.sendPhotoRich !== undefined
+          ? await deps.transport.sendPhotoRich({
+              chatId: destination,
+              photo: photo.photo,
+              caption: photo.caption,
+            })
+          : await deps.transport.sendMessageRich({
+              chatId: destination,
+              content: render.envelope,
+            });
       if (!Number.isInteger(sent.messageId) || sent.messageId <= 0) {
         // A response without a usable message id proves nothing: uncertain,
         // and NOTHING is recorded (the ledger never records a guess).
@@ -900,6 +1061,33 @@ export function createPublicationScheduler(deps: {
         nowMs,
       });
       if (terminal.kind === 'written') {
+        // ADR-0067: after the delivery proof — a URL send saves its
+        // returned file_id for reuse, and the usage row records the
+        // photo on this publication. Best-effort: a ledger failure
+        // here never un-sends the post (the next send re-resolves
+        // by URL and the evidence check still heals from the
+        // recorded message).
+        if (photo.kind === 'photo') {
+          try {
+            if (
+              photo.sentByUrl &&
+              sent.photoFileId !== undefined &&
+              deps.mediaAssets !== undefined
+            ) {
+              await deps.mediaAssets.markUploaded(photo.assetId, sent.photoFileId, nowMs);
+            }
+            // The usage row records the photo on this publication;
+            // 'duplicate_usage' is the idempotent absorption (a
+            // re-run of the same terminal never writes twice).
+            await recordPublicationMediaUsages(deps.executor, {
+              publicationId: row.id,
+              usages: [{ ordinal: 0, mediaAssetId: photo.assetId }],
+              nowMs,
+            });
+          } catch {
+            deps.logger.warn('publication.scheduler.photo_ledger_save_failed');
+          }
+        }
         // Slice 6 — a terminally-sent P0 pins itself (toggle-gated,
         // best-effort: never fails the publication).
         await maybeAutoPinP0({

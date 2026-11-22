@@ -9,10 +9,16 @@
  * - Atom entry: id → link[rel=alternate, else first link] → title →
  *               published else updated → summary/content → author/name
  *
- * Raw values flow to normalization unsanitized; this reader only selects
- * fields. It never fetches anything.
+ * IMAGE (ADR-0067): the first https image URL wins, in document order:
+ * - RSS item: `enclosure` / `media:content` / `media:thumbnail` `url`
+ *   attribute (the local names are `enclosure`, `content`,
+ *   `thumbnail` — the scanner strips the prefix);
+ * - Atom entry: `link rel="enclosure"` href (never the article link).
+ * A non-https or over-long URL is not an image URL. The reader only
+ * selects the field; it never fetches anything.
  */
 import { scanXmlDocument } from './safe-xml';
+import { isHttpImageUrl } from '../../domain/media/image-url';
 
 /** Hard item bound per feed document (ADR-0039 §1). Newer-first order
  * means the cap retains the freshest items; excess entries are ignored
@@ -29,6 +35,9 @@ export interface ParsedFeedItem {
   readonly bodyText: string | null;
   readonly author: string | null;
   readonly publishedRaw: string | null;
+  /** First https image URL (feed enclosure / media:content /
+   * media:thumbnail, Atom enclosure link), else null. */
+  readonly imageUrl: string | null;
 }
 
 export interface ParsedFeed {
@@ -50,6 +59,7 @@ interface ItemDraft {
   bodyText: string | null;
   author: string | null;
   publishedRaw: string | null;
+  imageUrl: string | null;
 }
 
 function freshDraft(): ItemDraft {
@@ -62,7 +72,23 @@ function freshDraft(): ItemDraft {
     bodyText: null,
     author: null,
     publishedRaw: null,
+    imageUrl: null,
   };
+}
+
+/**
+ * The RSS media element local names whose `url` attribute carries the
+ * item image (ADR-0067). `content` is `media:content` here — RSS has
+ * no bare `<content>` element, and `content:encoded` arrives as
+ * `encoded` (already a body field).
+ */
+const RSS_MEDIA_FIELDS = new Set(['enclosure', 'content', 'thumbnail']);
+
+/** Record the first valid image URL (document order wins). */
+function takeImageUrl(draft: ItemDraft, url: string | null): void {
+  if (draft.imageUrl === null && url !== null && isHttpImageUrl(url)) {
+    draft.imageUrl = url;
+  }
 }
 
 /** RSS leaf fields captured by local name. */
@@ -170,7 +196,12 @@ export function parseFeedDocument(xml: string): FeedParseResult {
           const href = attrs['href'] ?? null;
           const rel = attrs['rel'] ?? null;
           if (href !== null) {
-            draft.links.push({ rel, href });
+            // An enclosure link is the item IMAGE, never the article link.
+            if (rel === 'enclosure') {
+              takeImageUrl(draft, href);
+            } else {
+              draft.links.push({ rel, href });
+            }
           }
         } else if (draft.links.length === 0 && text !== '') {
           draft.links.push({ rel: null, href: text });
@@ -224,11 +255,19 @@ export function parseFeedDocument(xml: string): FeedParseResult {
       // attribute payload directly (Atom <link href=.../>) and keep the
       // name stack in sync by NOT pushing.
       if (event.selfClosing) {
-        if (kind === 'atom' && inItem && draft !== null && event.name === 'link') {
-          const href = event.attributes['href'] ?? null;
-          const rel = event.attributes['rel'] ?? null;
-          if (href !== null) {
-            draft.links.push({ rel, href });
+        if (inItem && draft !== null) {
+          if (kind === 'atom' && event.name === 'link') {
+            const href = event.attributes['href'] ?? null;
+            const rel = event.attributes['rel'] ?? null;
+            if (href !== null) {
+              if (rel === 'enclosure') {
+                takeImageUrl(draft, href);
+              } else {
+                draft.links.push({ rel, href });
+              }
+            }
+          } else if (kind === 'rss' && RSS_MEDIA_FIELDS.has(event.name)) {
+            takeImageUrl(draft, event.attributes['url'] ?? null);
           }
         }
         continue;
@@ -251,6 +290,11 @@ export function parseFeedDocument(xml: string): FeedParseResult {
         inItem = true;
         draft = freshDraft();
         continue;
+      }
+      // A non-self-closing RSS media element carries its image URL on
+      // the OPEN event (its children, if any, are nested media fields).
+      if (inItem && draft !== null && kind === 'rss' && RSS_MEDIA_FIELDS.has(event.name)) {
+        takeImageUrl(draft, event.attributes['url'] ?? null);
       }
       const captureTarget: 'item' | 'feed' | null = inItem
         ? 'item'
@@ -327,5 +371,6 @@ function finishItem(draft: ItemDraft): ParsedFeedItem {
     bodyText: draft.bodyText,
     author: draft.author,
     publishedRaw: draft.publishedRaw,
+    imageUrl: draft.imageUrl,
   };
 }

@@ -78,6 +78,7 @@ function labConnector(options?: { fetchResolves?: boolean }): LabConnector {
             title: `Post ${fetchCalls}`,
             excerpt: null,
             author: null,
+            imageUrl: null,
             publishedAtMs: NOW,
             contentHash: `hash-${fetchCalls}`,
             rawJson: {},

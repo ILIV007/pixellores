@@ -40,6 +40,7 @@ import {
   createStoriesPolicyContextProvider,
 } from '../application/publishing/scheduler';
 import { readExplicitPublishMode } from '../adapters/db/publishing-settings-store';
+import { createMediaAssetStore } from '../adapters/db/media-asset-store';
 import { parseTelegramPhase2Config } from '../shared/config/phase2';
 import { createBotApiClient } from '../adapters/telegram/bot-api-client';
 import { createConnectorRegistry } from '../connectors/registry';
@@ -199,6 +200,8 @@ export async function handleScheduled(
           duplicates: bridged.duplicates,
           requiresReview: bridged.requiresReview,
           refused: bridged.refused,
+          deferredGuideLane: bridged.deferredGuideLane,
+          deferredCategoryCap: bridged.deferredCategoryCap,
           rejected: bridged.rejected,
         });
       } else {
@@ -234,7 +237,19 @@ export async function handleScheduled(
                     // bridges the scheduler's structural content shape.
                     content: input.content as RichTextEnvelope,
                   }),
+                // ADR-0067: the single-photo send rides the same client;
+                // the caption cast mirrors the message one above.
+                sendPhotoRich: (input) =>
+                  botApi.sendPhotoRich({
+                    chatId: input.chatId,
+                    photo: input.photo,
+                    caption:
+                      input.caption === undefined ? undefined : (input.caption as RichTextEnvelope),
+                  }),
               },
+        // ADR-0067: the ledger for the single-photo path (the album
+        // media seam stays unwired here — the ledger may exist alone).
+        mediaAssets: createMediaAssetStore(executor),
         sendGate: { enabled: mode === 'auto' || mode === 'safe-auto' },
         contextProvider: createStoriesPolicyContextProvider(executor),
         clock: systemClock,

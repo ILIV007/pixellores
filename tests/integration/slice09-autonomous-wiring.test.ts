@@ -353,6 +353,8 @@ describe('slice 9 — the wired autonomous chain', () => {
       duplicates: 0,
       requiresReview: 0,
       refused: 0,
+      deferredGuideLane: 0,
+      deferredCategoryCap: 0,
       rejected: 0,
     });
     expect((await chain.listDrafts()).every((draft) => draft.status === 'auto_approved')).toBe(
@@ -495,6 +497,8 @@ describe('slice 9 — the wired autonomous chain', () => {
       duplicates: 0,
       requiresReview: 2,
       refused: 0,
+      deferredGuideLane: 0,
+      deferredCategoryCap: 0,
       rejected: 0,
     });
     expect((await chain.listDrafts()).every((draft) => draft.status === 'ready')).toBe(true);
