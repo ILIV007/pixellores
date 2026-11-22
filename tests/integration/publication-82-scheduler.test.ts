@@ -383,13 +383,14 @@ describe('publishing-82 scheduler: the full happy path over the real policy', ()
     expect(row?.lease_until).toBeNull();
     expect(row?.last_error).toBeNull();
 
-    // The send carried the RENDERED editorial text with the bold headline entity.
+    // The send carried the RENDERED editorial text: the bold headline entity
+    // plus the house-footer blockquote entity (OD-011).
     expect(transport.calls).toHaveLength(1);
     const sentCall = transport.calls[0];
     if (!sentCall) throw new Error('the send call must be recorded');
     expect(sentCall.chatId).toBe(DESTINATION);
     expect(sentCall.text).toContain('تیتر خبر گیمینگ');
-    expect(sentCall.entityCount).toBe(1);
+    expect(sentCall.entityCount).toBe(2);
 
     // The at-most-once ledger: exactly one recorded message with the content hash.
     const messages = await listPublicationMessages(executor, 'pub-happy');
