@@ -686,7 +686,7 @@ export function createAiDraftService(deps: AiDraftServiceDeps): AiDraftService {
           // No provider completion: refund the attempt and count the
           // provider failure toward the breaker.
           await refundAttempt(candidate);
-          await noteBreakerFailure();
+          await noteBreakerFailure(candidate.provider);
           if (callOutcome.retryAfterMs !== undefined) {
             knownRetryAfterMs = Math.max(knownRetryAfterMs, callOutcome.retryAfterMs);
           }
