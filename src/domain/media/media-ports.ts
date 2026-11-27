@@ -80,6 +80,28 @@ export interface UrlAssetInsertV1 {
 }
 
 /**
+ * A generated-image asset row (ADR-0072, migration 0012): the image the
+ * Workers AI adapter produced, stored as a ledger row with NO canonical
+ * URL and NO R2 object — the content hash is the identity and the ai_*
+ * fields are the durable provenance. Rights are always 'official'
+ * (first-party generated content); status is 'validated' until the
+ * first send saves the file_id (markUploaded -> 'uploaded').
+ */
+export interface GeneratedAssetInsertV1 {
+  readonly id: string;
+  readonly sha256Hex: string;
+  readonly mimeType: string;
+  readonly byteLength: number;
+  readonly aiProvider: string;
+  readonly aiModel: string;
+  readonly aiPrompt: string;
+  /** The seed actually used, or null when the model takes none. */
+  readonly aiSeed: number | null;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
+
+/**
  * The DURABLE media state over the BLUEPRINT-APPROVED `media_assets`
  * table (migration 0001 — NO parallel tables; ADR-0056). The D1-backed
  * adapter (`src/adapters/db/media-asset-store.ts`) is REAL and the
@@ -104,6 +126,14 @@ export interface MediaAssetStore {
   ): Promise<
     { ok: true; kind: 'inserted' | 'already_exists' } | { ok: false; reason: 'asset_write_failed' }
   >;
+  /**
+   * Insert ONE generated-image asset row (ADR-0072): status
+   * 'validated', rights 'official', no canonical URL, no R2 object,
+   * no file_id — the ai_* provenance rides the migration-0012 columns.
+   */
+  insertGeneratedAsset(
+    input: GeneratedAssetInsertV1,
+  ): Promise<{ ok: true } | { ok: false; reason: 'asset_write_failed' }>;
   /** Insert ONE staged candidate row (status 'candidate', r2_key set, deadline set). */
   insertAsset(
     record: MediaAssetRecordV1,
@@ -129,8 +159,16 @@ export interface MediaAssetStore {
 
 export interface MediaGroupItemWireV1 {
   readonly type: 'photo' | 'video';
-  /** The Telegram reference: an existing file_id (reuse) OR an attach:// id (fresh upload). */
-  readonly media: string;
+  /**
+   * The Telegram reference: an existing file_id (reuse) OR an attach://
+   * id (fresh upload). Absent only when `url` carries the item (the
+   * ADR-0072 editorial album: a validated URL asset not yet sent —
+   * the client already supports direct-URL media-group items).
+   * Exactly ONE of `media` / `url` is present per item.
+   */
+  readonly media?: string;
+  /** A direct https URL (the ADR-0068 hotlink form, for editorial albums). */
+  readonly url?: string;
   /** The caption — present ONLY on the ordinal-0 item (the house invariant). */
   readonly caption?: { readonly text: string; readonly entities: readonly unknown[] };
 }

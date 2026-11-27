@@ -7,6 +7,13 @@
  *   writes, zero binding access — the outcome is the typed deferred
  *   `ai_disabled`. Absent/invalid configuration must never enable calls
  *   and must never break the existing Telegram/health/job paths.
+ * - `AI_IMAGE_ENABLED` ('true' | 'false', default 'false') is the
+ *   INDEPENDENT fail-closed gate for the Workers AI image-generation
+ *   service (ADR-0072, flux-1-schnell). It NEVER implies AI_ENABLED
+ *   and AI_ENABLED never implies it; with the flag OFF the image
+ *   service defers with ZERO provider calls, ZERO budget writes, and
+ *   ZERO binding access, and no-photo posts go out as text exactly as
+ *   before. Only offline tests turn it on with a fixture port.
  * - `AI_GEMINI_ENABLED` ('true' | 'false', default 'false') is the
  *   additional operator gate for the Gemini fallback path. It may be set
  *   'true' ONLY after a documented verification of the CURRENT official
@@ -75,6 +82,17 @@ export const PHASE_6_CONFIG_SPEC: ConfigSpec = defineConfigSpec([
     default: 'false',
     description:
       'AI adapters feature flag (non-secret; ADR-0041). Gates the whole AI draft service — fail-closed default false.',
+    phase: 6,
+  },
+  {
+    name: 'AI_IMAGE_ENABLED',
+    type: 'enum',
+    required: false,
+    secret: false,
+    allowed: [...AI_FLAG_VALUES],
+    default: 'false',
+    description:
+      'AI image-generation operator gate (non-secret; ADR-0072). Independent fail-closed flag for the Workers AI image service — never implies AI_ENABLED.',
     phase: 6,
   },
   {
@@ -147,6 +165,7 @@ export const PHASE_6_CONFIG_SPEC: ConfigSpec = defineConfigSpec([
 /** Validated Phase 6 flag state (values only; no secrets involved). */
 export interface AiConfig {
   readonly AI_ENABLED: boolean;
+  readonly AI_IMAGE_ENABLED: boolean;
   readonly AI_GEMINI_ENABLED: boolean;
   readonly AI_GEMINI_REWRITE_ENABLED: boolean;
   readonly EVENT_RELATION_ENABLED: boolean;
@@ -175,6 +194,7 @@ export function parseAiConfig(env: Readonly<Record<string, unknown>>): {
   return {
     config: {
       AI_ENABLED: result.config.AI_ENABLED === 'true',
+      AI_IMAGE_ENABLED: result.config.AI_IMAGE_ENABLED === 'true',
       AI_GEMINI_ENABLED: result.config.AI_GEMINI_ENABLED === 'true',
       AI_GEMINI_REWRITE_ENABLED: result.config.AI_GEMINI_REWRITE_ENABLED === 'true',
       EVENT_RELATION_ENABLED: result.config.EVENT_RELATION_ENABLED === 'true',

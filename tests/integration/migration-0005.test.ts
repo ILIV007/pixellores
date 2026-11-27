@@ -29,7 +29,9 @@ import { createDbExecutor } from '../../src/adapters/db/db-executor';
  * 0010_soul_versioning (schema 10: the slice-8 Soul versioning ON TOP of
  * the post management) ->
  * 0011_autonomous_soul_stamp (schema 11: the slice-9 autonomous
- * publications Soul stamp ON TOP of the Soul versioning). Every
+ * publications Soul stamp ON TOP of the Soul versioning) ->
+ * 0012_ai_image_provenance (schema 12: the ADR-0072 AI image
+ * provenance columns on media_assets ON TOP of the Soul stamp). Every
  * state of the chain is honestly observable in `schema_metadata`, and a
  * sequential apply leaves ALL capabilities present. The migrations are
  * LOCAL test infrastructure ONLY — no Cloudflare/wrangler command is ever
@@ -88,6 +90,16 @@ const V10_STOPPED_PLAN: readonly MigrationDescriptor[] = MIGRATIONS.filter(
   (migration) => migration.version <= 10,
 );
 
+/**
+ * ADR-0072 TEST-ONLY plan: the linear chain stopped at the version-11
+ * intermediate state (0001–0011) — the honest "autonomous soul stamp
+ * present, AI image provenance absent" shape, still exactly resolvable by
+ * the capability detector.
+ */
+const V11_STOPPED_PLAN: readonly MigrationDescriptor[] = MIGRATIONS.filter(
+  (migration) => migration.version <= 11,
+);
+
 beforeAll(async () => {
   // Materialize the full schema once (fresh per-file workerd D1).
   await applyMigrations(db);
@@ -135,6 +147,18 @@ async function rebuildSchema3State(): Promise<void> {
   if (pubColumns.results.some((row) => row['name'] === 'soul_version')) {
     await db.exec('ALTER TABLE publications DROP COLUMN soul_version');
   }
+  // ADR-0072: the 0012 AI image provenance columns are likewise
+  // post-schema-3 state on the schema-1 `media_assets` table — without
+  // dropping them, re-applying 0012 collides on ADD COLUMN (duplicate
+  // column name).
+  const assetColumns = await db
+    .prepare(`PRAGMA table_info('media_assets')`)
+    .all<{ name: string }>();
+  for (const column of ['ai_provider', 'ai_model', 'ai_prompt', 'ai_seed']) {
+    if (assetColumns.results.some((row) => row['name'] === column)) {
+      await db.exec(`ALTER TABLE media_assets DROP COLUMN ${column}`);
+    }
+  }
   await db.exec('DROP INDEX IF EXISTS idx_jobs_source_outstanding_poll');
   const columns = await db.prepare(`PRAGMA table_info('source_state')`).all<{ name: string }>();
   if (columns.results.some((row) => row['name'] === 'poll_owner_job_id')) {
@@ -171,8 +195,8 @@ async function hasColumn(table: string, column: string): Promise<boolean> {
   return rows.results.some((row) => row['name'] === column);
 }
 
-describe('migration 0004+0005+0006+0007+0008+0009+0010+0011 — the linear chain (schema 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10 -> 11)', () => {
-  it('walks the WHOLE chain from honest schema 3: all capabilities present at version 11', async () => {
+describe('migration 0004+0005+0006+0007+0008+0009+0010+0011+0012 — the linear chain (schema 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10 -> 11 -> 12)', () => {
+  it('walks the WHOLE chain from honest schema 3: all capabilities present at version 12', async () => {
     // A genuinely 0004-less database: the ownership column is ABSENT right now.
     expect(await hasColumn('source_state', 'poll_owner_job_id')).toBe(false);
     expect(await tableNamesLike('admin_post_%')).toEqual([]);
@@ -188,14 +212,15 @@ describe('migration 0004+0005+0006+0007+0008+0009+0010+0011 — the linear chain
       '0009_post_management_near_dup',
       '0010_soul_versioning',
       '0011_autonomous_soul_stamp',
+      '0012_ai_image_provenance',
     ]);
-    expect(result.finalVersion).toBe(11);
+    expect(result.finalVersion).toBe(12);
 
     // The metadata records the FINAL step of the linear chain — and the
     // final step PROVES every earlier step ran (strict continuity).
     const metadata = await metadataByKey();
-    expect(metadata.get('schema_version')).toBe('11');
-    expect(metadata.get('migration_id')).toBe('0011_autonomous_soul_stamp');
+    expect(metadata.get('schema_version')).toBe('12');
+    expect(metadata.get('migration_id')).toBe('0012_ai_image_provenance');
 
     // BOTH capabilities are now physically present — the sequential SQL
     // apply (the real Wrangler order) leaves 0004's changes visible:
@@ -235,7 +260,7 @@ describe('migration 0004+0005+0006+0007+0008+0009+0010+0011 — the linear chain
     expect(await tableNamesLike('admin_post_%')).toEqual([]);
   });
 
-  it('completes the chain from the schema-4 intermediate state by applying ONLY the 0005+0006+0007+0008+0009+0010+0011 tail', async () => {
+  it('completes the chain from the schema-4 intermediate state by applying ONLY the 0005+0006+0007+0008+0009+0010+0011+0012 tail', async () => {
     await applyMigrations(db, ROUND19_MIGRATION_PLAN);
     const result = await applyMigrations(db);
     expect(result.observedVersion).toBe(4);
@@ -247,9 +272,10 @@ describe('migration 0004+0005+0006+0007+0008+0009+0010+0011 — the linear chain
       '0009_post_management_near_dup',
       '0010_soul_versioning',
       '0011_autonomous_soul_stamp',
+      '0012_ai_image_provenance',
     ]);
-    expect(result.finalVersion).toBe(11);
-    expect((await metadataByKey()).get('schema_version')).toBe('11');
+    expect(result.finalVersion).toBe(12);
+    expect((await metadataByKey()).get('schema_version')).toBe('12');
     expect(await hasColumn('source_state', 'poll_owner_job_id')).toBe(true);
     expect(await tableNamesLike('admin_post_%')).toHaveLength(5);
   });
@@ -258,7 +284,7 @@ describe('migration 0004+0005+0006+0007+0008+0009+0010+0011 — the linear chain
     await applyMigrations(db);
     const second = await applyMigrations(db);
     expect(second.applied).toEqual([]);
-    expect(second.finalVersion).toBe(11);
+    expect(second.finalVersion).toBe(12);
   });
 
   it('creates the guarded indexes (ownership + partial UNIQUE primary publication per version)', async () => {
@@ -376,12 +402,24 @@ describe('migration 0004+0005 — schema capability detection at every linear st
     expect(capability).toEqual({ kind: 'known_v10_soul', appliedSchemaVersion: 10 });
   });
 
-  it('resolves ALL capabilities at schema 11 (0011 id, linear final state)', async () => {
-    await applyMigrations(db);
+  it('resolves ALL capabilities at schema 11 (0011 id, V11-stopped plan)', async () => {
+    // ADR-0072: schema 11 is no longer the LINEAR FINAL state (0012
+    // continues the chain), but the version-11 shape stays exactly
+    // resolvable under the plan that stops at 0011.
+    await applyMigrations(db, V11_STOPPED_PLAN);
     const capability = await resolveSchemaCapability(executor());
     expect(capability).toEqual({
       kind: 'known_v11_autonomous_soul',
       appliedSchemaVersion: 11,
+    });
+  });
+
+  it('resolves ALL capabilities at schema 12 (0012 id, linear final state)', async () => {
+    await applyMigrations(db);
+    const capability = await resolveSchemaCapability(executor());
+    expect(capability).toEqual({
+      kind: 'known_v12_ai_image',
+      appliedSchemaVersion: 12,
     });
   });
 
@@ -498,10 +536,10 @@ describe('migration 0004+0005 — failure atomicity and rollback on real D1', ()
     expect(metadata.get('migration_id')).toBe('0004_source_poll_ownership');
     expect(await hasColumn('source_state', 'poll_owner_job_id')).toBe(true);
 
-    // Recovery: drop the colliding table and the chain completes to 11.
+    // Recovery: drop the colliding table and the chain completes to 12.
     await db.exec('DROP TABLE admin_post_drafts');
     const recovery = await applyMigrations(db);
-    expect(recovery.finalVersion).toBe(11);
-    expect((await metadataByKey()).get('schema_version')).toBe('11');
+    expect(recovery.finalVersion).toBe(12);
+    expect((await metadataByKey()).get('schema_version')).toBe('12');
   });
 });

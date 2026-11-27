@@ -104,6 +104,10 @@ function createCapturingBotApi(): {
       const id = record('sendPhotoRich', input.chatId, input.caption?.text);
       return { messageId: id } as TelegramSentMessage;
     },
+    async sendPhotoBytesRich(input) {
+      const id = record('sendPhotoBytesRich', input.chatId, input.caption?.text);
+      return { messageId: id } as TelegramSentMessage;
+    },
     async sendVideoRich(input) {
       const id = record('sendVideoRich', input.chatId, input.caption?.text);
       return { messageId: id } as TelegramSentMessage;

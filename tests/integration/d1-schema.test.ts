@@ -173,8 +173,8 @@ describe('migration application', () => {
       .prepare(`SELECT key, value FROM schema_metadata ORDER BY key`)
       .all<{ key: string; value: string }>();
     const byKey = new Map(metadata.results.map((row) => [row.key, row.value]));
-    expect(byKey.get('schema_version')).toBe('11');
-    expect(byKey.get('migration_id')).toBe('0011_autonomous_soul_stamp');
+    expect(byKey.get('schema_version')).toBe('12');
+    expect(byKey.get('migration_id')).toBe('0012_ai_image_provenance');
     expect(byKey.get('applied_at')).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 

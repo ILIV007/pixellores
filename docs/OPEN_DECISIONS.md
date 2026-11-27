@@ -25,6 +25,7 @@ ADR. New unresolved decisions would be added here with status Open.
 | OD-016 | `quota_denied` consumes no rewrite attempt                                        | Closed   | 2026-11-27 | ADR-0070 |
 | OD-017 | Rewrite input excludes the source-report excerpt; `soulVersion` is prompt-encoded | Closed   | 2026-11-27 | ADR-0070 |
 | OD-018 | Editorial post render, v3 form (msg-16 shape)                                     | Closed   | 2026-11-22 | ADR-0071 |
+| OD-019 | Generated image in a real-photo album                                             | **Open** | —          | ADR-0072 |
 
 ---
 
@@ -460,3 +461,32 @@ stamp can never claim a Soul the prompt does not carry.
 **Implementation:** `renderEditorialPostText` / `renderEditorialPostCaption` (`src/domain/admin-post/editorial-post-render.ts`) + the ADR-0071 envelope exception (a style may strictly contain inline `code`; equal-range style+code stays rejected per the live msg-16 flattening) + the scheduler caption wiring. The claim `status` is no longer a render contract; the fact-guard report remains the internal gate (auto-gate). Full record: ADR-0071.
 
 **Open follow-ups (not in this change):** (1) prompt v3 + mapper must start writing the structured `figures` / `quote` / `verdict` / `gameName` / `gamePageUrl` fields the render consumes (until then: derived figures, no quote/verdict, alias game name, plain italic name); (2) the bold+mono main figure needs live verification on the first real post after deploy (no dry-run for entity parsing) — fallback is code-only. (The multi-photo album, max 4 source photos in one media group, IS in this change — ADR-0071.)
+---
+
+## OD-019 — When, if ever, a generated image joins a real-photo album (+ disclosure wording) — **Open**
+
+**Context:** the owner-approved image plan (2026-11-22) allows mixing —
+real photos first, a generated image last, the AI image marked in the
+caption. ADR-0072 implements the pieces but does NOT auto-wire the mix:
+`assemblePostAlbum` (`src/domain/media/post-album.ts`) pins the ordering
+(real-first, generated-last, max 4 items, `generatedOrdinal`) and the
+scheduler's editorial album path sends real photos only — a generated image
+NEVER enters an album in v1, and at most ONE generated image is ever sent
+per post.
+
+**Why not auto-wired:** auto-appending a generated image to a real-photo
+album would change a post's composition (an extra image the owner never
+asked for) without owner direction. The trigger needs an explicit owner
+decision: always append when a real-photo album has a free slot? Only for
+specific categories? Only on an explicit per-post instruction? Or never
+(the plan's allowance stays a manual option only)?
+
+**Second open item:** the disclosure wording. The caption line shipped in
+v1 is the plan's suggestion — `تصویر: ساختهٔ هوش مصنوعی` — and the owner
+may reword it. The line is a constant in `src/domain/ai/image-policy.ts`
+(`AI_IMAGE_DISCLOSURE_LINE`); changing it is a one-line change, no
+migration.
+
+**Decision:** none yet — **Open**. No ADR change needed for the trigger
+itself (the assembler already pins the ordering); the trigger, when
+decided, lands in the scheduler's album resolution.

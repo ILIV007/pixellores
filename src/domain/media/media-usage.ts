@@ -58,6 +58,17 @@ export interface MediaAssetRecordV1 {
   readonly expiresAt?: number;
   readonly createdAt: number;
   readonly updatedAt: number;
+  /**
+   * AI-GENERATION provenance (migration 0012, ADR-0072). Absent = not
+   * an AI-generated asset. A generated row carries provider + model +
+   * prompt; the seed is null when the model takes no seed (flux-1-
+   * schnell: its typed input has no seed parameter — NULL is the honest
+   * value, never a fabricated number).
+   */
+  readonly aiProvider?: string;
+  readonly aiModel?: string;
+  readonly aiPrompt?: string;
+  readonly aiSeed?: number;
 }
 
 export type AssetReadReasonV1 = 'asset_record_malformed';
@@ -152,6 +163,32 @@ export function readMediaAssetRecordV1(
   if (record['expiresAt'] !== undefined && !isBoundedTime(record['expiresAt'])) {
     return { ok: false, reason: 'asset_record_malformed' };
   }
+  // AI-generation provenance (migration 0012, ADR-0072): provider/model
+  // are bounded opaque strings, the prompt is bounded text (the flux
+  // prompt cap is 2048 chars), the seed is a non-negative integer or
+  // absent (null in the row = the model took no seed).
+  if (record['aiProvider'] !== undefined && !isBoundedOpaque(record['aiProvider'])) {
+    return { ok: false, reason: 'asset_record_malformed' };
+  }
+  if (record['aiModel'] !== undefined && !isBoundedOpaque(record['aiModel'])) {
+    return { ok: false, reason: 'asset_record_malformed' };
+  }
+  if (
+    record['aiPrompt'] !== undefined &&
+    (typeof record['aiPrompt'] !== 'string' ||
+      record['aiPrompt'].length === 0 ||
+      record['aiPrompt'].length > 2048)
+  ) {
+    return { ok: false, reason: 'asset_record_malformed' };
+  }
+  if (
+    record['aiSeed'] !== undefined &&
+    (typeof record['aiSeed'] !== 'number' ||
+      !Number.isSafeInteger(record['aiSeed']) ||
+      record['aiSeed'] < 0)
+  ) {
+    return { ok: false, reason: 'asset_record_malformed' };
+  }
   // The durable rtp1 invariant: holding an R2 object ⇔ carrying a deadline.
   const r2Key = record['r2Key'];
   const expiresAt = record['expiresAt'];
@@ -175,6 +212,10 @@ export function readMediaAssetRecordV1(
     'expiresAt',
     'createdAt',
     'updatedAt',
+    'aiProvider',
+    'aiModel',
+    'aiPrompt',
+    'aiSeed',
   ]);
   for (const key of Object.keys(record)) {
     if (!allowedKeys.has(key)) return { ok: false, reason: 'asset_record_malformed' };
@@ -198,6 +239,10 @@ export function readMediaAssetRecordV1(
         ? { telegramFileId: record['telegramFileId'] as string }
         : {}),
       ...(record['expiresAt'] !== undefined ? { expiresAt: record['expiresAt'] as number } : {}),
+      ...(record['aiProvider'] !== undefined ? { aiProvider: record['aiProvider'] as string } : {}),
+      ...(record['aiModel'] !== undefined ? { aiModel: record['aiModel'] as string } : {}),
+      ...(record['aiPrompt'] !== undefined ? { aiPrompt: record['aiPrompt'] as string } : {}),
+      ...(record['aiSeed'] !== undefined ? { aiSeed: record['aiSeed'] as number } : {}),
     },
   };
 }

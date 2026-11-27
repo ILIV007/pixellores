@@ -125,7 +125,7 @@ describe('R1.22 — migration 0006: editorial→post provenance (schema 5 → 6)
     expect(idRow?.value).toBe('0006_admin_post_editorial_source');
 
     // The FULL plan continues the linear chain past 0006: exactly 0007
-    // + 0008 + 0009 + 0010 + 0011 are pending (first run) and the database lands at version 11
+    // + 0008 + 0009 + 0010 + 0011 + 0012 are pending (first run) and the database lands at version 12
     // with the 0011 migration id. Later tests in this file observe the v11
     // state; the 0006 provenance contracts below are unaffected by 0007/0008/0009/0010/0011.
     const full = await applyMigrations(db);
@@ -135,13 +135,14 @@ describe('R1.22 — migration 0006: editorial→post provenance (schema 5 → 6)
       '0009_post_management_near_dup',
       '0010_soul_versioning',
       '0011_autonomous_soul_stamp',
+      '0012_ai_image_provenance',
     ]);
-    expect(full.finalVersion).toBe(11);
-    expect(await appliedSchemaVersion()).toBe(11);
+    expect(full.finalVersion).toBe(12);
+    expect(await appliedSchemaVersion()).toBe(12);
     const fullIdRow = await executor.first<{ value: string }>({
       sql: `SELECT value FROM schema_metadata WHERE key = 'migration_id'`,
     });
-    expect(fullIdRow?.value).toBe('0011_autonomous_soul_stamp');
+    expect(fullIdRow?.value).toBe('0012_ai_image_provenance');
   });
 
   it('preserves every legacy captured row byte-identically with NULL editorial provenance', async () => {
@@ -240,6 +241,6 @@ describe('R1.22 — migration 0006: editorial→post provenance (schema 5 → 6)
     await applyMigrations(db);
     const rerun = await applyMigrations(db);
     expect(rerun.applied).toEqual([]);
-    expect(rerun.finalVersion).toBe(11);
+    expect(rerun.finalVersion).toBe(12);
   });
 });

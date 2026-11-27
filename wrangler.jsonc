@@ -18,14 +18,14 @@
     "enabled": true,
   },
   "vars": {
-    "APP_VERSION": "1.47.0",
+    "APP_VERSION": "1.48.0",
     "ENVIRONMENT": "development",
     "LOG_LEVEL": "info",
     // Phase 1A build/schema metadata (non-secret — ADR-0020). APP_COMMIT is
     // replaced by the real commit identifier at deploy time in later phases;
     // SCHEMA_VERSION is validated as a strict positive decimal integer.
     "APP_COMMIT": "local-dev",
-    "SCHEMA_VERSION": "11",
+    "SCHEMA_VERSION": "12",
     // Phase 2A Telegram ingress flag (non-secret; ADR-0024). The webhook
     // route fails closed unless this is "true" AND the Phase 2 secrets are
     // configured (BOT_TOKEN / WEBHOOK_SECRET / OWNER_TELEGRAM_ID via
@@ -71,6 +71,20 @@
     // round), so the Gemini fallback stays OFF even if this flag were true.
     "AI_ENABLED": "false",
     "AI_GEMINI_ENABLED": "false",
+    // ADR-0072 AI image-generation gate (non-secret). INDEPENDENT
+    // fail-closed flag: with "false" the image service defers with zero
+    // provider calls and no-photo posts go out as text exactly as before.
+    // It NEVER implies AI_ENABLED and AI_ENABLED never implies it.
+    "AI_IMAGE_ENABLED": "false",
+    // ai-policy-v2.3 (ADR-0066) backup-account failover KILL SWITCH
+    // (non-secret). FAIL-CLOSED default OFF: with "false" the backup REST
+    // port is never built and every AI ladder behaves exactly as v2.2.
+    // Enabling ALSO requires the operator to set the
+    // BACKUP_WORKERS_AI_API_TOKEN secret and the BACKUP_CF_ACCOUNT_ID var
+    // on this worker (dashboard/wrangler — never in this file). Flipping
+    // it back to "false" kills failover WITHOUT a redeploy. It NEVER
+    // implies AI_ENABLED.
+    "AI_FAILOVER_ENABLED": "false",
     // R1.17 (Phase 5E-1) event-relation task gate (non-secret;
     // ADR-0045). INDEPENDENT fail-closed flag: with "false" the relation
     // step performs ZERO retrieval, ZERO adjudication, ZERO writes. It
@@ -225,11 +239,11 @@
     "preview": {
       "name": "pixel-preview",
       "vars": {
-        "APP_VERSION": "1.47.0",
+        "APP_VERSION": "1.48.0",
         "ENVIRONMENT": "preview",
         "LOG_LEVEL": "info",
         "APP_COMMIT": "local-dev",
-        "SCHEMA_VERSION": "11",
+        "SCHEMA_VERSION": "12",
         // Owner-authorized Preview live wiring. Secret VALUES remain in
         // Cloudflare only: BOT_TOKEN, WEBHOOK_SECRET, OWNER_TELEGRAM_ID.
         // Production is unchanged; local defaults above remain disabled.
@@ -263,6 +277,17 @@
         // owner procedure; no model is invoked by this declaration.
         "AI_ENABLED": "false",
         "AI_GEMINI_ENABLED": "false",
+        // ADR-0072 image-generation gate ships DISABLED on preview too:
+        // the image service defers with zero provider calls and no-photo
+        // posts go out as text exactly as before.
+        "AI_IMAGE_ENABLED": "false",
+        // ai-policy-v2.3 (ADR-0066) backup-account failover kill switch
+        // ships DISABLED on preview: the backup REST port is built only
+        // when this is "true" AND the BACKUP_WORKERS_AI_API_TOKEN secret
+        // and BACKUP_CF_ACCOUNT_ID var are present on the worker. The
+        // backup account id is operator configuration and is deliberately
+        // NOT declared here.
+        "AI_FAILOVER_ENABLED": "false",
         // R1.17 event-relation task gate ships DISABLED on preview
         // (ADR-0045): the independent fail-closed flag NEVER implies
         // AI_ENABLED or EDITORIAL_ENABLED; zero relation work happens

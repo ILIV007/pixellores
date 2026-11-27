@@ -216,6 +216,17 @@ export interface WorkerEnv {
    */
   readonly AI_ENABLED?: string;
   /**
+   * NON-SECRET AI image-generation feature flag ('true' | 'false';
+   * default 'false'; ADR-0072). INDEPENDENT fail-closed gate for the
+   * Workers AI image service (flux-1-schnell) — it NEVER implies
+   * AI_ENABLED and AI_ENABLED never implies it; with the flag OFF the
+   * image service is the typed deferred `ai_disabled` with ZERO
+   * provider calls, ZERO budget writes, and ZERO binding access, and
+   * no-photo posts go out as text exactly as before. Validated by
+   * src/shared/config/phase6.ts.
+   */
+  readonly AI_IMAGE_ENABLED?: string;
+  /**
    * NON-SECRET Gemini fallback operator gate ('true' | 'false'; default
    * 'false'). Eligibility is PARTIAL since ADR-0067 (the free tier is
    * verified in official docs 2026-11-21; the per-project quota is

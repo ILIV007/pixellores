@@ -99,7 +99,10 @@ import {
 import { contentTextHash } from '../../domain/publishing/publication-identity';
 import { findSourceItemRawJson, findStoryReferenceItems } from '../../adapters/db/editorial-store';
 import { extractImageUrlFromRawJson, imageUrlHost } from '../../domain/media/image-url';
-import { type RichTextEnvelope } from '../../domain/telegram/rich-text-envelope';
+import {
+  createRichTextEnvelope,
+  type RichTextEnvelope,
+} from '../../domain/telegram/rich-text-envelope';
 import {
   discriminateAlbumDocument,
   deriveAlbumSendPlan,
@@ -108,6 +111,13 @@ import {
 } from '../../domain/media/album-send-plan';
 import type { MediaAssetStore, MediaGroupSendInputV1 } from '../../domain/media/media-ports';
 import { isPublishableRightsStatus } from '../../domain/media/media-usage';
+import { POST_ALBUM_MAX_ITEMS } from '../../domain/media/post-album';
+import { extractImagePromptInput } from '../../domain/ai/image-prompt';
+import {
+  AI_IMAGE_DISCLOSURE_LINE,
+  AI_IMAGE_DISCLOSURE_SEPARATOR,
+} from '../../domain/ai/image-policy';
+import type { ImageGenerationServicePort } from '../../domain/ai/image-types';
 import { mapContentTypeToMixCategory, scanJitterForCandidate } from './scheduler-policy';
 import {
   pinChannelPost,
@@ -162,6 +172,22 @@ export interface PublicationChannelTransport {
       };
     }[];
   }) => Promise<readonly PublicationSentMediaGroupMessage[]>;
+  /**
+   * ADR-0072: the generated-image send (optional — a transport without
+   * it keeps the old behavior: a no-photo post goes out as text). The
+   * photo is fresh BYTES uploaded as multipart; the caption is a
+   * REQUIRED-kind 'caption' envelope. The reply carries the photo's
+   * file_id when Telegram returns one.
+   */
+  sendPhotoBytesRich?: (input: {
+    readonly chatId: number | string;
+    readonly photo: { readonly bytes: Uint8Array; readonly contentType: string };
+    readonly caption?: {
+      readonly kind: string;
+      readonly text: string;
+      readonly entities: readonly unknown[];
+    };
+  }) => Promise<{ readonly messageId: number; readonly photoFileId?: string }>;
 }
 
 /** ONE message of a media-group reply, IN ORDINAL ORDER (the ADR-0060 seam). */
@@ -344,11 +370,20 @@ export function createPublicationScheduler(deps: {
    * the media seam. ADR-0068: it ALSO serves the single-photo path
    * (URL-asset insert + file_id save), so it may exist WITHOUT the
    * media seam; the media seam still requires it (pair rule below).
+   * ADR-0072: it ALSO serves the generated-image path (generated-asset
+   * insert + file_id save).
    */
   readonly mediaAssets?: Pick<
     MediaAssetStore,
-    'findAssetsByUrls' | 'insertUrlAsset' | 'markUploaded'
+    'findAssetsByUrls' | 'insertUrlAsset' | 'insertGeneratedAsset' | 'markUploaded'
   >;
+  /**
+   * ADR-0072 — the image-generation service (OPTIONAL: without it, a
+   * no-photo post goes out as text, exactly as before). The service
+   * owns its own budget/breaker/books; the scheduler only consumes
+   * its typed outcome and never calls a provider itself.
+   */
+  readonly imageGeneration?: ImageGenerationServicePort;
   /**
    * Slice 6 — the P0 auto-pin seam. OPTIONAL: without it, a sent P0 is
    * never pinned (the panel toggle alone cannot pin). When present, a
@@ -597,6 +632,74 @@ export function createPublicationScheduler(deps: {
     return { action: 'park', code: 'album_evidence_incomplete' };
   }
 
+  /**
+   * ADR-0072 — the EDITORIAL-album evidence verdict: the same
+   * completeness proof as the album-document path, but the expectation
+   * is RE-DERIVED, not read from a durable document — the editorial
+   * photos are re-resolved NOW (same deterministic resolution the send
+   * path used: reference items ordered by id, ledger state re-read),
+   * and the expected bindings are the resolved asset ids per ordinal.
+   * A resolution that no longer yields an album of exactly the recorded
+   * message count proves nothing: park, never heal on a changed
+   * expectation. (A generated single photo heals through the text
+   * branch — one message, one usage — exactly like a source photo.)
+   */
+  async function evaluateEditorialAlbumEvidenceAction(
+    row: PublicationRow,
+    messages: readonly { readonly ordinal: number; readonly chat_id: string }[],
+    nowMs: number,
+  ): Promise<{ readonly action: 'heal' } | { readonly action: 'park'; readonly code: string }> {
+    const resolved = await resolveEditorialPhotoAssets({ row, nowMs });
+    if (resolved.kind === 'none' || resolved.items.length !== messages.length) {
+      return { action: 'park', code: 'album_evidence_incomplete' };
+    }
+    const usages = await listPublicationMediaUsages(deps.executor, row.id);
+    const expectedBindings = resolved.items.map((item, ordinal) => ({
+      ordinal,
+      mediaAssetId: item.assetId,
+    }));
+    const verdict = evaluateAlbumDeliveryEvidence({
+      expectedOrdinals: resolved.items.length,
+      destination,
+      messages: messages.map((message) => ({
+        ordinal: message.ordinal,
+        chatId: message.chat_id,
+      })),
+      boundUsageOrdinals: usages.map((usage) => usage.ordinal),
+      boundUsages: usages.map((usage) => ({
+        ordinal: usage.ordinal,
+        mediaAssetId: usage.media_asset_id,
+      })),
+      expectedBindings,
+    });
+    if (verdict.kind === 'complete') {
+      return { action: 'heal' };
+    }
+    if (verdict.reason === 'usage_binding_mismatch') {
+      return { action: 'park', code: 'album_usage_mismatch' };
+    }
+    if (verdict.reason === 'unbound_usages') {
+      // Every ordinal is PROVEN and every bound usage MATCHES — the
+      // missing piece is the durable usage binding itself. Reconcile
+      // it from the resolved expectation; a binding write failure
+      // parks uncertain.
+      try {
+        const written = await recordPublicationMediaUsages(deps.executor, {
+          publicationId: row.id,
+          usages: expectedBindings,
+          nowMs,
+        });
+        if (written.kind !== 'recorded') {
+          return { action: 'park', code: 'usage_record_rejected' };
+        }
+      } catch {
+        return { action: 'park', code: 'usage_record_failed' };
+      }
+      return { action: 'heal' };
+    }
+    return { action: 'park', code: 'album_evidence_incomplete' };
+  }
+
   async function reconcileFailedWithEvidence(nowMs: number): Promise<number> {
     const parked = await listFailedPublications(deps.executor, {
       limit: RECONCILIATION_LIMIT,
@@ -626,6 +729,14 @@ export function createPublicationScheduler(deps: {
           continue;
         }
         const action = await evaluateAlbumEvidenceAction(row, planned.plan, messages, nowMs);
+        if (action.action !== 'heal') {
+          continue;
+        }
+      } else if (messages.length > 1) {
+        // ADR-0072: a text document with several recorded messages may
+        // be a completed editorial album — heal only on the full
+        // ordinal+usage proof, never on a partial witness.
+        const action = await evaluateEditorialAlbumEvidenceAction(row, messages, nowMs);
         if (action.action !== 'heal') {
           continue;
         }
@@ -762,16 +873,20 @@ export function createPublicationScheduler(deps: {
    * FIRST photo (logged, never a failure). A URL that fails its own
    * resolution (rights, ledger) is SKIPPED fail-soft — it never kills
    * the usable photos; only when NO URL resolves does the plan degrade
-   * to text, with the FIRST failure's reason. A missing seam, a missing
-   * image, an unusable ledger row, or a refused rights echo all degrade
-   * to text — never a dead-letter, never a throw: the photos are an
-   * enhancement, the post is the requirement. (A missing photo is the
-   * ONLY text fallback left.)
+   * to text, with the FIRST failure's reason. ADR-0072 extends it: a
+   * `none` plan with reason `photo_no_image` / `photo_no_source_item`
+   * (no source photo exists at all) lets the caller try the
+   * generated-image path — a refused/unusable real photo is never
+   * replaced by a generated one. A missing seam, a missing image, an
+   * unusable ledger row, or a refused rights echo all degrade to text
+   * — never a dead-letter, never a throw: the photos are an
+   * enhancement, the post is the requirement.
    */
   /** The owner-ordered editorial album bound (2026-11-22): at most 4 source photos in one media group. */
   const EDITORIAL_ALBUM_MAX_PHOTOS = 4;
 
   type EditorialPhotoItem = {
+    /** The Telegram reference: a file_id or a bounded https URL. */
     readonly photo: string;
     readonly assetId: string;
     /** True when the send rides the URL (a file_id is saved after). */
@@ -792,32 +907,36 @@ export function createPublicationScheduler(deps: {
         readonly kind: 'album';
         readonly items: readonly EditorialPhotoItem[];
         readonly caption: RichTextEnvelope;
+      }
+    | {
+        readonly kind: 'generated';
+        readonly bytes: Uint8Array;
+        readonly contentType: string;
+        readonly caption: RichTextEnvelope;
+        readonly assetId: string;
+        /**
+         * Always true: the send rides fresh bytes, never a file_id —
+         * so the returned file_id is saved after (same transition as
+         * a URL send).
+         */
+        readonly sentByUrl: true;
       };
 
   /**
-   * The per-URL ledger resolution (the ADR-0068 rule, factored for the
-   * multi-photo path): an uploaded row reuses its file_id, a validated
-   * row sends by URL, no row inserts one URL asset. A typed failure
-   * names the reason — the caller decides whether it kills the plan
-   * (the single-photo path) or only skips this URL (the album path).
+   * Resolve ONE source image URL to a sendable ledger asset (the
+   * ADR-0068 per-URL logic, factored out for the multi-photo path):
+   * uploaded-with-file_id wins, validated rides by URL, no row inserts
+   * one URL asset. Returns the asset or the typed refusal reason.
    */
-  async function resolveEditorialPhotoAsset(input: {
+  async function resolveOneEditorialPhotoAsset(input: {
     readonly imageUrl: string;
     readonly sourceItemId: string;
     readonly nowMs: number;
   }): Promise<
-    | {
-        readonly ok: true;
-        readonly assetId: string;
-        readonly photo: string;
-        readonly sentByUrl: boolean;
-      }
+    | { readonly ok: true; readonly item: EditorialPhotoItem }
     | { readonly ok: false; readonly reason: string }
   > {
-    if (deps.mediaAssets === undefined) {
-      return { ok: false, reason: 'photo_seam_absent' };
-    }
-    const assets = await deps.mediaAssets.findAssetsByUrls([input.imageUrl]);
+    const assets = await deps.mediaAssets!.findAssetsByUrls([input.imageUrl]);
     const candidates = assets.filter((asset) => asset.canonicalUrl === input.imageUrl);
     const usable = candidates.filter(
       (asset) =>
@@ -837,7 +956,7 @@ export function createPublicationScheduler(deps: {
         // R2-staged candidate) — the photo path never forks it.
         return { ok: false, reason: 'photo_ledger_row_unusable' };
       }
-      const created = await deps.mediaAssets.insertUrlAsset({
+      const created = await deps.mediaAssets!.insertUrlAsset({
         id: `mda:${randomToken()}`,
         type: 'photo',
         canonicalUrl: input.imageUrl,
@@ -850,7 +969,7 @@ export function createPublicationScheduler(deps: {
       if (!created.ok) {
         return { ok: false, reason: 'photo_ledger_write_failed' };
       }
-      const reRead = await deps.mediaAssets.findAssetsByUrls([input.imageUrl]);
+      const reRead = await deps.mediaAssets!.findAssetsByUrls([input.imageUrl]);
       asset = reRead.find(
         (candidate) =>
           candidate.canonicalUrl === input.imageUrl &&
@@ -864,32 +983,49 @@ export function createPublicationScheduler(deps: {
     const sentByUrl = asset.telegramFileId === undefined;
     return {
       ok: true,
-      assetId: asset.id,
-      photo: asset.telegramFileId ?? input.imageUrl,
-      sentByUrl,
+      item: {
+        photo: asset.telegramFileId ?? input.imageUrl,
+        assetId: asset.id,
+        sentByUrl,
+      },
     };
   }
 
-  async function resolveEditorialPhoto(input: {
+  /**
+   * Resolve the story's source photos (no caption — the evidence path
+   * reuses this): up to POST_ALBUM_MAX_ITEMS items, in reference-item
+   * order. A refused/unusable item is SKIPPED with a debug log (the
+   * rest of the album still sends); the `none` reason names the
+   * first failure class seen when nothing usable remains.
+   */
+  async function resolveEditorialPhotoAssets(input: {
     readonly row: PublicationRow;
-    readonly documentJson: string;
     readonly nowMs: number;
-  }): Promise<EditorialPhotoPlan> {
-    if (deps.mediaAssets === undefined || deps.transport?.sendPhotoRich === undefined) {
+  }): Promise<
+    | { readonly kind: 'items'; readonly items: readonly EditorialPhotoItem[] }
+    | { readonly kind: 'none'; readonly reason: string }
+  > {
+    // The resolution needs the LEDGER only — which transport seam the
+    // plan rides (single photo / album / generated) is the caller's
+    // decision; a missing seam degrades there, never here.
+    if (deps.mediaAssets === undefined) {
       return { kind: 'none', reason: 'photo_seam_absent' };
     }
     try {
       const sourceItems = await findStoryReferenceItems(
         deps.executor,
         input.row.story_id,
-        EDITORIAL_ALBUM_MAX_PHOTOS,
+        POST_ALBUM_MAX_ITEMS,
       );
       if (sourceItems.length === 0) {
         return { kind: 'none', reason: 'photo_no_source_item' };
       }
+      const items: EditorialPhotoItem[] = [];
+      let firstReason: string | null = null;
+      let sawImageUrl = false;
       // Distinct image URLs in source order (the same image on two
-      // items, or twice on one item, is ONE photo).
-      const imageUrls: { readonly imageUrl: string; readonly sourceItemId: string }[] = [];
+      // items, or twice on one item, is ONE photo — the ADR-0071
+      // invariant, preserved from the inline resolver).
       const seenUrls = new Set<string>();
       for (const sourceItem of sourceItems) {
         const rawJson = await findSourceItemRawJson(deps.executor, sourceItem.id);
@@ -898,38 +1034,46 @@ export function createPublicationScheduler(deps: {
           continue;
         }
         seenUrls.add(imageUrl);
-        imageUrls.push({ imageUrl, sourceItemId: sourceItem.id });
-      }
-      if (imageUrls.length === 0) {
-        return { kind: 'none', reason: 'photo_no_image' };
-      }
-      // Per-URL fail-soft: a URL that fails its own resolution is
-      // skipped, never killing the usable photos. Only when NO URL
-      // resolves does the plan degrade to text, with the FIRST
-      // failure's reason (the single-photo behavior, preserved).
-      const items: EditorialPhotoItem[] = [];
-      let firstFailureReason: string | undefined;
-      for (const { imageUrl, sourceItemId } of imageUrls) {
-        const resolved = await resolveEditorialPhotoAsset({
+        sawImageUrl = true;
+        const resolved = await resolveOneEditorialPhotoAsset({
           imageUrl,
-          sourceItemId,
+          sourceItemId: sourceItem.id,
           nowMs: input.nowMs,
         });
         if (!resolved.ok) {
-          if (firstFailureReason === undefined) {
-            firstFailureReason = resolved.reason;
+          if (firstReason === null) {
+            firstReason = resolved.reason;
           }
+          deps.logger.debug('publication.scheduler.photo_item_skipped', {
+            reason: resolved.reason,
+          });
           continue;
         }
-        items.push({
-          photo: resolved.photo,
-          assetId: resolved.assetId,
-          sentByUrl: resolved.sentByUrl,
-        });
+        items.push(resolved.item);
       }
-      if (items.length === 0) {
-        return { kind: 'none', reason: firstFailureReason ?? 'photo_no_image' };
+      if (items.length > 0) {
+        return { kind: 'items', items };
       }
+      if (!sawImageUrl) {
+        return { kind: 'none', reason: 'photo_no_image' };
+      }
+      return { kind: 'none', reason: firstReason ?? 'photo_ledger_row_unusable' };
+    } catch {
+      // A D1 failure degrades to text — the publication must never
+      // fail because its photo lookup did.
+      return { kind: 'none', reason: 'photo_resolution_failed' };
+    }
+  }
+  async function resolveEditorialPhoto(input: {
+    readonly row: PublicationRow;
+    readonly documentJson: string;
+    readonly nowMs: number;
+  }): Promise<EditorialPhotoPlan> {
+    const resolved = await resolveEditorialPhotoAssets(input);
+    if (resolved.kind === 'none') {
+      return resolved;
+    }
+    try {
       // ADR-0071: the caption is the SAME v3 form, trimmed to the
       // 1024-unit cap by the caption render — an over-long caption keeps
       // the photo (trimmed, logged) instead of degrading to text. The
@@ -944,6 +1088,10 @@ export function createPublicationScheduler(deps: {
           reason: 'caption_over_1024_units',
         });
       }
+      // The resolver already collected the usable items (distinct URLs,
+      // source order, at most POST_ALBUM_MAX_ITEMS); the plan is the
+      // same photo/album shape the inline resolver built.
+      const items = resolved.items;
       if (items.length === 1) {
         const item = items[0]!;
         return {
@@ -1383,6 +1531,82 @@ export function createPublicationScheduler(deps: {
       : { publicationId: row.id, draftId: row.draft_id, outcome: 'fence_rejected' };
   }
 
+  /**
+   * ADR-0072 — the generated-image resolution, tried ONLY when the
+   * editorial photo resolution found no source photo at all
+   * (`photo_no_image` / `photo_no_source_item`):
+   *   draft document → headline + category emoji → image service
+   *   (own budget/breaker/books) → generated bytes → ONE generated
+   *   ledger row (validated / official / ai_* provenance) → the
+   *   rendered text + the AI disclosure line as a `caption` envelope.
+   * The disclosure is NEVER dropped: if render text + disclosure does
+   * not fit the 1024-unit caption envelope, the plan is `none` and the
+   * post goes out as text. Every failure degrades to text — never a
+   * dead-letter, never a throw.
+   */
+  async function resolveGeneratedImage(input: {
+    readonly draft: DraftRead;
+    readonly render: { readonly envelope: RichTextEnvelope; readonly text: string };
+    readonly nowMs: number;
+  }): Promise<EditorialPhotoPlan> {
+    if (
+      deps.imageGeneration === undefined ||
+      deps.transport?.sendPhotoBytesRich === undefined ||
+      deps.mediaAssets === undefined
+    ) {
+      return { kind: 'none', reason: 'image_seam_absent' };
+    }
+    // The disclosure rides the caption: appending plain text AFTER the
+    // rendered text never shifts the existing entity offsets. The
+    // envelope is validated FIRST — a post whose text + disclosure
+    // cannot fit the 1024-unit caption cap must never spend image
+    // budget on a generation it cannot carry.
+    const captionText =
+      input.render.text + AI_IMAGE_DISCLOSURE_SEPARATOR + AI_IMAGE_DISCLOSURE_LINE;
+    const caption = createRichTextEnvelope({
+      kind: 'caption',
+      text: captionText,
+      entities: input.render.envelope.entities,
+    });
+    if (!caption.ok) {
+      return { kind: 'none', reason: 'image_caption_invalid' };
+    }
+    const promptInput = extractImagePromptInput(input.draft.document_json);
+    if (promptInput === null) {
+      return { kind: 'none', reason: 'image_prompt_invalid' };
+    }
+    const outcome = await deps.imageGeneration.generateImage(promptInput);
+    if (outcome.kind !== 'generated') {
+      deps.logger.debug('publication.scheduler.image_fallback', { reason: outcome.reason });
+      return { kind: 'none', reason: `image_${outcome.reason}` };
+    }
+    const image = outcome.image;
+    const assetId = `mda:${randomToken()}`;
+    const inserted = await deps.mediaAssets.insertGeneratedAsset({
+      id: assetId,
+      sha256Hex: image.sha256Hex,
+      mimeType: image.contentType,
+      byteLength: image.bytes.byteLength,
+      aiProvider: 'workers-ai',
+      aiModel: image.modelId,
+      aiPrompt: image.prompt,
+      aiSeed: image.seed,
+      createdAt: input.nowMs,
+      updatedAt: input.nowMs,
+    });
+    if (!inserted.ok) {
+      return { kind: 'none', reason: 'image_ledger_write_failed' };
+    }
+    return {
+      kind: 'generated',
+      bytes: image.bytes,
+      contentType: image.contentType,
+      caption: caption.envelope,
+      assetId,
+      sentByUrl: true,
+    };
+  }
+
   async function sendClaimed(
     row: PublicationRow,
     generation: number,
@@ -1442,6 +1666,30 @@ export function createPublicationScheduler(deps: {
               }
             : { publicationId: row.id, draftId: row.draft_id, outcome: 'fence_rejected' };
         }
+      } else if (messages.length > 1) {
+        // ADR-0072: a text document with several recorded messages is
+        // either a completed EDITORIAL album (several real photos sent
+        // as one media group) — healed by the same ordinal+usage proof
+        // as album documents — or a ledger anomaly. Either way: never
+        // a re-send; a park keeps the records for the human dispositions.
+        const action = await evaluateEditorialAlbumEvidenceAction(row, messages, nowMs);
+        if (action.action === 'park') {
+          const marked = await markClaimedUncertain(deps.executor, {
+            publicationId: row.id,
+            generation,
+            errorCode: action.code,
+            nowMs,
+          });
+          return marked.kind === 'written'
+            ? {
+                publicationId: row.id,
+                draftId: row.draft_id,
+                outcome: 'failed_unconfirmed',
+                code: action.code,
+              }
+            : { publicationId: row.id, draftId: row.draft_id, outcome: 'fence_rejected' };
+        }
+        // Heal: falls through to healClaimedToPublished below.
       } else if (messages.length !== 1 || messages[0]!.chat_id !== destination) {
         // ADR-0071: a multi-record ledger may be an editorial album's
         // proof — evaluate it shape-aware before parking. An exact album
@@ -1536,9 +1784,20 @@ export function createPublicationScheduler(deps: {
     // ADR-0068: the photo is resolved BEFORE the send-started marker —
     // a photo miss degrades to the text send with the row still
     // claimable (the resolver never throws; every reason is logged).
-    const photo = await resolveEditorialPhoto({ row, documentJson: draft.document_json, nowMs });
+    // ADR-0072: a generated image is attempted ONLY when no source photo exists.
+    let photo = await resolveEditorialPhoto({ row, documentJson: draft.document_json, nowMs });
     if (photo.kind === 'none') {
       deps.logger.debug('publication.scheduler.photo_fallback', { reason: photo.reason });
+      if (photo.reason === 'photo_no_image' || photo.reason === 'photo_no_source_item') {
+        const generated = await resolveGeneratedImage({ draft, render, nowMs });
+        if (generated.kind === 'none') {
+          deps.logger.debug('publication.scheduler.image_fallback', {
+            reason: generated.reason,
+          });
+        } else {
+          photo = generated;
+        }
+      }
     }
     // THE DURABLE SEND-STARTED MARKER (the d65d811 P1-1 fix): the last
     // write BEFORE any network effect — the machine's `mark_send_started`
@@ -1581,10 +1840,16 @@ export function createPublicationScheduler(deps: {
               photo: photo.photo,
               caption: photo.caption,
             })
-          : await deps.transport.sendMessageRich({
-              chatId: destination,
-              content: render.envelope,
-            });
+          : photo.kind === 'generated' && deps.transport.sendPhotoBytesRich !== undefined
+            ? await deps.transport.sendPhotoBytesRich({
+                chatId: destination,
+                photo: { bytes: photo.bytes, contentType: photo.contentType },
+                caption: photo.caption,
+              })
+            : await deps.transport.sendMessageRich({
+                chatId: destination,
+                content: render.envelope,
+              });
       if (!Number.isInteger(sent.messageId) || sent.messageId <= 0) {
         // A response without a usable message id proves nothing: uncertain,
         // and NOTHING is recorded (the ledger never records a guess).
@@ -1635,13 +1900,13 @@ export function createPublicationScheduler(deps: {
         nowMs,
       });
       if (terminal.kind === 'written') {
-        // ADR-0068: after the delivery proof — a URL send saves its
-        // returned file_id for reuse, and the usage row records the
-        // photo on this publication. Best-effort: a ledger failure
-        // here never un-sends the post (the next send re-resolves
-        // by URL and the evidence check still heals from the
-        // recorded message).
-        if (photo.kind === 'photo') {
+        // ADR-0068/0070: after the delivery proof — a URL/bytes send
+        // saves its returned file_id for reuse, and the usage row
+        // records the photo on this publication. Best-effort: a ledger
+        // failure here never un-sends the post (the next send
+        // re-resolves by URL and the evidence check still heals from
+        // the recorded message).
+        if (photo.kind === 'photo' || photo.kind === 'generated') {
           try {
             if (
               photo.sentByUrl &&
