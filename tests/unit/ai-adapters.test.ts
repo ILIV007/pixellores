@@ -666,7 +666,7 @@ describe('Workers AI REST adapter — backup-account port (ai-policy-v2.3, ADR-0
     expect(request?.url.includes(TEST_TOKEN)).toBe(false);
     expect(request?.url.includes('token')).toBe(false);
     expect(request?.init.method).toBe('POST');
-    expect(request?.init.redirect).toBe('error');
+    expect(request?.init.redirect).toBe('manual');
     const headers = request?.init.headers as Record<string, string>;
     expect(headers['authorization']).toBe(`Bearer ${TEST_TOKEN}`);
     expect(headers['content-type']).toBe('application/json');
@@ -743,6 +743,26 @@ describe('Workers AI REST adapter — backup-account port (ai-policy-v2.3, ADR-0
       if (testCase.expected === 'quota_denied' && outcome.kind === 'quota_denied') {
         expect(outcome.retryAfterMs).toBe(30_000);
       }
+    }
+  });
+
+  it('maps a 3xx response to transient — redirects are never followed', async () => {
+    // Same root cause as the Gemini transport failure (ADR-0070 §1):
+    // workerd does NOT implement redirect: 'error' — the adapter sends
+    // 'manual' and a 3xx arrives as a response, which must never be
+    // followed (its Location is never read) and maps to transient like
+    // any other non-200 status.
+    for (const status of [301, 302, 307]) {
+      const transport: AiHttpTransport = async () =>
+        jsonRes(status, {}, { location: 'https://evil.example.com/' });
+      const adapter = createWorkersAiRestAdapter(TEST_ACCOUNT, TEST_TOKEN, transport);
+      const outcome = await adapter.complete({
+        modelId: '@cf/qwen/qwen3.8-27b',
+        messages: [{ role: 'user', content: 'x' }],
+        maxOutputTokens: 2048,
+        deadlineAtMs: OK_DEADLINE,
+      });
+      expect(outcome.kind).toBe('transient');
     }
   });
 
