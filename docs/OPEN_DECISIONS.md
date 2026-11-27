@@ -424,6 +424,14 @@ job's `maxAttempts: 10` still bounds executions across days (2 service
 attempts + quota-deferral retries, at most ~1/day). The denial IS
 observed in `ai_runs` (one failed `news_rewrite` row).
 
+**Amendment (v2.3 rebase, 2026-11-27):** the same treatment covers
+`budget_pressure` (the reserve-window denial, ai-policy-v2.3): the
+handler defers it to the next Tehran midnight exactly like
+`budget_denied`. Refunds could reopen units sooner, but the engine's
+only deferral primitive is the retry delay, and midnight is the safe
+boundary for both. The `ai_runs` row records the reason distinctly
+(`budget_pressure`, not `budget_denied`).
+
 ---
 
 ## OD-017 — Rewrite input excludes the source-report excerpt; `soulVersion` is prompt-encoded — **CLOSED**

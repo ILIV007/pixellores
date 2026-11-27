@@ -298,6 +298,11 @@ export function resolveJobsEngine(env: WorkerEnv, logger?: Logger): EngineResolu
         geminiEnabled: ai.config.AI_GEMINI_ENABLED,
         rewriteEnabled: ai.config.AI_GEMINI_REWRITE_ENABLED,
         geminiApiKeyPresent: env.GEMINI_API_KEY !== undefined,
+        // ai-policy-v2.3: the shared ladder builder sees the TRUE static
+        // view — the failover/workers-ai gates are passed through even
+        // though the rewrite uses the Gemini leg only.
+        failoverEnabled: ai.config.AI_FAILOVER_ENABLED,
+        workersAiBindingPresent,
       },
     });
     handlers.push(

@@ -415,11 +415,15 @@ export function createEditorialRewriteDraftHandler(
       return { kind: 'success' };
     }
 
-    // ---- 8c. QUOTA DENIED: defer to the next Tehran-day reset WITHOUT
-    // consuming a rewrite attempt — NO document write, the spent count
-    // does not move. The ai_runs row IS recorded (the denial happened);
-    // its failure never changes the retry.
-    if (outcome.reason === 'budget_denied') {
+    // ---- 8c. QUOTA DENIED / BUDGET PRESSURE: defer to the next
+    // Tehran-day reset WITHOUT consuming a rewrite attempt — NO document
+    // write, the spent count does not move. The ai_runs row IS recorded
+    // (the denial happened); its failure never changes the retry.
+    // `budget_pressure` (ai-policy-v2.3: the reserve-window denial) takes
+    // the SAME midnight deferral — refunds could reopen units sooner,
+    // but the engine's only deferral primitive is the retry delay, and
+    // midnight is the safe boundary for both.
+    if (outcome.reason === 'budget_denied' || outcome.reason === 'budget_pressure') {
       await recordRealRewriteRun(jobId, generation, observed, inputHash, rewriteFinishedAtMs);
       logger?.info('editorial.rewrite_draft.quota_deferred', { draftId: draft.id });
       return {

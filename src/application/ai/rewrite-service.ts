@@ -3,9 +3,17 @@
  * stage. Workers AI NEVER authors the final post — this service calls
  * ONLY the Gemini port (the allowlist trio, in order), over the SAME
  * plumbing the draft ladder uses:
+ * - the SHARED candidate-ladder builder (`ai-ladder.ts`, ai-policy-v2.3
+ *   — this service uses the ladder's Gemini leg only, per ADR-0070 §7:
+ *   WS1 merged first as PR #30, so the Gemini candidacy gates live in
+ *   ONE construction site, not in a second inline ladder);
  * - the per-provider budget store (authorize / record usage / refund),
- *   same gemini 40/day bucket — a rewrite never bypasses the shared cap;
- * - the durable AI circuit breaker (shared with drafting);
+ *   same gemini 40/day bucket — a rewrite never bypasses the shared cap
+ *   — authorized against the EFFECTIVE autonomous cap (40 − 6 reserve,
+ *   ai-policy-v2.3) with reserve-window denials classified as the
+ *   retryable `budget_pressure`;
+ * - the durable per-provider AI circuit breaker (the `gemini` breaker,
+ *   shared with drafting);
  * - the 60 s wall deadline, same `awaitWithDeadline` primitive;
  * - `ai_runs` task `'news_rewrite'` (own deterministic id namespace —
  *   the caller records the row; this service only returns attempts).
@@ -57,13 +65,18 @@ import {
   recordAiCircuitBreakerFailure,
   recordAiCircuitBreakerSuccess,
 } from './ai-circuit-breaker';
+import { buildAiCandidateLadder } from './ai-ladder';
+import {
+  classifyAiBudgetDenial,
+  effectiveAutonomousCap,
+  noteBudgetPressureWarning,
+} from './ai-budget-pressure';
 import {
   AI_BOUNDS,
   AI_DAILY_REQUEST_ATTEMPT_CAPS,
   AI_POLICY_VERSION,
   AI_REWRITE_MAX_OUTPUT_TOKENS,
   defaultProviderEligibility,
-  listModelsForProvider,
 } from '../../domain/ai/policy';
 import {
   AI_REWRITE_PROMPT_VERSION,
@@ -99,6 +112,16 @@ export interface AiRewriteServiceConfig {
   readonly rewriteEnabled: boolean;
   /** Whether a Gemini API key is configured (presence only — never the value). */
   readonly geminiApiKeyPresent: boolean;
+  /**
+   * Validated AI_FAILOVER_ENABLED operator kill switch (parseAiConfig,
+   * ai-policy-v2.3). Only feeds the shared ladder builder's gates — the
+   * rewrite is Gemini-only, so the failover leg is filtered out; the
+   * flag is passed through so the builder sees the TRUE static view.
+   * Optional with a default OFF, like the draft service.
+   */
+  readonly failoverEnabled?: boolean;
+  /** Whether the native Workers AI binding is present in the runtime. */
+  readonly workersAiBindingPresent: boolean;
 }
 
 export interface AiRewriteServiceDeps {
@@ -202,10 +225,11 @@ export function createAiRewriteService(deps: AiRewriteServiceDeps): AiRewriteSer
     const startedAt = deps.clock.now();
     const deadlineAtMs = startedAt + AI_BOUNDS.totalWallDeadlineMs;
 
-    // ---- Gate 3: the persistent AI circuit breaker — consulted BEFORE
-    // any authorization (same contract as the draft service).
+    // ---- Gate 3: the GEMINI account's persistent AI circuit breaker —
+    // consulted BEFORE any authorization (same contract as the draft
+    // service, ai-policy-v2.3: breakers are per provider now).
     try {
-      const breaker = await checkAiCircuitBreaker(deps.executor, startedAt);
+      const breaker = await checkAiCircuitBreaker(deps.executor, startedAt, 'gemini');
       if (!breaker.allow) {
         deps.logger.info('ai.rewrite.circuit_open', {
           consecutiveFailures: breaker.snapshot.consecutiveFailures,
@@ -229,14 +253,14 @@ export function createAiRewriteService(deps: AiRewriteServiceDeps): AiRewriteSer
     };
     const noteBreakerFailure = async (): Promise<void> => {
       try {
-        await recordAiCircuitBreakerFailure(deps.executor, deps.clock.now());
+        await recordAiCircuitBreakerFailure(deps.executor, deps.clock.now(), 'gemini');
       } catch {
         deps.logger.warn('ai.rewrite.circuit_breaker_record_failed');
       }
     };
     const noteBreakerSuccess = async (): Promise<void> => {
       try {
-        await recordAiCircuitBreakerSuccess(deps.executor, deps.clock.now());
+        await recordAiCircuitBreakerSuccess(deps.executor, deps.clock.now(), 'gemini');
       } catch {
         deps.logger.warn('ai.rewrite.circuit_breaker_record_failed');
       }
@@ -270,16 +294,28 @@ export function createAiRewriteService(deps: AiRewriteServiceDeps): AiRewriteSer
       });
     };
 
-    // ---- Candidate ladder: Gemini allowlist order ONLY. A missing port,
-    // a missing key, a disabled ladder flag, or unverified eligibility
-    // means NO Gemini path exists — zero network, typed deferred.
+    // ---- Candidate ladder: the SHARED versioned-policy builder
+    // (ai-ladder.ts, ai-policy-v2.3) — this service uses the ladder's
+    // Gemini leg ONLY (ADR-0070 §7). The builder sees the TRUE static
+    // view (all gates as wired); the non-Gemini legs are filtered out
+    // below, never called. A missing port, a missing key, a disabled
+    // ladder flag, or unverified eligibility means NO Gemini path
+    // exists — zero network, typed deferred.
     const geminiPort = deps.ports.gemini;
-    if (
-      !deps.config.geminiEnabled ||
-      !deps.config.geminiApiKeyPresent ||
-      geminiPort === undefined ||
-      !eligibility.gemini
-    ) {
+    const ladder = buildAiCandidateLadder({
+      workersAiPrimaryPresent:
+        deps.config.workersAiBindingPresent && deps.ports['workers-ai'] !== undefined,
+      failoverEnabled: deps.config.failoverEnabled === true,
+      backupPortPresent: deps.ports['workers-ai-backup'] !== undefined,
+      geminiEnabled: deps.config.geminiEnabled,
+      geminiKeyPresent: deps.config.geminiApiKeyPresent,
+      geminiPortPresent: geminiPort !== undefined,
+      geminiEligible: eligibility.gemini,
+    });
+    const geminiCandidates = ladder.candidates.filter(
+      (candidate) => candidate.provider === 'gemini',
+    );
+    if (geminiCandidates.length === 0) {
       const reason: AiDeferredReason = !deps.config.geminiEnabled
         ? 'no_free_path'
         : !deps.config.geminiApiKeyPresent
@@ -289,8 +325,13 @@ export function createAiRewriteService(deps: AiRewriteServiceDeps): AiRewriteSer
             : 'no_free_path';
       return { kind: 'deferred', reason, attempts };
     }
+    if (geminiPort === undefined) {
+      // Unreachable in practice: the ladder yields Gemini candidates
+      // only when the port is present — fail closed rather than assume.
+      return { kind: 'deferred', reason: 'no_free_path', attempts };
+    }
 
-    for (const model of listModelsForProvider('gemini')) {
+    for (const model of geminiCandidates) {
       if (providerCalls >= AI_BOUNDS.maxProviderAttempts) {
         break;
       }
@@ -300,13 +341,16 @@ export function createAiRewriteService(deps: AiRewriteServiceDeps): AiRewriteSer
       }
 
       // ---- Durable authorization BEFORE the attempt (no grant, no call).
+      // ai-policy-v2.3: the autonomous chain authorizes against the
+      // EFFECTIVE cap (hard cap − reserve) so the reserved tail of the
+      // day stays unspent headroom.
       let bucketDate: string;
       try {
         const authWaitStartedAtMs = deps.clock.now();
         const authorizationWait = await awaitWithDeadline(
           authorizeAiRequestAttempt(deps.executor, {
             provider: 'gemini',
-            cap: AI_DAILY_REQUEST_ATTEMPT_CAPS.gemini,
+            cap: effectiveAutonomousCap(AI_DAILY_REQUEST_ATTEMPT_CAPS.gemini),
             nowMs: authWaitStartedAtMs,
           }),
           deadlineAtMs,
@@ -326,15 +370,32 @@ export function createAiRewriteService(deps: AiRewriteServiceDeps): AiRewriteSer
           record(model.modelId, 'quota_denied', 0);
           // The app budget is exhausted for the Tehran day: no further
           // Gemini model can be authorized — stop the ladder here. The
-          // caller defers to the next-day reset WITHOUT consuming a
-          // rewrite attempt (ADR-0070 §5).
+          // denial is CLASSIFIED (ai-policy-v2.3): a denial inside the
+          // reserve window is the early, retryable `budget_pressure`;
+          // a denial at the hard cap stays the terminal `budget_denied`.
+          // Either way the caller defers to the next-day reset WITHOUT
+          // consuming a rewrite attempt (ADR-0070 §5).
+          const denialKind = await classifyAiBudgetDenial(deps.executor, {
+            provider: 'gemini',
+            hardCap: AI_DAILY_REQUEST_ATTEMPT_CAPS.gemini,
+            nowMs: deps.clock.now(),
+          });
+          const reason: AiDeferredReason =
+            denialKind === 'hard' ? 'budget_denied' : 'budget_pressure';
           deps.logger.info('ai.rewrite.result', {
             kind: 'deferred',
-            reason: 'budget_denied',
+            reason,
           });
-          return { kind: 'deferred', reason: 'budget_denied', attempts };
+          return { kind: 'deferred', reason, attempts };
         }
         bucketDate = authorization.bucketDate;
+        // ai-policy-v2.3: best-effort early pressure warning on the
+        // granted charge (visibility only — never changes the outcome,
+        // never fails the run).
+        await noteBudgetPressureWarning(deps.executor, deps.logger, {
+          provider: 'gemini',
+          nowMs: deps.clock.now(),
+        });
       } catch {
         deps.logger.warn('ai.rewrite.budget_store_failed', { provider: 'gemini' });
         return { kind: 'deferred', reason: 'budget_store_error', attempts };
@@ -501,8 +562,10 @@ export function createAiRewriteService(deps: AiRewriteServiceDeps): AiRewriteSer
         case 'quota_denied': {
           record(model.modelId, 'quota_denied', durationMs);
           // The provider answered with its own quota verdict: no refund
-          // and no breaker count — the caller defers to the next-day
-          // reset without consuming a rewrite attempt.
+          // and no breaker count — this is a HARD quota condition (the
+          // provider's own pool), so it maps to the terminal
+          // `budget_denied`; the caller defers to the next-day reset
+          // without consuming a rewrite attempt.
           if (callOutcome.retryAfterMs !== undefined) {
             knownRetryAfterMs = Math.max(knownRetryAfterMs, callOutcome.retryAfterMs);
           }

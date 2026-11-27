@@ -252,6 +252,8 @@ async function createHarness(): Promise<RewriteHarness> {
           geminiEnabled: true,
           rewriteEnabled: true,
           geminiApiKeyPresent: true,
+          // The fixture wires ONLY the Gemini port — no Workers AI binding.
+          workersAiBindingPresent: false,
         },
         executor,
         ports: { gemini: port },
@@ -423,6 +425,32 @@ describe('rewrite_draft over real D1 (ADR-0070 §4/§5)', () => {
     });
     expect(run?.status).toBe('failed');
     expect(run?.error_code).toBe('budget_denied');
+  });
+
+  it('a reserve-window denial (34 charged) defers as budget_pressure, also without consuming an attempt', async () => {
+    // Effective autonomous cap is 40 − 6 = 34: with 34 charged the
+    // authorization denies INSIDE the reserve window (34 ≤ count < 40).
+    await harness.executor.run({
+      sql: `INSERT INTO budgets (scope, budget_key, bucket_date, requests, input_tokens,
+              output_tokens, bytes_transferred, updated_at)
+            VALUES ('ai', 'gemini', ?, 34, 0, 0, 0, ?)`,
+      params: [tehranBudgetDay(NOW), NOW],
+    });
+    const outcome = await harness.runHandler();
+    expect(outcome.kind).toBe('retry');
+    expect(outcome.retryAfterMs).toBe(msUntilNextTehranMidnight(NOW));
+    // NO document write: the spent count does not move.
+    const draft = await harness.readDraft();
+    expect(draft?.documentJson).toBe(buildRawDraftJson());
+    expect(draft?.title).toBe('تیتر خام');
+    // The denial IS observed: one failed news_rewrite row, error
+    // budget_pressure (not the terminal budget_denied).
+    expect(await harness.countAiRuns('news_rewrite')).toBe(1);
+    const run = await harness.executor.first<{ status: string; error_code: string }>({
+      sql: `SELECT status, error_code FROM ai_runs WHERE task = 'news_rewrite'`,
+    });
+    expect(run?.status).toBe('failed');
+    expect(run?.error_code).toBe('budget_pressure');
   });
 
   it('a safety refusal marks the draft failed and the bridge never bridges it', async () => {

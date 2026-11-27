@@ -226,9 +226,15 @@ rewrite-guard.ts`):** every digit-sequence in the rewritten
   `AI_GEMINI_ENABLED` (the ladder fallback gate). The rewrite requires
   BOTH flags on, plus a present key, plus eligibility `partial_free_tier`.
   `AI_GEMINI_ENABLED` stays the ladder gate; `AI_ENABLED` stays the
-  master gate. **Policy version** `ai-policy-v2.2.1` →
-  `ai-policy-v2.2.2` (patch bump; **v2.3 stays reserved for the failover
-  release**).
+  master gate. **Policy version** `ai-policy-v2.3` (the failover's
+  version, landed as PR #30 — v2.3 is no longer reserved; the rewrite
+  rides it and the PROMPT version v3 carries this change) + prompt
+  `pixel-news-draft-v3`. **Budget (ai-policy-v2.3):** the rewrite
+  authorizes against the EFFECTIVE autonomous cap (gemini 40 − 6
+  reserve = 34); a denial inside the reserve window classifies as the
+  retryable `budget_pressure` (same midnight deferral as
+  `budget_denied`, no rewrite attempt consumed); a denial at the hard
+  cap stays the terminal `budget_denied`.
 
 ## 6. Transport — the relay, and its hardening follow-up
 
@@ -248,6 +254,16 @@ rewrite-guard.ts`):** every digit-sequence in the rewritten
 - **Remaining Gemini-path options if the relay retry also stays dead:**
   OpenRouter (needs the owner's API key — he said he will provide it
   later) or a non-Cloudflare proxy. Neither is in this PR.
+- **Rebase finding (2026-11-27): the backup REST adapter shipped the
+  SAME `redirect: 'error'` bug.** PR #30's
+  `workers-ai-rest-adapter.ts` passed `redirect: 'error'` to fetch, so
+  the entire failover path was dead on arrival in workerd (every
+  backup-account call would fail as `transient` in 0 ms — the same
+  signature as §1). Fixed in this PR (`redirect: 'manual'` + explicit
+  3xx → `transient`, never followed) with a 3xx regression test, and
+  ADR-0069's transport line corrected accordingly. The fix is a
+  transport-value correction, not an architecture change: the refusal
+  intent (never follow a redirect) is preserved.
 
 ## 7. Merge-order caveat
 
@@ -257,9 +273,12 @@ rewrite-guard.ts`):** every digit-sequence in the rewritten
   is Gemini-only, so it uses the ladder's Gemini leg, not the full
   ladder). If this PR merges first, WS1 rebases onto it. The ADR
   records the dependency either way; the code must not duplicate the
-  ladder's authorization/refund/breaker logic twice. (Implemented
-  2026-11-27 with the plumbing inline — WS1 unmerged at the time — so
-  WS1 rebases onto this PR.)
+  ladder's authorization/refund/breaker logic twice. (**Resolved
+  2026-11-27: WS1 merged FIRST as PR #30** — this PR rebases onto
+  `d3a217a`: the rewrite service builds its candidates through
+  `buildAiCandidateLadder` and takes the Gemini leg only, the breaker
+  calls are per-provider (`gemini`), and authorization uses the
+  effective autonomous cap with `budget_pressure` classification.)
 
 ## 8. Diagnostic gap fixed in this PR (small, in scope)
 
@@ -301,7 +320,15 @@ rewrite-guard.ts`):** every digit-sequence in the rewritten
   un-rewritten drafts, `deferredRewrite` counted, failed rewrites
   never bridged); config (new flag parses, default `false`); prompt v3
   byte-pinned (no Soul rules, no category/trust fields).
+- Unit (v2.3 rebase): reserve-window denial (34 charged) classifies
+  as retryable `budget_pressure`; hard-cap denial (40 charged) stays
+  `budget_denied`; the backup REST adapter sends `redirect: 'manual'`
+  and maps 3xx to `transient` (regression test for the
+  `redirect: 'error'` workerd bug).
 - REAL-D1 (registered in `test:db`): the fenced document update
   (rowcount authority; a non-ready draft refuses with zero writes);
-  the rewrite job handler end-to-end over a real draft (fake port).
+  the rewrite job handler end-to-end over a real draft (fake port),
+  including the `budget_pressure` deferral (34 charged → retry at the
+  next Tehran midnight, no document write, one failed `news_rewrite`
+  row with error `budget_pressure`).
 - Gate: `npm run check` green (the repo's full gate).

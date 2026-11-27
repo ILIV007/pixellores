@@ -457,6 +457,12 @@ interface FakeExecutorState {
   failStorage: boolean;
   denyAll: boolean;
   breakerOpen: boolean;
+  /**
+   * Charged-attempt readback for `readAiBudget` (ai-policy-v2.3
+   * classification): null = no budgets row (0 charged); a number = the
+   * stored `requests` count for the provider's Tehran day.
+   */
+  chargedAttempts: number | null;
 }
 
 function createFakeExecutor(nowMs: number): FakeExecutorState & DbExecutor {
@@ -466,10 +472,23 @@ function createFakeExecutor(nowMs: number): FakeExecutorState & DbExecutor {
     failStorage: false,
     denyAll: false,
     breakerOpen: false,
+    chargedAttempts: null as number | null,
     async query<T>(_: { sql: string }): Promise<DbRows<T>> {
       return { rows: [] as T[], meta: { durationMs: 0, changes: 0 } };
     },
-    async first<T>(_: { sql: string }): Promise<T | null> {
+    async first<T>(input: { sql: string }): Promise<T | null> {
+      // The breaker reads `settings`, the budget readback reads
+      // `budgets` — the fake answers each from its own state.
+      if (input.sql.includes('budgets')) {
+        if (state.chargedAttempts === null) {
+          return null;
+        }
+        return {
+          requests: state.chargedAttempts,
+          input_tokens: 0,
+          output_tokens: 0,
+        } as unknown as T;
+      }
       if (state.breakerOpen) {
         return {
           value_json: JSON.stringify({
@@ -583,6 +602,8 @@ function baseRewriteService(
       geminiEnabled: overrides.geminiEnabled ?? true,
       rewriteEnabled: overrides.rewriteEnabled ?? true,
       geminiApiKeyPresent: overrides.geminiApiKeyPresent ?? true,
+      // The fixture wires ONLY the Gemini port — no Workers AI binding.
+      workersAiBindingPresent: false,
     },
     executor,
     ports: { gemini: port },
@@ -749,6 +770,38 @@ describe('rewrite service (ADR-0070 §3)', () => {
     if (outcome.kind === 'deferred') {
       expect(outcome.reason).toBe('budget_denied');
       // The denied authorization IS recorded as a quota_denied attempt.
+      expect(outcome.attempts).toHaveLength(1);
+      expect(outcome.attempts[0]?.outcome).toBe('quota_denied');
+    }
+    expect(port.calls).toHaveLength(0);
+  });
+
+  it('a reserve-window denial classifies as retryable budget_pressure (ai-policy-v2.3)', async () => {
+    // Effective autonomous cap is 40 − 6 = 34: with 34 charged the
+    // authorization denies INSIDE the reserve window (34 ≤ count < 40).
+    const executor = createFakeExecutor(NOW);
+    executor.denyAll = true;
+    executor.chargedAttempts = 34;
+    const { service, port } = baseRewriteService({ executor });
+    const outcome = await service.rewriteNewsDraft(REWRITE_REQUEST);
+    expect(outcome.kind).toBe('deferred');
+    if (outcome.kind === 'deferred') {
+      expect(outcome.reason).toBe('budget_pressure');
+      expect(outcome.attempts).toHaveLength(1);
+      expect(outcome.attempts[0]?.outcome).toBe('quota_denied');
+    }
+    expect(port.calls).toHaveLength(0);
+  });
+
+  it('a hard-cap denial stays budget_denied (charged at the 40 cap)', async () => {
+    const executor = createFakeExecutor(NOW);
+    executor.denyAll = true;
+    executor.chargedAttempts = 40;
+    const { service, port } = baseRewriteService({ executor });
+    const outcome = await service.rewriteNewsDraft(REWRITE_REQUEST);
+    expect(outcome.kind).toBe('deferred');
+    if (outcome.kind === 'deferred') {
+      expect(outcome.reason).toBe('budget_denied');
       expect(outcome.attempts).toHaveLength(1);
       expect(outcome.attempts[0]?.outcome).toBe('quota_denied');
     }
