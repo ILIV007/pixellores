@@ -133,11 +133,13 @@ if (typeof appVersion !== 'string' || !/^\d+\.\d+\.\d+$/.test(appVersion)) {
 // 0005 (admin post) → 5 (R1.20-R1), 0006 (editorial provenance) → 6 (R1.22),
 // 0007 (inbound pipeline) → 7 (slice 4), 0008 (live watchlists) → 8
 // (slice 5), 0009 (post management + near-dup) → 9 (slice 6), 0010 (Soul
-// versioning) → 10 (slice 8). The real applied runtime stays 3 until
+// versioning) → 10 (slice 8), 0011 (publications.soul_version) → 11
+// (slice 9), 0012 (media_assets ai_* provenance) → 12 (ADR-0072 AI
+// image generation). The real applied runtime stays 3 until
 // the owner authorizes the remote migration.
 // ---------------------------------------------------------------------------
 
-const EXPECTED_SCHEMA_VERSION = '11';
+const EXPECTED_SCHEMA_VERSION = '12';
 
 expectEveryMatch(
   'src/shared/config/phase1a.ts',

@@ -151,8 +151,9 @@ describe('applyMigrations — failure atomicity (proof 6)', () => {
       '0009_post_management_near_dup',
       '0010_soul_versioning',
       '0011_autonomous_soul_stamp',
+      '0012_ai_image_provenance',
     ]);
-    expect(await appliedSchemaVersion()).toBe(11);
-    expect(await appliedMigrationId()).toBe('0011_autonomous_soul_stamp');
+    expect(await appliedSchemaVersion()).toBe(12);
+    expect(await appliedMigrationId()).toBe('0012_ai_image_provenance');
   });
 });

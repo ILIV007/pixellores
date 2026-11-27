@@ -260,6 +260,21 @@ function makePorts(options: { sendResult?: () => MediaGroupSendResultV1 } = {}) 
         row.updatedAt = at;
         return { ok: true };
       },
+      // ADR-0072: the generated-image insert — the fake mirrors the
+      // store: a 'validated' first-party row with the ai_* provenance.
+      insertGeneratedAsset: async (record) => {
+        const row: FakeRow = {
+          id: record.id,
+          type: 'photo',
+          sha256: record.sha256Hex,
+          rightsStatus: 'official',
+          status: 'validated',
+          createdAt: record.createdAt,
+          updatedAt: record.updatedAt,
+        };
+        rows.push(row);
+        return { ok: true };
+      },
       markFailed: async (id, at) => {
         const row = rows.find((r) => r.id === id);
         if (!row) return { ok: false, reason: 'asset_write_failed' };

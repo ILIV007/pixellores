@@ -126,8 +126,9 @@ function createStatefulExecutor(): StatefulFake {
         if (state.failRefunds) {
           throw new Error('refund write down');
         }
-        const nowMs = statement.params?.[0] as number;
-        const provider = statement.params?.[1] as string;
+        // Refund params (ADR-0072): [neuronCost, nowMs, budgetKey, bucketDate].
+        const nowMs = statement.params?.[1] as number;
+        const provider = statement.params?.[2] as string;
         const key = budgetKey(provider, tehranBudgetDay(nowMs));
         const current = state.budgets.get(key) ?? 0;
         if (current > 0) {
@@ -145,12 +146,15 @@ function createStatefulExecutor(): StatefulFake {
       if (state.denyAll) {
         return statements.map(() => ({ durationMs: 0, changes: 0 }));
       }
-      // UPDATE params: [nowMs, provider, bucketDate, cap].
+      // UPDATE params (ADR-0072): [neuronCost, nowMs, budgetKey,
+      // bucketDate, cap, neuronCost, neuronCap]. The neuron guard is
+      // trivially satisfied here (text attempts charge 0 neurons under
+      // an unbounded cap), so only the attempt cap is enforced.
       const update = statements[0];
       const updateParams = update?.params ?? [];
-      const updateCap = updateParams[3] as number;
-      const updateProvider = updateParams[1] as string;
-      const updateBucket = updateParams[2] as string;
+      const updateCap = updateParams[4] as number;
+      const updateProvider = updateParams[2] as string;
+      const updateBucket = updateParams[3] as string;
       const current = state.budgets.get(budgetKey(updateProvider, updateBucket)) ?? 0;
       if (current + 1 <= updateCap) {
         state.budgets.set(budgetKey(updateProvider, updateBucket), current + 1);
@@ -159,11 +163,13 @@ function createStatefulExecutor(): StatefulFake {
           { durationMs: 0, changes: 0 },
         ];
       }
-      // INSERT..SELECT params: [provider, bucketDate, nowMs, cap, ...].
+      // INSERT..SELECT params (ADR-0072): [budgetKey, bucketDate,
+      // neuronCost, nowMs, cap, neuronCost, neuronCap, budgetKey,
+      // bucketDate].
       const insertParams = statements[1]?.params ?? [];
       const insertProvider = insertParams[0] as string;
       const insertBucket = insertParams[1] as string;
-      const insertCap = insertParams[3] as number;
+      const insertCap = insertParams[4] as number;
       if (!state.budgets.has(budgetKey(insertProvider, insertBucket)) && 1 <= insertCap) {
         state.budgets.set(budgetKey(insertProvider, insertBucket), 1);
         return [

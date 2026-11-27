@@ -42,6 +42,9 @@ import {
 import { readExplicitPublishMode } from '../adapters/db/publishing-settings-store';
 import { createMediaAssetStore } from '../adapters/db/media-asset-store';
 import { parseTelegramPhase2Config } from '../shared/config/phase2';
+import { parseAiConfig } from '../shared/config/phase6';
+import { createWorkersAiImageAdapter } from '../adapters/ai/image/workers-ai-image-adapter';
+import { createImageGenerationService } from '../application/ai/image-generation-service';
 import { createBotApiClient } from '../adapters/telegram/bot-api-client';
 import { createConnectorRegistry } from '../connectors/registry';
 import { createDbExecutor } from '../adapters/db/db-executor';
@@ -228,6 +231,23 @@ export async function handleScheduled(
       logger.warn('cron.publication_scan_skipped', { reason: 'target_channel_missing' });
     } else {
       const botApi = botToken !== undefined ? createBotApiClient({ botToken, logger }) : undefined;
+      // ADR-0072: the image service is constructed ONLY while the
+      // AI_IMAGE_ENABLED flag is on AND the Workers AI binding is
+      // present; otherwise the scheduler dep stays undefined and
+      // no-photo posts go out as text exactly as before. The service
+      // itself re-checks the flag (defense in depth: a wired service
+      // never implies a live generation).
+      const aiImageFlags = parseAiConfig(env as Readonly<Record<string, unknown>>);
+      const imageGeneration =
+        aiImageFlags.config.AI_IMAGE_ENABLED && env.AI !== undefined
+          ? createImageGenerationService({
+              executor,
+              clock: systemClock,
+              logger,
+              port: createWorkersAiImageAdapter(env.AI),
+              config: { imageEnabled: true, bindingPresent: true },
+            })
+          : undefined;
       const scheduler = createPublicationScheduler({
         executor,
         destination,
@@ -271,12 +291,26 @@ export async function handleScheduled(
                         : {}),
                     })),
                   }),
+                // ADR-0072: the generated-image send rides the same
+                // client (multipart upload); the caption cast mirrors
+                // the message one above.
+                sendPhotoBytesRich: (input) =>
+                  botApi.sendPhotoBytesRich({
+                    chatId: input.chatId,
+                    photo: input.photo,
+                    caption:
+                      input.caption === undefined ? undefined : (input.caption as RichTextEnvelope),
+                  }),
               },
         // ADR-0068 + ADR-0071: the ledger for the photo paths (the
         // DURABLE-album media seam stays unwired here — the ledger may
         // exist alone; the editorial album rides the channel transport
         // above, not the media seam).
         mediaAssets: createMediaAssetStore(executor),
+        // ADR-0072: the image-generation service (undefined while the
+        // flag is off or the binding is absent — the scheduler then
+        // degrades no-photo posts to text, never throws).
+        imageGeneration,
         sendGate: { enabled: mode === 'auto' || mode === 'safe-auto' },
         contextProvider: createStoriesPolicyContextProvider(executor),
         clock: systemClock,

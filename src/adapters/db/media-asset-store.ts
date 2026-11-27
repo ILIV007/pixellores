@@ -40,7 +40,15 @@ interface AssetDbRow {
   readonly expires_at: number | null;
   readonly created_at: number;
   readonly updated_at: number;
+  readonly ai_provider: string | null;
+  readonly ai_model: string | null;
+  readonly ai_prompt: string | null;
+  readonly ai_seed: number | null;
 }
+
+/** The media_assets column list every read selects (migration 0012). */
+const ASSET_COLUMNS =
+  'id, type, canonical_url, sha256, visual_key, rights_status, r2_key, telegram_file_id, status, expires_at, created_at, updated_at, ai_provider, ai_model, ai_prompt, ai_seed';
 
 function placeholders(count: number): string {
   return Array.from({ length: count }, () => '?').join(', ');
@@ -60,6 +68,10 @@ function toAssetRecord(row: AssetDbRow): MediaAssetRecordV1 | null {
     expiresAt: row.expires_at ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    aiProvider: row.ai_provider ?? undefined,
+    aiModel: row.ai_model ?? undefined,
+    aiPrompt: row.ai_prompt ?? undefined,
+    aiSeed: row.ai_seed ?? undefined,
   });
   return read.ok ? read.record : null;
 }
@@ -70,7 +82,7 @@ export function createMediaAssetStore(executor: DbExecutor): MediaAssetStore {
       if (urls.length === 0) return [];
       const bounded = urls.slice(0, BOUNDED_IN_LIST);
       const result = await executor.query<AssetDbRow>({
-        sql: `SELECT id, type, canonical_url, sha256, visual_key, rights_status, r2_key, telegram_file_id, status, expires_at, created_at, updated_at
+        sql: `SELECT ${ASSET_COLUMNS}
               FROM media_assets WHERE canonical_url IN (${placeholders(bounded.length)})`,
         params: [...bounded],
       });
@@ -84,7 +96,7 @@ export function createMediaAssetStore(executor: DbExecutor): MediaAssetStore {
       if (meaningful.length === 0) return [];
       const bounded = meaningful.slice(0, BOUNDED_IN_LIST);
       const result = await executor.query<AssetDbRow>({
-        sql: `SELECT id, type, canonical_url, sha256, visual_key, rights_status, r2_key, telegram_file_id, status, expires_at, created_at, updated_at
+        sql: `SELECT ${ASSET_COLUMNS}
               FROM media_assets WHERE sha256 IN (${placeholders(bounded.length)})`,
         params: [...bounded],
       });
@@ -96,7 +108,7 @@ export function createMediaAssetStore(executor: DbExecutor): MediaAssetStore {
     async findExpiredAssets(nowMs, limit) {
       const bounded = Math.max(1, Math.min(64, limit));
       const result = await executor.query<AssetDbRow>({
-        sql: `SELECT id, type, canonical_url, sha256, visual_key, rights_status, r2_key, telegram_file_id, status, expires_at, created_at, updated_at
+        sql: `SELECT ${ASSET_COLUMNS}
               FROM media_assets
               WHERE r2_key IS NOT NULL AND expires_at IS NOT NULL AND expires_at <= ?
               ORDER BY expires_at ASC
@@ -168,6 +180,37 @@ export function createMediaAssetStore(executor: DbExecutor): MediaAssetStore {
         return { ok: true, kind: 'already_exists' };
       }
       return { ok: false, reason: 'asset_write_failed' };
+    },
+
+    async insertGeneratedAsset(input) {
+      // ADR-0072: ONE generated-image ledger row — status 'validated'
+      // (checked, publishable first-party content: rights 'official'),
+      // NO canonical URL (nothing to hotlink), NO R2 object, NO file_id
+      // until the first successful send (markUploaded saves it). The
+      // content hash is the identity (a retry regenerates with a new
+      // seed, so no dedup is attempted here — a failed send leaves a
+      // validated orphan row, never a block). The ai_* columns are the
+      // durable provenance (migration 0012).
+      const result = await executor.run({
+        sql: `INSERT INTO media_assets
+                (id, type, sha256, mime_type, file_size, rights_status, attribution,
+                 ai_provider, ai_model, ai_prompt, ai_seed,
+                 status, created_at, updated_at)
+              VALUES (?, 'photo', ?, ?, ?, 'official', 'ai-generated', ?, ?, ?, ?, 'validated', ?, ?)`,
+        params: [
+          input.id,
+          input.sha256Hex,
+          input.mimeType,
+          input.byteLength,
+          input.aiProvider,
+          input.aiModel,
+          input.aiPrompt,
+          input.aiSeed,
+          input.createdAt,
+          input.updatedAt,
+        ],
+      });
+      return result.changes >= 1 ? { ok: true } : { ok: false, reason: 'asset_write_failed' };
     },
 
     async markUploaded(id, fileId, updatedAtMs) {

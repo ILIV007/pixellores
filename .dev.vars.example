@@ -8,7 +8,7 @@
 # --- Non-secret (local overrides) ----------------------------------------------
 # ENVIRONMENT=development
 # LOG_LEVEL=debug
-# APP_VERSION=1.47.0
+# APP_VERSION=1.48.0
 # Phase 2A Telegram ingress flag (non-secret). Turn on locally ONLY together
 # with the three Phase 2 secrets below (fake local fixtures are fine).
 # TELEGRAM_INGRESS_ENABLED=false
@@ -34,6 +34,10 @@
 # AI_GEMINI_ENABLED also requires verified Free-tier eligibility.
 # AI_ENABLED=false
 # AI_GEMINI_ENABLED=false
+# ADR-0072 AI image-generation gate (non-secret). INDEPENDENT fail-closed
+# flag: with false the image service defers and no-photo posts go out as
+# text exactly as before; never implies AI_ENABLED.
+# AI_IMAGE_ENABLED=false
 # ai-policy-v2.3 (ADR-0069) backup-account failover kill switch (non-secret).
 # Enabling ALSO requires the BACKUP_CF_ACCOUNT_ID var (non-secret, below) and
 # the BACKUP_WORKERS_AI_API_TOKEN secret (below); flipping it off kills
@@ -90,3 +94,4 @@
 # IGDB_CLIENT_SECRET=
 # GITHUB_TOKEN=
 # BLUESKY_APP_PASSWORD=
+

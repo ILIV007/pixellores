@@ -216,6 +216,24 @@ export interface TelegramSendPhotoRichInput {
   readonly customEmojiEligible?: boolean;
 }
 
+/**
+ * ADR-0072: the GENERATED-image photo send (sendPhoto, no parse_mode).
+ * The photo is fresh BYTES (a Workers AI image), uploaded as multipart
+ * — there is no file_id and no URL yet. The 10 MB Bot API upload bound
+ * is enforced at this boundary, before any fetch.
+ */
+export interface TelegramSendPhotoBytesRichInput {
+  readonly chatId: number | string;
+  readonly photo: {
+    readonly bytes: Uint8Array;
+    /** An image/* content type (flux returns image/jpeg). */
+    readonly contentType: string;
+  };
+  /** kind must be 'caption'. Absent = the photo is sent without a caption. */
+  readonly caption?: RichTextEnvelope;
+  readonly customEmojiEligible?: boolean;
+}
+
 export interface TelegramSendVideoRichInput {
   readonly chatId: number | string;
   /** Telegram file_id of the video (opaque reference, never a URL here). */
@@ -297,6 +315,8 @@ export interface TelegramRichTextClient {
   sendMessageRich(input: TelegramSendRichInput): Promise<TelegramSentMessage>;
   /** R1.21: the single-photo channel/preview send (sendPhoto, no parse_mode). */
   sendPhotoRich(input: TelegramSendPhotoRichInput): Promise<TelegramSentMessage>;
+  /** ADR-0072: the generated-image photo send (sendPhoto multipart upload, no parse_mode). */
+  sendPhotoBytesRich(input: TelegramSendPhotoBytesRichInput): Promise<TelegramSentMessage>;
   /** R1.21: the single-video channel/preview send (sendVideo, no parse_mode). */
   sendVideoRich(input: TelegramSendVideoRichInput): Promise<TelegramSentMessage>;
   /** Phase 7.3: the album media-group send (sendMediaGroup, no parse_mode). */
@@ -346,6 +366,8 @@ export interface TelegramBotApiClient {
 }
 
 export const DEFAULT_TELEGRAM_API_TIMEOUT_MS = 10_000;
+/** Bot API photo-upload bound (10.3): a photo upload is at most 10 MB. */
+export const TELEGRAM_PHOTO_MAX_BYTES = 10 * 1024 * 1024;
 /** Strict byte cap on any single Telegram API response (stream-enforced). */
 export const MAX_TELEGRAM_RESPONSE_BYTES = 1_000_000;
 /** Conservative retry_after bound: 1 second .. 1 hour. */
@@ -876,6 +898,46 @@ export function createBotApiClient(
             : {}),
         },
         parseSentMessage,
+      );
+    },
+
+    // ---- ADR-0072: the generated-image photo send (multipart upload) ----
+    async sendPhotoBytesRich(input) {
+      // The bytes are validated at the boundary (non-empty, image/*,
+      // within the Bot API 10 MB upload bound): a malformed upload fails
+      // typed with ZERO fetch calls. The multipart transport lets the
+      // runtime set the boundary — no content-type header is declared.
+      const bytes = input.photo?.bytes;
+      const contentType = input.photo?.contentType;
+      if (
+        !(bytes instanceof Uint8Array) ||
+        bytes.byteLength === 0 ||
+        bytes.byteLength > TELEGRAM_PHOTO_MAX_BYTES ||
+        typeof contentType !== 'string' ||
+        !contentType.startsWith('image/')
+      ) {
+        throw new TelegramRichContentError('invalid_content');
+      }
+      const caption =
+        input.caption === undefined
+          ? undefined
+          : requireRichContent(input.caption, 'caption', input.customEmojiEligible === true);
+      const form = new FormData();
+      form.append('chat_id', String(input.chatId));
+      form.append(
+        'photo',
+        new Blob([bytes], { type: contentType }),
+        contentType === 'image/png' ? 'photo.png' : 'photo.jpg',
+      );
+      if (caption !== undefined) {
+        form.append('caption', caption.text);
+        form.append('caption_entities', JSON.stringify(richTextEntitiesWire(caption.entities)));
+      }
+      return callMethod(
+        'sendPhoto',
+        { chat_id: input.chatId, photo: '' },
+        parseSentPhotoMessage,
+        form,
       );
     },
 

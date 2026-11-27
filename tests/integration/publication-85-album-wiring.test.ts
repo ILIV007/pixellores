@@ -149,9 +149,11 @@ const CAPTION = { text: 'کپشن آلبوم خبری', entities: [] as readonly
 
 interface MediaGroupCall {
   readonly chatId: number | string;
+  /** Mirrors MediaGroupItemWireV1: exactly one of media/url per item. */
   readonly items: readonly {
     readonly type: string;
-    readonly media: string;
+    readonly media?: string;
+    readonly url?: string;
     readonly caption?: { readonly text: string; readonly entities: readonly unknown[] };
   }[];
   readonly attachments: readonly unknown[];

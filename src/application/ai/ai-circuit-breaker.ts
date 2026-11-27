@@ -3,8 +3,8 @@
  * ai-policy-v2.3 makes the state PER PROVIDER/ACCOUNT).
  *
  * Workers are stateless, so the breaker lives in the EXISTING D1
- * `settings` table (migration 0001, unchanged) under the per-provider
- * key `ai.circuit_breaker.{provider}` (e.g. `ai.circuit_breaker.workers-ai`
+ * `settings` table (migration 0001, unchanged) under the per-scope
+ * key `ai.circuit_breaker.{scope}` (e.g. `ai.circuit_breaker.workers-ai`
  * and `ai.circuit_breaker.workers-ai-backup`) — no migration: each key is
  * just one more settings row, exactly like the `soul.current_version`
  * pointer (src/adapters/db/soul-store.ts). value_json holds
@@ -18,11 +18,22 @@
  * is orphaned, harmless — an absent row parses CLOSED); the state
  * carries no durable meaning worth migrating.
  *
+ * IMAGE SCOPE (ADR-0072): image generation is one more scope in the
+ * same family (`ai.circuit_breaker.image`) — a different TASK on the
+ * same provider path, so its failures are evidence about the image path
+ * only. An open image breaker never moves a text breaker's counter and
+ * vice versa; same threshold and cooldown, separate state.
+ *
+ * The scope parameter defaults to `'workers-ai'`: the pre-v2.3 single
+ * breaker WAS the workers-ai breaker, so a caller that does not name a
+ * scope keeps its exact old behavior. New callers (the v2.3 ladder, the
+ * image service) always pass an explicit scope.
+ *
  * Behavior:
  * - CLOSED: provider calls proceed; each consecutive provider failure
  *   (transient / model_unavailable / deadline_exceeded — the failure
  *   classes the draft/rewriter/relation services observe) increments
- *   THAT provider's counter. At AI_CIRCUIT_BREAKER_FAILURE_THRESHOLD
+ *   THAT scope's counter. At AI_CIRCUIT_BREAKER_FAILURE_THRESHOLD
  *   (5) the breaker OPENS. Quota denials, auth failures, safety
  *   refusals and invalid output are NOT provider failures and never
  *   move the counter; a provider answer (success) resets it.
@@ -54,17 +65,31 @@
 import type { DbExecutor } from '../../adapters/db/db-executor';
 import type { AiProvider } from '../../domain/ai/types';
 
-/** Settings-table key prefix carrying the per-provider breaker state. */
+/** Settings-table key prefix carrying the per-scope breaker state. */
 export const AI_CIRCUIT_BREAKER_SETTINGS_KEY_PREFIX = 'ai.circuit_breaker';
 
 /**
- * The per-provider settings key for one account's breaker state
- * (`ai.circuit_breaker.{provider}`). The provider string is a compile
- * time `AiProvider` literal — bounded, case-stable, never user input.
+ * Breaker scopes: one per provider/account, plus the image-generation
+ * task (ADR-0072). A scope string is a compile-time literal — bounded,
+ * case-stable, never user input.
  */
-export function aiCircuitBreakerSettingsKey(provider: AiProvider): string {
-  return `${AI_CIRCUIT_BREAKER_SETTINGS_KEY_PREFIX}.${provider}`;
+export type AiCircuitBreakerScope = AiProvider | 'image';
+
+/**
+ * The per-scope settings key for one account's or task's breaker state
+ * (`ai.circuit_breaker.{scope}`).
+ */
+export function aiCircuitBreakerSettingsKey(scope: AiCircuitBreakerScope): string {
+  return `${AI_CIRCUIT_BREAKER_SETTINGS_KEY_PREFIX}.${scope}`;
 }
+
+/**
+ * The image-generation breaker scope (ADR-0072): the image service
+ * reuses this module with its own scope, so image failures can never
+ * open a text breaker and vice versa. Same threshold and cooldown;
+ * separate state.
+ */
+export const AI_IMAGE_CIRCUIT_BREAKER_SCOPE: AiCircuitBreakerScope = 'image';
 
 /** Consecutive provider failures that OPEN the breaker. */
 export const AI_CIRCUIT_BREAKER_FAILURE_THRESHOLD = 5;
@@ -145,7 +170,7 @@ function parseSnapshot(valueJson: string, nowMs: number): AiCircuitBreakerSnapsh
 
 async function writeSnapshot(
   executor: DbExecutor,
-  provider: AiProvider,
+  scope: AiCircuitBreakerScope,
   snapshot: AiCircuitBreakerSnapshot,
   nowMs: number,
 ): Promise<void> {
@@ -161,23 +186,23 @@ async function writeSnapshot(
           ON CONFLICT(key) DO UPDATE SET
             value_json = excluded.value_json,
             updated_at = excluded.updated_at`,
-    params: [aiCircuitBreakerSettingsKey(provider), valueJson, nowMs],
+    params: [aiCircuitBreakerSettingsKey(scope), valueJson, nowMs],
   });
 }
 
 /**
- * Read ONE provider's current breaker snapshot. Throws on a D1 error
+ * Read ONE scope's current breaker snapshot. Throws on a D1 error
  * (the caller decides the fail-open policy); a missing/malformed row is
  * CLOSED.
  */
 export async function readAiCircuitBreaker(
   executor: DbExecutor,
   nowMs: number,
-  provider: AiProvider,
+  scope: AiCircuitBreakerScope = 'workers-ai',
 ): Promise<AiCircuitBreakerSnapshot> {
   const row = await executor.first<{ value_json: string }>({
     sql: 'SELECT value_json FROM settings WHERE key = ?',
-    params: [aiCircuitBreakerSettingsKey(provider)],
+    params: [aiCircuitBreakerSettingsKey(scope)],
   });
   if (row === null) {
     return closedSnapshot(nowMs);
@@ -186,7 +211,7 @@ export async function readAiCircuitBreaker(
 }
 
 /**
- * Decide whether a provider call on `provider` may start. An OPEN
+ * Decide whether a provider call on `scope` may start. An OPEN
  * breaker past its cooldown transitions to HALF-OPEN (one durable
  * write) and admits the probe; an OPEN breaker inside its cooldown
  * denies. Throws on a D1 error — callers fail open (allow) so a
@@ -195,9 +220,9 @@ export async function readAiCircuitBreaker(
 export async function checkAiCircuitBreaker(
   executor: DbExecutor,
   nowMs: number,
-  provider: AiProvider,
+  scope: AiCircuitBreakerScope = 'workers-ai',
 ): Promise<AiCircuitBreakerCheck> {
-  const snapshot = await readAiCircuitBreaker(executor, nowMs, provider);
+  const snapshot = await readAiCircuitBreaker(executor, nowMs, scope);
   if (snapshot.state === 'closed') {
     return { allow: true, probe: false, snapshot };
   }
@@ -214,14 +239,14 @@ export async function checkAiCircuitBreaker(
       openedAtMs: snapshot.openedAtMs,
       updatedAtMs: nowMs,
     };
-    await writeSnapshot(executor, provider, halfOpen, nowMs);
+    await writeSnapshot(executor, scope, halfOpen, nowMs);
     return { allow: true, probe: true, snapshot: halfOpen };
   }
   return { allow: false, probe: false, snapshot };
 }
 
 /**
- * Record ONE consecutive provider failure on `provider`'s own breaker.
+ * Record ONE consecutive provider failure on `scope`'s own breaker.
  * A half-open probe failure re-opens immediately with a fresh cooldown;
  * otherwise the counter grows and opens the breaker at the threshold.
  * Throws on a D1 error — callers swallow it (best-effort bookkeeping).
@@ -229,9 +254,9 @@ export async function checkAiCircuitBreaker(
 export async function recordAiCircuitBreakerFailure(
   executor: DbExecutor,
   nowMs: number,
-  provider: AiProvider,
+  scope: AiCircuitBreakerScope = 'workers-ai',
 ): Promise<AiCircuitBreakerSnapshot> {
-  const current = await readAiCircuitBreaker(executor, nowMs, provider);
+  const current = await readAiCircuitBreaker(executor, nowMs, scope);
   const failures = current.consecutiveFailures + 1;
   const next: AiCircuitBreakerSnapshot =
     current.state === 'half_open' || failures >= AI_CIRCUIT_BREAKER_FAILURE_THRESHOLD
@@ -242,12 +267,12 @@ export async function recordAiCircuitBreakerFailure(
           openedAtMs: null,
           updatedAtMs: nowMs,
         };
-  await writeSnapshot(executor, provider, next, nowMs);
+  await writeSnapshot(executor, scope, next, nowMs);
   return next;
 }
 
 /**
- * Record a provider answer (success) on `provider`'s own breaker: the
+ * Record a provider answer (success) on `scope`'s own breaker: the
  * counter resets and a half-open probe closes the breaker. A closed
  * breaker with a zero counter writes NOTHING (the common path stays a
  * single read). Throws on a D1 error — callers swallow it (best-effort).
@@ -255,9 +280,9 @@ export async function recordAiCircuitBreakerFailure(
 export async function recordAiCircuitBreakerSuccess(
   executor: DbExecutor,
   nowMs: number,
-  provider: AiProvider,
+  scope: AiCircuitBreakerScope = 'workers-ai',
 ): Promise<AiCircuitBreakerSnapshot> {
-  const current = await readAiCircuitBreaker(executor, nowMs, provider);
+  const current = await readAiCircuitBreaker(executor, nowMs, scope);
   if (current.state === 'closed' && current.consecutiveFailures === 0) {
     return current;
   }
@@ -267,6 +292,6 @@ export async function recordAiCircuitBreakerSuccess(
     openedAtMs: null,
     updatedAtMs: nowMs,
   };
-  await writeSnapshot(executor, provider, next, nowMs);
+  await writeSnapshot(executor, scope, next, nowMs);
   return next;
 }

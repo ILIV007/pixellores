@@ -12,6 +12,7 @@ describe('parseAiConfig — Phase 6 flags and Gemini origin', () => {
     const { config, result } = parseAiConfig({});
     expect(result.ok).toBe(true);
     expect(config.AI_ENABLED).toBe(false);
+    expect(config.AI_IMAGE_ENABLED).toBe(false);
     expect(config.AI_GEMINI_ENABLED).toBe(false);
     // ADR-0070: the rewrite stage has its OWN flag, default OFF — the
     // ladder flag alone never opens it.
@@ -34,6 +35,20 @@ describe('parseAiConfig — Phase 6 flags and Gemini origin', () => {
     const off = parseAiConfig({ AI_GEMINI_REWRITE_ENABLED: 'false' });
     expect(off.result.ok).toBe(true);
     expect(off.config.AI_GEMINI_REWRITE_ENABLED).toBe(false);
+  });
+
+  it('accepts the image flag independently of the text flag (ADR-0072)', () => {
+    const { config, result } = parseAiConfig({ AI_IMAGE_ENABLED: 'true' });
+    expect(result.ok).toBe(true);
+    expect(config.AI_IMAGE_ENABLED).toBe(true);
+    // Independence: the image flag NEVER implies the text AI flag.
+    expect(config.AI_ENABLED).toBe(false);
+  });
+
+  it('rejects an invalid image flag value instead of coercing it', () => {
+    const { result } = parseAiConfig({ AI_IMAGE_ENABLED: 'yes' });
+    expect(result.ok).toBe(false);
+    expect(result.issues.map((issue) => issue.field)).toContain('AI_IMAGE_ENABLED');
   });
 
   it('accepts a valid operator relay origin', () => {

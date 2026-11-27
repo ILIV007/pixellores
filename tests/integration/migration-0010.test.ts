@@ -10,8 +10,9 @@ import { createDbExecutor } from '../../src/adapters/db/db-executor';
  * database:
  *
  *  1. apply ONLY migrations 0001..0009 -> a genuine schema-v9 database;
- *  2. apply the real append-only plan -> ONLY 0010 is pending;
- *  3. schema version becomes 10 with the 0010 migration id;
+ *  2. apply the real append-only plan -> 0010 + 0011 + 0012 are
+ *     pending;
+ *  3. schema version becomes 12 with the 0012 migration id;
  *  4. the `souls` table exists with its CHECK constraints enforced at the
  *     DATABASE level (version >= 1, non-empty text, 64-hex sha256,
  *     positive creator), and `published_posts.soul_version` accepts NULL
@@ -45,23 +46,23 @@ beforeEach(async () => {
   // Build the version-9 baseline ONCE per test; storage persists across
   // tests WITHIN this file, so on later tests the V9 plan is a no-op.
   await applyMigrations(db, V9_ONLY);
-  // Upgrade to the real append-only plan — on the first run ONLY 0010 +
-  // 0011 are pending; on later tests this is an idempotent no-op. Either way the
-  // database ends at version 11.
+  // Upgrade to the real append-only plan — on the first run 0010 +
+  // 0011 + 0012 are pending; on later tests this is an idempotent no-op. Either way the
+  // database ends at version 12.
   const upgrade = await applyMigrations(db);
-  expect(upgrade.finalVersion).toBe(11);
+  expect(upgrade.finalVersion).toBe(12);
 });
 
 describe('slice 8 — migration 0010: Soul versioning (schema 9 → 10)', () => {
-  it('applies 0010 + 0011 as the only pending steps on a fresh schema-v9 database', async () => {
+  it('applies 0010 + 0011 + 0012 as the only pending steps on a fresh schema-v9 database', async () => {
     const rerun = await applyMigrations(db);
     expect(rerun.applied).toEqual([]);
-    expect(rerun.finalVersion).toBe(11);
-    expect(await appliedSchemaVersion()).toBe(11);
+    expect(rerun.finalVersion).toBe(12);
+    expect(await appliedSchemaVersion()).toBe(12);
     const idRow = await executor.first<{ value: string }>({
       sql: `SELECT value FROM schema_metadata WHERE key = 'migration_id'`,
     });
-    expect(idRow?.value).toBe('0011_autonomous_soul_stamp');
+    expect(idRow?.value).toBe('0012_ai_image_provenance');
   });
 
   it('enforces the souls CHECK constraints at the database level', async () => {

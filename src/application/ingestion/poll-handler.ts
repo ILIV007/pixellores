@@ -239,7 +239,8 @@ export function createSourcePollHandler(
         capability.kind === 'known_v8_live_watchlists' ||
         capability.kind === 'known_v9_post_management' ||
         capability.kind === 'known_v10_soul' ||
-        capability.kind === 'known_v11_autonomous_soul';
+        capability.kind === 'known_v11_autonomous_soul' ||
+        capability.kind === 'known_v12_ai_image';
       let ownedHoldUntilMs: number | null = null;
       if (ownershipEnabled) {
         const acquisition = await acquirePollOwnership(options.executor, {
