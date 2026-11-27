@@ -1,8 +1,8 @@
 {
   "project": "PIXEL",
-  "appVersion": "1.48.0",
-  "schemaVersion": 12,
-  "versionStatus": "SLICE_09_DONE_PENDING_GATES_AND_PUSH; AUTONOMOUS_CHAIN_WIRED; MIGRATION_0011; SCHEMA_VERSION_11; AI_OFF_IN_REPO (TEST-WINDOW ONLY VIA DEPLOY OVERRIDE, RESTORED AFTER); NO_LIVE_INFERENCE_IN_REPO; MODE_PAUSED_RESTING_STATE; AI_IMAGE_GENERATION_1.48.0_SCHEMA_12_MIGRATION_0012_AI_IMAGE_ENABLED_FALSE_SHIPS_OFF",
+  "appVersion": "1.49.0",
+  "schemaVersion": 13,
+  "versionStatus": "SLICE_09_DONE_PENDING_GATES_AND_PUSH; AUTONOMOUS_CHAIN_WIRED; MIGRATION_0011; SCHEMA_VERSION_11; AI_OFF_IN_REPO (TEST-WINDOW ONLY VIA DEPLOY OVERRIDE, RESTORED AFTER); NO_LIVE_INFERENCE_IN_REPO; MODE_PAUSED_RESTING_STATE; AI_IMAGE_GENERATION_1.48.0_SCHEMA_12_MIGRATION_0012_AI_IMAGE_ENABLED_FALSE_SHIPS_OFF; BRIDGE_LIVELOCK_FIX_1.49.0_SCHEMA_13_MIGRATION_0013_FACT_GUARD_REEVALUATION_GATE_PROGRESS",
   "reviewRevision": "Slice 9 — Final wiring: autonomous chain source → draft → publish (app 1.47.0, schema 11). Registry: VGC / Gematsu / GameSpot RSS added as code-level additions (blueprint untouched). Ingestion → editorial drain (fresh items → editorial.prepare_draft jobs, bounded 10/tick). Draft → publication bridge (ag1 auto-gate → fenced auto_approved → idempotent enqueuePublication, P1 priority 80, Soul-stamped). Publication scheduler scan wired into cron with the real Bot API transport and the send gate resolved from the D1 publishing mode (paused blocks everything; missing mode row = paused). Migration 0011 adds publications.soul_version (schema 10 → 11) so autonomous posts carry the Soul stamp the slice-8 contract requires. Ownership capability lists extended to v11 (v9/v10 lag fixed). First test posts: live items through the wired chain in a controlled window (mode auto only while posting, then paused + all flags off). No-AI draft path still missing (DESIGN §6) — recorded as a follow-up in the PR body, not silently skipped. Tests: new unit (registry additions) + integration (drain/bridge/scan e2e, migration-0011), registered in test:db.",
   "sourceCommit": "fa62e70e90f78c19ba2672daccfca9f821f5959f",
   "sourceTree": "26f7261ddc87175f391642a01cc5fb57ab0908ee",

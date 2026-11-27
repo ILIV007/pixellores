@@ -46,23 +46,23 @@ beforeEach(async () => {
   // Build the version-10 baseline ONCE per test; storage persists across
   // tests WITHIN this file, so on later tests the V10 plan is a no-op.
   await applyMigrations(db, V10_ONLY);
-  // Upgrade to the real append-only plan — on the first run 0011 + 0012
+  // Upgrade to the real append-only plan — on the first run 0011 + 0012 + 0013
   // are pending; on later tests this is an idempotent no-op. Either way
-  // the database ends at version 12.
+  // the database ends at version 13.
   const upgrade = await applyMigrations(db);
-  expect(upgrade.finalVersion).toBe(12);
+  expect(upgrade.finalVersion).toBe(13);
 });
 
 describe('slice 9 — migration 0011: autonomous soul stamp (schema 10 → 11)', () => {
-  it('lands at version 12 with the 0012 migration id on a fresh schema-v10 database (0011 + 0012 pending)', async () => {
+  it('lands at version 13 with the 0013 migration id on a fresh schema-v10 database (0011 + 0012 + 0013 pending)', async () => {
     const rerun = await applyMigrations(db);
     expect(rerun.applied).toEqual([]);
-    expect(rerun.finalVersion).toBe(12);
-    expect(await appliedSchemaVersion()).toBe(12);
+    expect(rerun.finalVersion).toBe(13);
+    expect(await appliedSchemaVersion()).toBe(13);
     const idRow = await executor.first<{ value: string }>({
       sql: `SELECT value FROM schema_metadata WHERE key = 'migration_id'`,
     });
-    expect(idRow?.value).toBe('0012_ai_image_provenance');
+    expect(idRow?.value).toBe('0013_bridge_gate_progress');
   });
 
   it('accepts NULL and positive soul_version on publications, refuses 0/negative', async () => {

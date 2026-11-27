@@ -26,6 +26,7 @@ ADR. New unresolved decisions would be added here with status Open.
 | OD-017 | Rewrite input excludes the source-report excerpt; `soulVersion` is prompt-encoded | Closed   | 2026-11-27 | ADR-0070 |
 | OD-018 | Editorial post render, v3 form (msg-16 shape)                                     | Closed   | 2026-11-22 | ADR-0071 |
 | OD-019 | Generated image in a real-photo album                                             | **Open** | —          | ADR-0072 |
+| OD-020 | Bridge livelock: fact-guard re-evaluation + gate-evaluation progress              | Closed   | 2026-11-28 | ADR-0073 |
 
 ---
 
@@ -462,6 +463,12 @@ stamp can never claim a Soul the prompt does not carry.
 
 **Open follow-ups (not in this change):** (1) prompt v3 + mapper must start writing the structured `figures` / `quote` / `verdict` / `gameName` / `gamePageUrl` fields the render consumes (until then: derived figures, no quote/verdict, alias game name, plain italic name); (2) the bold+mono main figure needs live verification on the first real post after deploy (no dry-run for entity parsing) — fallback is code-only. (The multi-photo album, max 4 source photos in one media group, IS in this change — ADR-0071.)
 ---
+
+## OD-020 — Bridge livelock: fact-guard re-evaluation + gate-evaluation progress — **Closed**
+
+**Context:** posting went live on auto 2026-11-27 23:15 with ZERO new posts by 23:28 — the bridge re-scanned the same five oldest ready drafts on every 5-minute pass (TOTAL deterministic gate over stored pre-ADR-0066 fact-guard reports: Persian-digit tokens failing the numbers lens while the Latin digits sat in the excerpt). ADR-0066 had recorded that stored pre-fix reports "are NOT retroactively re-evaluated" because no re-evaluation path existed.
+
+**Decision:** build the path (ADR-0073): layer 1 re-runs the fact-guard with the current folded lens over the draft's own stored claims + the stored source item, replacing the stored report only when the rebuild validates (item exists, content_hash matches, excerpt truncation matches, rebuilt report reads back as valid v1) under compare-and-swap, with one audit event — fail-closed, claims/excerpts/status untouched, grounding never loosened; layer 2 is migration 0013 (`draft_gate_evaluations`) + the progress-ordered bridge scan so deterministically-failing drafts sink below unevaluated ones. Schema 12 → 13, app 1.49.0. **Closed** 2026-11-28.
 
 ## OD-019 — When, if ever, a generated image joins a real-photo album (+ disclosure wording) — **Open**
 

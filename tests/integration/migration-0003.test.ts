@@ -75,16 +75,16 @@ beforeEach(async () => {
 });
 
 describe('migration 0003 (jobs DLQ-delivery reconciliation)', () => {
-  it('upgrades a populated schema-v2 database through 0003 (and the appended 0004+0005+0006+0007+0008+0009+0010+0011+0012 candidates)', async () => {
-    // R1.20-R1 + R1.22 + slices 4-9 + ADR-0072: the DEFAULT plan is the LINEAR chain to version 12
-    // (0004 -> 4, 0005 -> 5, 0006 -> 6, 0007 -> 7, 0008 -> 8, 0009 -> 9, 0010 -> 10, 0011 -> 11, 0012 -> 12), so the populated v2
-    // database lands at 12 with the LAST applied id recorded. The 0003 column and index
+  it('upgrades a populated schema-v2 database through 0003 (and the appended 0004+0005+0006+0007+0008+0009+0010+0011+0012+0013 candidates)', async () => {
+    // R1.20-R1 + R1.22 + slices 4-9 + ADR-0073: the DEFAULT plan is the LINEAR chain to version 13
+    // (0004 -> 4, 0005 -> 5, 0006 -> 6, 0007 -> 7, 0008 -> 8, 0009 -> 9, 0010 -> 10, 0011 -> 11, 0012 -> 12, 0013 -> 13), so the populated v2
+    // database lands at 13 with the LAST applied id recorded. The 0003 column and index
     // contracts below are unchanged.
-    expect(await appliedSchemaVersion()).toBe(12);
+    expect(await appliedSchemaVersion()).toBe(13);
     const id = await executor.first<{ value: string }>({
       sql: `SELECT value FROM schema_metadata WHERE key = 'migration_id'`,
     });
-    expect(id?.value).toBe('0012_ai_image_provenance');
+    expect(id?.value).toBe('0013_bridge_gate_progress');
   });
 
   it('keeps legacy job rows valid; dlq_delivered_at reads NULL (reconcilable)', async () => {
@@ -119,8 +119,8 @@ describe('migration 0003 (jobs DLQ-delivery reconciliation)', () => {
 
   it('is idempotent (re-applying the full plan is a no-op)', async () => {
     await applyMigrations(db);
-    // R1.20-R1 + R1.22 + slices 4-9 + ADR-0072: the full LINEAR default plan lands at version 12.
-    expect(await appliedSchemaVersion()).toBe(12);
+    // R1.20-R1 + R1.22 + slices 4-9 + ADR-0073: the full LINEAR default plan lands at version 13.
+    expect(await appliedSchemaVersion()).toBe(13);
     const rows = await executor.first<{ n: number }>({
       sql: `SELECT COUNT(*) AS n FROM jobs`,
     });

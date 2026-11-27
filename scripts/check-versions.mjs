@@ -135,11 +135,12 @@ if (typeof appVersion !== 'string' || !/^\d+\.\d+\.\d+$/.test(appVersion)) {
 // (slice 5), 0009 (post management + near-dup) → 9 (slice 6), 0010 (Soul
 // versioning) → 10 (slice 8), 0011 (publications.soul_version) → 11
 // (slice 9), 0012 (media_assets ai_* provenance) → 12 (ADR-0072 AI
-// image generation). The real applied runtime stays 3 until
+// image generation), 0013 (draft_gate_evaluations progress) → 13
+// (ADR-0073 bridge livelock fix). The real applied runtime stays 3 until
 // the owner authorizes the remote migration.
 // ---------------------------------------------------------------------------
 
-const EXPECTED_SCHEMA_VERSION = '12';
+const EXPECTED_SCHEMA_VERSION = '13';
 
 expectEveryMatch(
   'src/shared/config/phase1a.ts',

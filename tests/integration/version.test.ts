@@ -36,9 +36,9 @@ describe('GET /version via SELF', () => {
       'environment',
       'schemaVersion',
     ]);
-    expect(body['applicationVersion']).toBe('1.48.0');
+    expect(body['applicationVersion']).toBe('1.49.0');
     expect(body['commit']).toBe('local-dev');
-    expect(body['schemaVersion']).toBe(12);
+    expect(body['schemaVersion']).toBe(13);
     expect(body['environment']).toBe('development');
   });
 
@@ -131,14 +131,14 @@ describe('GET /health/ready — Phase 1A schema health (DB binding present)', ()
     expect(body['status']).toBe('not_ready');
     expect(Object.keys(body).sort()).toEqual(['ok', 'service', 'status']);
 
-    // Restore the application metadata (schema v12 — the ADR-0072 LINEAR
+    // Restore the application metadata (schema v13 — the ADR-0073 LINEAR
     // chain) so later tests in this file do not treat the migrations as
     // pending again (shared storage); re-applying a migration would fail on
     // its CREATE/ALTER statements.
     await env.DB.prepare(
       `INSERT INTO schema_metadata (key, value, updated_at_ms) VALUES
-         ('schema_version', '12', 1),
-         ('migration_id', '0012_ai_image_provenance', 1),
+         ('schema_version', '13', 1),
+         ('migration_id', '0013_bridge_gate_progress', 1),
          ('applied_at', '1970-01-01T00:00:00.000Z', 1)`,
     ).run();
   });
@@ -156,10 +156,10 @@ describe('GET /health/ready — Phase 1A schema health (DB binding present)', ()
     expect(body['status']).toBe('not_ready');
 
     // Restore the recorded version so later storage in this file does not
-    // treat migrations as pending again (shared file storage). ADR-0072:
-    // the applied LINEAR chain lands at version 12 (0012 -> 12).
+    // treat migrations as pending again (shared file storage). ADR-0073:
+    // the applied LINEAR chain lands at version 13 (0013 -> 13).
     await env.DB.prepare(
-      `UPDATE schema_metadata SET value = '12' WHERE key = 'schema_version'`,
+      `UPDATE schema_metadata SET value = '13' WHERE key = 'schema_version'`,
     ).run();
   });
 });
