@@ -69,7 +69,6 @@
  * primary + fallback, and neuron cost stays well under the 10,000/day
  * free cap (~11 neurons/call at 384 tokens).
  *
-<<<<<<< HEAD
  * ai-policy-v2.2.1 (2026-11-22, ADR-0067) — Gemini direct-fallback
  * wiring, models only (bounds unchanged). The allowlist's Gemini entry
  * moves from the legacy-gated gemini-2.5-flash-lite to the trio above
