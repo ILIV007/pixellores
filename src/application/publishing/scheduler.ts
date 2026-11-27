@@ -760,10 +760,36 @@ export function createPublicationScheduler(deps: {
     return healed;
   }
 
+  /**
+   * ADR-0076 — the due scan's mix-category pool, computed ONCE per
+   * scan from the loaded due rows (one bounded DISTINCT query over
+   * their story ids): the category cap can only shape a mix when the
+   * pool holds another category. A failure throws — the scan fails
+   * closed with zero sends, like an unreadable published history.
+   */
+  async function duePoolCategories(
+    rows: readonly PublicationRow[],
+  ): Promise<ReadonlySet<MixCategory>> {
+    const storyIds = [...new Set(rows.map((row) => row.story_id))];
+    if (storyIds.length === 0) return new Set<MixCategory>();
+    const placeholders = storyIds.map(() => '?').join(',');
+    const found = await deps.executor.query<{ content_type: string }>({
+      sql: `SELECT DISTINCT content_type FROM stories WHERE id IN (${placeholders})`,
+      params: storyIds,
+    });
+    const pool = new Set<MixCategory>();
+    for (const entry of found.rows) {
+      const mapped = mapContentTypeToMixCategory(entry.content_type);
+      if (mapped.ok) pool.add(mapped.category);
+    }
+    return pool;
+  }
+
   async function buildPolicyDecision(
     row: PublicationRow,
     draft: DraftRead,
     nowMs: number,
+    poolCategories: ReadonlySet<MixCategory>,
   ): Promise<
     | {
         readonly ok: true;
@@ -848,6 +874,11 @@ export function createPublicationScheduler(deps: {
       recentCategories,
       sameGame: layer.context.sameGame,
       eventDriven: layer.context.eventDriven,
+      // ADR-0076 — the pool holds an alternative for this row iff it
+      // contains a mix category OTHER than the row's own.
+      alternativeCategoryAvailable: [...poolCategories].some(
+        (poolCategory) => poolCategory !== mapped.category,
+      ),
     });
     return { ok: true, decision, priorityClass: jitter.priorityClass };
   }
@@ -2415,6 +2446,8 @@ export function createPublicationScheduler(deps: {
         // rows are read and the policy decisions computed and reported —
         // nothing is claimed, nothing is sent, no deferral is recorded.
         const due = await listDuePublications(deps.executor, { nowMs, limit: scanLimit });
+        // ADR-0076 — the due scan's mix pool (one query for the loop).
+        const poolCategories = await duePoolCategories(due);
         const dueCount = await countDuePublications(deps.executor, { nowMs });
         const details: ScanDetail[] = [];
         for (const row of due) {
@@ -2431,7 +2464,7 @@ export function createPublicationScheduler(deps: {
             });
             continue;
           }
-          const decision = await buildPolicyDecision(row, draft, nowMs);
+          const decision = await buildPolicyDecision(row, draft, nowMs, poolCategories);
           if (!decision.ok) {
             details.push({
               publicationId: row.id,
@@ -2480,6 +2513,8 @@ export function createPublicationScheduler(deps: {
       // Phase C: the due scan.
       const dueCount = await countDuePublications(deps.executor, { nowMs });
       const due = await listDuePublications(deps.executor, { nowMs, limit: scanLimit });
+      // ADR-0076 — the due scan's mix pool (one query for the loop).
+      const poolCategories = await duePoolCategories(due);
       const details: ScanDetail[] = [];
       for (const row of due) {
         const claim = await claimPublicationSafe(row, nowMs);
@@ -2543,7 +2578,7 @@ export function createPublicationScheduler(deps: {
           );
           continue;
         }
-        const decision = await buildPolicyDecision(row, draft, nowMs);
+        const decision = await buildPolicyDecision(row, draft, nowMs, poolCategories);
         if (!decision.ok) {
           const written = await markClaimedDeadLetter(deps.executor, {
             publicationId: row.id,

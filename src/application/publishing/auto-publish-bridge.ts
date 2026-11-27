@@ -59,6 +59,14 @@
  *   An over-cap draft stays `ready` (deferred, never rejected):
  *   the scheduler remains the enforcement backstop at send time,
  *   and an unclassifiable draft skips the cap check.
+ *   ADR-0076 — SINGLE-CATEGORY POOL: the cap is a MIX-SHAPING rule,
+ *   so it applies only when the ready pool holds another mix
+ *   category. A pool of one category cannot be shaped — deferring
+ *   its drafts would throttle the channel's only content and stall
+ *   forever (the trail can never dilute without a publication).
+ *   The pool is read once per pass (the whole ready set, not the
+ *   scanned five); an unreadable pool fails the pass with zero
+ *   writes, like an unreadable history.
  *
  * ADR-0070 — REWRITE SEAM: when the caller threads `rewriteRequired`
  * (the AI_GEMINI_REWRITE_ENABLED flag, resolved once per cron pass),
@@ -87,6 +95,7 @@ import type { DbExecutor } from '../../adapters/db/db-executor';
 import {
   findStoryContentType,
   findStoryReferenceItems,
+  listReadyDraftContentTypes,
   listReadyDraftsForBridge,
   recordGateEvaluation,
 } from '../../adapters/db/editorial-store';
@@ -256,6 +265,16 @@ export async function bridgeReadyDrafts(input: {
     nowMs: input.nowMs,
     limit: AUTO_PUBLISH_HISTORY_LIMIT,
   });
+  // ADR-0076 — the ready pool's mix categories (ONE read per pass):
+  // the category cap can only shape a mix when the pool holds another
+  // category. An unreadable pool fails the WHOLE pass with zero writes
+  // — a cap that cannot be evaluated never silently passes.
+  const poolContentTypes = await listReadyDraftContentTypes(input.executor);
+  const poolCategories = new Set<MixCategory>();
+  for (const contentType of poolContentTypes) {
+    const mapped = mapContentTypeToMixCategory(contentType);
+    if (mapped.ok) poolCategories.add(mapped.category);
+  }
   const publishedCategories: { readonly category: MixCategory; readonly atMs: number }[] = [];
   for (const entry of history) {
     if (entry.publishedAtMs < input.nowMs - WEEKLY_MIX_WINDOW_MS) continue;
@@ -405,11 +424,17 @@ export async function bridgeReadyDrafts(input: {
         })),
         ...publishedCategories.slice(-CATEGORY_ROLLING_WINDOW),
       ];
+      // ADR-0076 — the pool holds an alternative for this draft iff
+      // it contains a mix category OTHER than the draft's own.
+      const alternativeCategoryAvailable = [...poolCategories].some(
+        (poolCategory) => poolCategory !== category,
+      );
       const cap = enforceCategoryShare({
         nowMs: input.nowMs,
         category,
         recent,
         eventDriven: false,
+        alternativeCategoryAvailable,
       });
       if (!cap.ok || !cap.value.allowed) {
         deferredCategoryCap += 1;

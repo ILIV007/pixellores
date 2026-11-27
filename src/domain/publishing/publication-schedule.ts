@@ -127,6 +127,13 @@ export interface PublicationScheduleInputV1 {
   } | null;
   /** The EXPLICIT story-layer event-driven flag. */
   readonly eventDriven: boolean;
+  /**
+   * ADR-0076 — the EXPLICIT pool fact (see `CategoryShareInput`):
+   * false when the candidate pool holds no classifiable publication
+   * of another mix category, so the category cap cannot shape a mix
+   * and must not throttle the channel's only content.
+   */
+  readonly alternativeCategoryAvailable: boolean;
 }
 
 export type ScheduleWindowSummary = {
@@ -157,7 +164,8 @@ export type ScheduleAppliedRule =
   | {
       readonly rule: 'category_share_cap';
       readonly rollingCount: number;
-      readonly result: 'within_cap' | 'bypassed_event_driven' | 'blocked';
+      readonly result:
+        'within_cap' | 'bypassed_event_driven' | 'bypassed_single_category_pool' | 'blocked';
     }
   | {
       readonly rule: 'mix_target';
@@ -256,6 +264,9 @@ export function planPublicationTime(
     return { ok: false, reason: 'invalid_input' };
   }
   if (typeof input.eventDriven !== 'boolean') return { ok: false, reason: 'invalid_input' };
+  if (typeof input.alternativeCategoryAvailable !== 'boolean') {
+    return { ok: false, reason: 'invalid_input' };
+  }
   if (typeof input.category !== 'string' || !isMixCategoryValue(input.category)) {
     return { ok: false, reason: 'unknown_category' };
   }
@@ -326,6 +337,7 @@ export function planPublicationTime(
     category: input.category,
     recent: input.recentCategories,
     eventDriven: input.eventDriven,
+    alternativeCategoryAvailable: input.alternativeCategoryAvailable,
   });
   if (!shareCheck.ok) return { ok: false, reason: shareCheck.reason };
   if (!shareCheck.value.allowed) {
@@ -352,7 +364,10 @@ export function planPublicationTime(
     result:
       input.eventDriven && shareCheck.value.rollingCount + 1 > shareCheck.value.maxAllowedCount
         ? 'bypassed_event_driven'
-        : 'within_cap',
+        : !input.alternativeCategoryAvailable &&
+            shareCheck.value.rollingCount + 1 > shareCheck.value.maxAllowedCount
+          ? 'bypassed_single_category_pool'
+          : 'within_cap',
   });
 
   // --- 3. the mix gate (enforcement ONLY on P3 filler discretion) -------

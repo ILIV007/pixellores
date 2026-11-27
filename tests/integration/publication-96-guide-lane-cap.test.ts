@@ -258,6 +258,18 @@ describe('bridge guide lane + category cap (ADR-0068)', () => {
       articleUrl: 'https://www.videogameschronicle.com/news/three/',
       createdAt: NOW - 1000,
     });
+    // ADR-0076 — the pool holds an alternative category (mods), so the
+    // cap still shapes the mix: the third mainstream draft defers while
+    // the mods draft bridges. (A single-category pool would admit all
+    // three — see bridge-category-cap-pool.test.ts.)
+    await seedReadyDraft({
+      storyId: 's-m1',
+      draftId: 'd-m1',
+      itemId: 'item-m1',
+      articleUrl: 'https://www.videogameschronicle.com/news/mod-one/',
+      contentType: 'mod',
+      createdAt: NOW - 500,
+    });
     const bridged = await bridgeReadyDrafts({
       executor,
       destination: DESTINATION,
@@ -267,9 +279,9 @@ describe('bridge guide lane + category cap (ADR-0068)', () => {
     });
     expect(bridged).toEqual({
       kind: 'bridged',
-      scanned: 3,
-      approved: 2,
-      enqueued: 2,
+      scanned: 4,
+      approved: 3,
+      enqueued: 3,
       duplicates: 0,
       requiresReview: 0,
       refused: 0,
@@ -281,11 +293,12 @@ describe('bridge guide lane + category cap (ADR-0068)', () => {
       failedRewrite: 0,
       rejected: 0,
     });
-    expect(await listPublicationPriorities()).toEqual([80, 80]);
+    expect(await listPublicationPriorities()).toEqual([80, 80, 80]);
     expect(await listDraftStatuses()).toEqual([
       { id: 'd-c1', status: 'auto_approved' },
       { id: 'd-c2', status: 'auto_approved' },
       { id: 'd-c3', status: 'ready' },
+      { id: 'd-m1', status: 'auto_approved' },
     ]);
   });
 
@@ -309,6 +322,17 @@ describe('bridge guide lane + category cap (ADR-0068)', () => {
       articleUrl: 'https://www.videogameschronicle.com/news/four/',
       createdAt: NOW - 1000,
     });
+    // ADR-0076 — the pool holds an alternative category (mods), so the
+    // cap still defers the mainstream draft against the two-post trail
+    // while the mods draft bridges.
+    await seedReadyDraft({
+      storyId: 's-m1',
+      draftId: 'd-m1',
+      itemId: 'item-m1',
+      articleUrl: 'https://www.videogameschronicle.com/news/mod-one/',
+      contentType: 'mod',
+      createdAt: NOW - 500,
+    });
     const bridged = await bridgeReadyDrafts({
       executor,
       destination: DESTINATION,
@@ -318,9 +342,9 @@ describe('bridge guide lane + category cap (ADR-0068)', () => {
     });
     expect(bridged).toEqual({
       kind: 'bridged',
-      scanned: 1,
-      approved: 0,
-      enqueued: 0,
+      scanned: 2,
+      approved: 1,
+      enqueued: 1,
       duplicates: 0,
       requiresReview: 0,
       refused: 0,
@@ -334,6 +358,7 @@ describe('bridge guide lane + category cap (ADR-0068)', () => {
     });
     expect(await listDraftStatuses()).toEqual([
       { id: 'd-c4', status: 'ready' },
+      { id: 'd-m1', status: 'auto_approved' },
       { id: 'd-h1', status: 'approved' },
       { id: 'd-h2', status: 'approved' },
     ]);
