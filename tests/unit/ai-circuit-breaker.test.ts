@@ -33,8 +33,6 @@ const silentLogger = createLogger({ level: 'error', sink: () => undefined });
 
 const VALID_DRAFT_JSON = JSON.stringify({
   headlineFa: 'تیتر خبر',
-  categoryEmoji: '🔵',
-  trustLabel: '#گزارش‌شده',
   summaryFa: 'خلاصهٔ خبر',
   claims: [{ text: 'ادعای اول', evidenceIds: ['ev-1'] }],
 });

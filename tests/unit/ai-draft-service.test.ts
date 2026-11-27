@@ -111,8 +111,6 @@ const silentLogger = createLogger({ level: 'error', sink: () => undefined });
 
 const VALID_DRAFT_JSON = JSON.stringify({
   headlineFa: 'تیتر خبر',
-  categoryEmoji: '🔵',
-  trustLabel: '#گزارش‌شده',
   summaryFa: 'خلاصهٔ خبر',
   claims: [{ text: 'ادعای اول', evidenceIds: ['ev-1'] }],
 });
@@ -227,7 +225,7 @@ describe('AI draft service — ladder, budget, and outcomes', () => {
       expect(outcome.usage[0]).toMatchObject({
         provider: 'workers-ai',
         modelId: '@cf/google/gemma-4-26b-a4b-it',
-        promptVersion: 'pixel-news-draft-v2',
+        promptVersion: 'pixel-news-draft-v3',
         inputTokens: 120,
         outputTokens: 64,
       });
@@ -327,7 +325,7 @@ describe('AI draft service — ladder, budget, and outcomes', () => {
   it('PARTIAL eligibility (the versioned default) lets the gated Gemini fallback run', async () => {
     cfPort.setOutcomes([{ kind: 'transient' }, { kind: 'transient' }]);
     geminiPort.setOutcomes([{ kind: 'ok', rawText: VALID_DRAFT_JSON }]);
-    // No explicit eligibility: the default comes from ai-policy-v2.2.1
+    // No explicit eligibility: the default comes from ai-policy-v2.2.2
     // (ADR-0067 — Gemini PARTIAL), so the flagged fallback is attempted.
     const outcome = await buildService({
       geminiEnabled: true,
@@ -371,8 +369,6 @@ describe('AI draft service — ladder, budget, and outcomes', () => {
   it('unknown evidence references are rejected as invalid output', async () => {
     const forged = JSON.stringify({
       headlineFa: 'تیتر',
-      categoryEmoji: '🔵',
-      trustLabel: '#گزارش‌شده',
       summaryFa: 'خلاصه',
       claims: [{ text: 'ادعا', evidenceIds: ['ev-999'] }],
     });
