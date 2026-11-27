@@ -18,6 +18,15 @@
  * - `ai_runs` task `'news_rewrite'` (own deterministic id namespace —
  *   the caller records the row; this service only returns attempts).
  *
+ * Two public methods share ONE Gemini attempt loop (`runGeminiRewrite`):
+ * `rewriteNewsDraft` (pipeline drafts, ADR-0070) and `rewriteInboundPost`
+ * (owner-sent posts, ADR-0073 §1). They differ only in their gates (the
+ * news method requires the `AI_GEMINI_REWRITE_ENABLED` stage flag; the
+ * inbound method does NOT — ADR-0073 §2), their prompts, their output
+ * parser, their preservation guard, and their success shape. The budget
+ * bucket, the breaker, and the refusal/deferral semantics are identical
+ * by construction.
+ *
  * Free-only, fail-closed orchestration:
  * 1. `AI_ENABLED` off OR `AI_GEMINI_REWRITE_ENABLED` off ⇒ typed
  *    deferred (`ai_disabled` / `rewrite_disabled`) with ZERO provider
@@ -74,6 +83,7 @@ import {
 import {
   AI_BOUNDS,
   AI_DAILY_REQUEST_ATTEMPT_CAPS,
+  AI_INBOUND_REWRITE_MAX_OUTPUT_TOKENS,
   AI_POLICY_VERSION,
   AI_REWRITE_MAX_OUTPUT_TOKENS,
   defaultProviderEligibility,
@@ -84,8 +94,19 @@ import {
   buildNewsRewriteUserPrompt,
   type AiRewriteOutput,
 } from '../../domain/ai/rewrite-prompt';
+import {
+  AI_INBOUND_REWRITE_PROMPT_VERSION,
+  buildInboundRewriteSystemPrompt,
+  buildInboundRewriteUserPrompt,
+  type AiInboundRewriteOutput,
+} from '../../domain/ai/inbound-rewrite-prompt';
 import { parseAiRewriteOutputJson } from '../../domain/ai/rewrite-schema';
-import { checkRewritePreservesNumbers } from '../../domain/ai/rewrite-guard';
+import { parseAiInboundRewriteOutputJson } from '../../domain/ai/inbound-rewrite-schema';
+import {
+  checkInboundRewritePreservesNumbers,
+  checkRewritePreservesNumbers,
+} from '../../domain/ai/rewrite-guard';
+import { GAMING_CATEGORIES, type GamingCategory } from '../../domain/inbound/classifier';
 import type {
   AiAttemptRecord,
   AiDeferredReason,
@@ -100,6 +121,19 @@ const rewriteRequestSchema = z
     summaryFa: z.string().min(1).max(1000),
     claimTexts: z.array(z.string().min(1).max(500)).max(10),
     sourceName: z.string().min(1).max(200),
+  })
+  .strict();
+
+/** Inbound rewrite request: the owner's cleaned post text + its category. */
+const inboundRewriteRequestSchema = z
+  .object({
+    text: z.string().min(1).max(4096),
+    category: z
+      .string()
+      .refine((value): value is GamingCategory =>
+        (GAMING_CATEGORIES as readonly string[]).includes(value),
+      ),
+    isCaption: z.boolean(),
   })
   .strict();
 
@@ -145,19 +179,33 @@ export interface AiRewriteServiceDeps {
   readonly deadlineScheduler?: DeadlineTimeoutScheduler;
 }
 
+/** Sanitized usage metadata for one successful rewrite (shared shape). */
+export interface AiRewriteUsageEntry {
+  readonly provider: AiProvider;
+  readonly modelId: string;
+  readonly promptVersion: string;
+  /** Mutable like the original inline shape: assigned after the call returns. */
+  inputTokens?: number;
+  outputTokens?: number;
+}
+
 /** Successful Gemini rewrite with sanitized usage metadata. */
 export interface AiRewriteSuccess {
   readonly kind: 'rewritten';
   readonly rewrite: AiRewriteOutput;
   /** The model that authored the final text (a Gemini allowlist id). */
   readonly modelId: string;
-  readonly usage: readonly {
-    readonly provider: AiProvider;
-    readonly modelId: string;
-    readonly promptVersion: string;
-    readonly inputTokens?: number;
-    readonly outputTokens?: number;
-  }[];
+  readonly usage: readonly AiRewriteUsageEntry[];
+  readonly attempts: readonly AiAttemptRecord[];
+}
+
+/** Successful Gemini inbound rewrite: the complete rewritten post text. */
+export interface AiInboundRewriteSuccess {
+  readonly kind: 'rewritten';
+  readonly text: string;
+  /** The model that authored the final text (a Gemini allowlist id). */
+  readonly modelId: string;
+  readonly usage: readonly AiRewriteUsageEntry[];
   readonly attempts: readonly AiAttemptRecord[];
 }
 
@@ -182,8 +230,13 @@ export interface AiRewriteDeferred {
 /** The complete outcome surface of the rewrite service. */
 export type AiRewriteOutcome = AiRewriteSuccess | AiRewriteRefusal | AiRewriteDeferred;
 
+/** The complete outcome surface of the inbound rewrite. */
+export type AiInboundRewriteOutcome =
+  AiInboundRewriteSuccess | AiRewriteRefusal | AiRewriteDeferred;
+
 export interface AiRewriteService {
   rewriteNewsDraft(request: unknown): Promise<AiRewriteOutcome>;
+  rewriteInboundPost(request: unknown): Promise<AiInboundRewriteOutcome>;
 }
 
 function defaultEligibility(): Record<AiProvider, boolean> {
@@ -194,33 +247,50 @@ export function createAiRewriteService(deps: AiRewriteServiceDeps): AiRewriteSer
   const eligibility = deps.eligibility ?? defaultEligibility();
   const encoder = new TextEncoder();
   const systemPrompt = buildNewsRewriteSystemPrompt();
+  const inboundSystemPrompt = buildInboundRewriteSystemPrompt();
 
-  async function rewriteNewsDraft(request: unknown): Promise<AiRewriteOutcome> {
-    // ---- Gate 1: the master flag AND the stage flag are the FIRST
-    // decisions, before any work. Either off => zero provider calls,
-    // zero budget writes, zero binding access.
-    if (!deps.config.aiEnabled) {
-      return { kind: 'deferred', reason: 'ai_disabled', attempts: [] };
-    }
-    if (!deps.config.rewriteEnabled) {
-      return { kind: 'deferred', reason: 'rewrite_disabled', attempts: [] };
-    }
-
-    // ---- Gate 2: bounded request validation (fail closed, zero side effects).
-    const parsedRequest = rewriteRequestSchema.safeParse(request);
-    if (!parsedRequest.success) {
-      return { kind: 'deferred', reason: 'input_invalid', attempts: [] };
-    }
-    const { headlineFa, summaryFa, claimTexts, sourceName } = parsedRequest.data;
-    const userPrompt = buildNewsRewriteUserPrompt({
-      headlineFa,
-      summaryFa,
-      claimTexts,
-      sourceName,
-    });
-    if (encoder.encode(userPrompt).length > AI_BOUNDS.maxInputUtf8Bytes) {
-      return { kind: 'deferred', reason: 'input_invalid', attempts: [] };
-    }
+  /**
+   * The SHARED Gemini attempt loop (ADR-0070 §7 + ADR-0073 §1): gate 3
+   * (the per-provider breaker), the shared ladder's Gemini leg, budget
+   * authorization + refund, the 60 s wall deadline, and the
+   * parse → guard → success pipeline. The two public methods differ
+   * only in their gates (the news method requires the stage flag; the
+   * inbound method does not — ADR-0073 §2), their prompts, their
+   * output parser, their preservation guard, and their success shape.
+   * Everything else — including the budget bucket, the breaker, and
+   * the refusal/deferral semantics — is identical by construction.
+   */
+  async function runGeminiRewrite<Parsed, Success>(options: {
+    readonly logPrefix: 'ai.rewrite' | 'ai.inbound_rewrite';
+    readonly promptVersion: string;
+    readonly systemPrompt: string;
+    readonly userPrompt: string;
+    readonly maxOutputTokens: number;
+    readonly parse: (
+      rawText: string,
+    ) => { readonly ok: true; readonly value: Parsed } | { readonly ok: false };
+    readonly guard: (
+      parsed: Parsed,
+    ) =>
+      | { readonly ok: true }
+      | { readonly ok: false; readonly code: string; readonly token?: string };
+    readonly buildSuccess: (args: {
+      readonly parsed: Parsed;
+      readonly modelId: string;
+      readonly usage: AiRewriteUsageEntry;
+      readonly attempts: readonly AiAttemptRecord[];
+    }) => Success;
+  }): Promise<Success | AiRewriteRefusal | AiRewriteDeferred> {
+    const {
+      logPrefix,
+      promptVersion,
+      systemPrompt,
+      userPrompt,
+      maxOutputTokens,
+      parse,
+      guard,
+      buildSuccess,
+    } = options;
 
     const startedAt = deps.clock.now();
     const deadlineAtMs = startedAt + AI_BOUNDS.totalWallDeadlineMs;
@@ -231,14 +301,14 @@ export function createAiRewriteService(deps: AiRewriteServiceDeps): AiRewriteSer
     try {
       const breaker = await checkAiCircuitBreaker(deps.executor, startedAt, 'gemini');
       if (!breaker.allow) {
-        deps.logger.info('ai.rewrite.circuit_open', {
+        deps.logger.info(`${logPrefix}.circuit_open`, {
           consecutiveFailures: breaker.snapshot.consecutiveFailures,
           openedAtMs: breaker.snapshot.openedAtMs,
         });
         return { kind: 'deferred', reason: 'circuit_open', attempts: [] };
       }
     } catch {
-      deps.logger.warn('ai.rewrite.circuit_breaker_check_failed');
+      deps.logger.warn(`${logPrefix}.circuit_breaker_check_failed`);
     }
 
     const refundAttempt = async (modelId: string): Promise<void> => {
@@ -248,21 +318,21 @@ export function createAiRewriteService(deps: AiRewriteServiceDeps): AiRewriteSer
           nowMs: deps.clock.now(),
         });
       } catch {
-        deps.logger.warn('ai.rewrite.refund_failed', { provider: 'gemini', modelId });
+        deps.logger.warn(`${logPrefix}.refund_failed`, { provider: 'gemini', modelId });
       }
     };
     const noteBreakerFailure = async (): Promise<void> => {
       try {
         await recordAiCircuitBreakerFailure(deps.executor, deps.clock.now(), 'gemini');
       } catch {
-        deps.logger.warn('ai.rewrite.circuit_breaker_record_failed');
+        deps.logger.warn(`${logPrefix}.circuit_breaker_record_failed`);
       }
     };
     const noteBreakerSuccess = async (): Promise<void> => {
       try {
         await recordAiCircuitBreakerSuccess(deps.executor, deps.clock.now(), 'gemini');
       } catch {
-        deps.logger.warn('ai.rewrite.circuit_breaker_record_failed');
+        deps.logger.warn(`${logPrefix}.circuit_breaker_record_failed`);
       }
     };
 
@@ -279,14 +349,14 @@ export function createAiRewriteService(deps: AiRewriteServiceDeps): AiRewriteSer
       attempts.push({
         provider: 'gemini',
         modelId,
-        promptVersion: AI_REWRITE_PROMPT_VERSION,
+        promptVersion,
         outcome,
         durationMs,
       });
-      deps.logger.info('ai.rewrite.attempt', {
+      deps.logger.info(`${logPrefix}.attempt`, {
         provider: 'gemini',
         modelId,
-        promptVersion: AI_REWRITE_PROMPT_VERSION,
+        promptVersion,
         policyVersion: AI_POLICY_VERSION,
         outcome,
         durationMs,
@@ -359,7 +429,7 @@ export function createAiRewriteService(deps: AiRewriteServiceDeps): AiRewriteSer
         );
         if (authorizationWait.kind === 'timed_out') {
           record(model.modelId, 'skipped_deadline', deps.clock.now() - startedAt);
-          deps.logger.info('ai.rewrite.result', {
+          deps.logger.info(`${logPrefix}.result`, {
             kind: 'deferred',
             reason: 'deadline_exceeded',
           });
@@ -382,7 +452,7 @@ export function createAiRewriteService(deps: AiRewriteServiceDeps): AiRewriteSer
           });
           const reason: AiDeferredReason =
             denialKind === 'hard' ? 'budget_denied' : 'budget_pressure';
-          deps.logger.info('ai.rewrite.result', {
+          deps.logger.info(`${logPrefix}.result`, {
             kind: 'deferred',
             reason,
           });
@@ -397,14 +467,14 @@ export function createAiRewriteService(deps: AiRewriteServiceDeps): AiRewriteSer
           nowMs: deps.clock.now(),
         });
       } catch {
-        deps.logger.warn('ai.rewrite.budget_store_failed', { provider: 'gemini' });
+        deps.logger.warn(`${logPrefix}.budget_store_failed`, { provider: 'gemini' });
         return { kind: 'deferred', reason: 'budget_store_error', attempts };
       }
 
       if (deps.clock.now() >= deadlineAtMs) {
         await refundAttempt(model.modelId);
         record(model.modelId, 'skipped_deadline', 0);
-        deps.logger.info('ai.rewrite.result', {
+        deps.logger.info(`${logPrefix}.result`, {
           kind: 'deferred',
           reason: 'deadline_exceeded',
         });
@@ -423,7 +493,7 @@ export function createAiRewriteService(deps: AiRewriteServiceDeps): AiRewriteSer
           geminiPort.complete({
             modelId: model.modelId,
             messages,
-            maxOutputTokens: AI_REWRITE_MAX_OUTPUT_TOKENS,
+            maxOutputTokens,
             deadlineAtMs,
           }),
           deadlineAtMs,
@@ -434,7 +504,7 @@ export function createAiRewriteService(deps: AiRewriteServiceDeps): AiRewriteSer
           record(model.modelId, 'deadline_exceeded', deps.clock.now() - attemptStartedAt);
           await refundAttempt(model.modelId);
           await noteBreakerFailure();
-          deps.logger.info('ai.rewrite.result', {
+          deps.logger.info(`${logPrefix}.result`, {
             kind: 'deferred',
             reason: 'deadline_exceeded',
           });
@@ -454,7 +524,7 @@ export function createAiRewriteService(deps: AiRewriteServiceDeps): AiRewriteSer
           // TERMINAL typed refusal — never hop models to bypass a
           // content/safety rejection.
           record(model.modelId, 'refused', durationMs);
-          deps.logger.info('ai.rewrite.result', { kind: 'refusal', attempts: attempts.length });
+          deps.logger.info(`${logPrefix}.result`, { kind: 'refusal', attempts: attempts.length });
           return {
             kind: 'refusal',
             provider: 'gemini',
@@ -467,14 +537,14 @@ export function createAiRewriteService(deps: AiRewriteServiceDeps): AiRewriteSer
           record(model.modelId, 'deadline_exceeded', durationMs);
           await refundAttempt(model.modelId);
           await noteBreakerFailure();
-          deps.logger.info('ai.rewrite.result', {
+          deps.logger.info(`${logPrefix}.result`, {
             kind: 'deferred',
             reason: 'deadline_exceeded',
           });
           return { kind: 'deferred', reason: 'deadline_exceeded', attempts };
         }
         case 'ok': {
-          const parsed = parseAiRewriteOutputJson(callOutcome.rawText);
+          const parsed = parse(callOutcome.rawText);
           if (!parsed.ok) {
             // The provider answered but its output failed validation: the
             // charge stays and the breaker does not move — fall through
@@ -485,31 +555,19 @@ export function createAiRewriteService(deps: AiRewriteServiceDeps): AiRewriteSer
           // The claim-preservation guard runs BEFORE success is
           // returned: a rewritten number/date not in the raw text is a
           // rejected attempt, never a successful rewrite.
-          const guard = checkRewritePreservesNumbers({
-            rawHeadlineFa: headlineFa,
-            rawSummaryFa: summaryFa,
-            rawClaimTexts: claimTexts,
-            rewrittenHeadlineFa: parsed.rewrite.headlineFa,
-            rewrittenSummaryFa: parsed.rewrite.summaryFa,
-          });
-          if (!guard.ok) {
-            deps.logger.info('ai.rewrite.guard_refused', {
-              code: guard.code,
+          const guardResult = guard(parsed.value);
+          if (!guardResult.ok) {
+            deps.logger.info(`${logPrefix}.guard_refused`, {
+              code: guardResult.code,
               modelId: model.modelId,
             });
             record(model.modelId, 'invalid_output', durationMs);
             break;
           }
-          const usageEntry: {
-            provider: AiProvider;
-            modelId: string;
-            promptVersion: string;
-            inputTokens?: number;
-            outputTokens?: number;
-          } = {
+          const usageEntry: AiRewriteUsageEntry = {
             provider: 'gemini',
             modelId: model.modelId,
-            promptVersion: AI_REWRITE_PROMPT_VERSION,
+            promptVersion,
           };
           if (callOutcome.usage?.inputTokens !== undefined) {
             usageEntry.inputTokens = callOutcome.usage.inputTokens;
@@ -532,16 +590,16 @@ export function createAiRewriteService(deps: AiRewriteServiceDeps): AiRewriteSer
               { scheduleTimeout: deps.deadlineScheduler },
             );
             if (usageWait.kind === 'timed_out') {
-              deps.logger.warn('ai.rewrite.usage_record_timeout', {
+              deps.logger.warn(`${logPrefix}.usage_record_timeout`, {
                 provider: 'gemini',
               });
             }
           } catch {
-            deps.logger.warn('ai.rewrite.usage_record_failed', { provider: 'gemini' });
+            deps.logger.warn(`${logPrefix}.usage_record_failed`, { provider: 'gemini' });
           }
           record(model.modelId, 'succeeded', durationMs);
           await noteBreakerSuccess();
-          deps.logger.info('ai.rewrite.result', {
+          deps.logger.info(`${logPrefix}.result`, {
             kind: 'rewritten',
             provider: 'gemini',
             modelId: model.modelId,
@@ -551,13 +609,12 @@ export function createAiRewriteService(deps: AiRewriteServiceDeps): AiRewriteSer
               outputTokens: usageEntry.outputTokens ?? null,
             },
           });
-          return {
-            kind: 'rewritten',
-            rewrite: parsed.rewrite,
+          return buildSuccess({
+            parsed: parsed.value,
             modelId: model.modelId,
-            usage: [usageEntry],
+            usage: usageEntry,
             attempts,
-          };
+          });
         }
         case 'quota_denied': {
           record(model.modelId, 'quota_denied', durationMs);
@@ -569,7 +626,7 @@ export function createAiRewriteService(deps: AiRewriteServiceDeps): AiRewriteSer
           if (callOutcome.retryAfterMs !== undefined) {
             knownRetryAfterMs = Math.max(knownRetryAfterMs, callOutcome.retryAfterMs);
           }
-          deps.logger.info('ai.rewrite.result', {
+          deps.logger.info(`${logPrefix}.result`, {
             kind: 'deferred',
             reason: 'budget_denied',
           });
@@ -583,7 +640,7 @@ export function createAiRewriteService(deps: AiRewriteServiceDeps): AiRewriteSer
         case 'auth_failed': {
           record(model.modelId, 'auth_failed', durationMs);
           await refundAttempt(model.modelId);
-          deps.logger.info('ai.rewrite.result', {
+          deps.logger.info(`${logPrefix}.result`, {
             kind: 'deferred',
             reason: 'provider_auth_failed',
           });
@@ -615,7 +672,11 @@ export function createAiRewriteService(deps: AiRewriteServiceDeps): AiRewriteSer
     }
 
     const reason = classifyExhausted(attempts);
-    deps.logger.info('ai.rewrite.result', { kind: 'deferred', reason, attempts: attempts.length });
+    deps.logger.info(`${logPrefix}.result`, {
+      kind: 'deferred',
+      reason,
+      attempts: attempts.length,
+    });
     return {
       kind: 'deferred',
       reason,
@@ -624,7 +685,104 @@ export function createAiRewriteService(deps: AiRewriteServiceDeps): AiRewriteSer
     };
   }
 
-  return { rewriteNewsDraft };
+  async function rewriteNewsDraft(request: unknown): Promise<AiRewriteOutcome> {
+    // ---- Gate 1: the master flag AND the stage flag are the FIRST
+    // decisions, before any work. Either off => zero provider calls,
+    // zero budget writes, zero binding access.
+    if (!deps.config.aiEnabled) {
+      return { kind: 'deferred', reason: 'ai_disabled', attempts: [] };
+    }
+    if (!deps.config.rewriteEnabled) {
+      return { kind: 'deferred', reason: 'rewrite_disabled', attempts: [] };
+    }
+
+    // ---- Gate 2: bounded request validation (fail closed, zero side effects).
+    const parsedRequest = rewriteRequestSchema.safeParse(request);
+    if (!parsedRequest.success) {
+      return { kind: 'deferred', reason: 'input_invalid', attempts: [] };
+    }
+    const { headlineFa, summaryFa, claimTexts, sourceName } = parsedRequest.data;
+    const userPrompt = buildNewsRewriteUserPrompt({
+      headlineFa,
+      summaryFa,
+      claimTexts,
+      sourceName,
+    });
+    if (encoder.encode(userPrompt).length > AI_BOUNDS.maxInputUtf8Bytes) {
+      return { kind: 'deferred', reason: 'input_invalid', attempts: [] };
+    }
+    return runGeminiRewrite<AiRewriteOutput, AiRewriteSuccess>({
+      logPrefix: 'ai.rewrite',
+      promptVersion: AI_REWRITE_PROMPT_VERSION,
+      systemPrompt,
+      userPrompt,
+      maxOutputTokens: AI_REWRITE_MAX_OUTPUT_TOKENS,
+      parse: (rawText) => {
+        const parsed = parseAiRewriteOutputJson(rawText);
+        return parsed.ok ? { ok: true as const, value: parsed.rewrite } : { ok: false as const };
+      },
+      guard: (parsed) =>
+        checkRewritePreservesNumbers({
+          rawHeadlineFa: headlineFa,
+          rawSummaryFa: summaryFa,
+          rawClaimTexts: claimTexts,
+          rewrittenHeadlineFa: parsed.headlineFa,
+          rewrittenSummaryFa: parsed.summaryFa,
+        }),
+      buildSuccess: ({ parsed, modelId, usage, attempts }) => ({
+        kind: 'rewritten' as const,
+        rewrite: parsed,
+        modelId,
+        usage: [usage],
+        attempts,
+      }),
+    });
+  }
+
+  async function rewriteInboundPost(request: unknown): Promise<AiInboundRewriteOutcome> {
+    // ---- Gate 1: the master flag is the FIRST decision, before any
+    // work. Off => zero provider calls, zero budget writes, zero
+    // binding access. NOTE (ADR-0073 §2): there is deliberately NO
+    // `rewriteEnabled` stage gate here — that flag is the PIPELINE-draft
+    // stage gate, and the inbound rewrite gates on aiEnabled +
+    // geminiEnabled + key + eligibility only.
+    if (!deps.config.aiEnabled) {
+      return { kind: 'deferred', reason: 'ai_disabled', attempts: [] };
+    }
+
+    // ---- Gate 2: bounded request validation (fail closed, zero side effects).
+    const parsedRequest = inboundRewriteRequestSchema.safeParse(request);
+    if (!parsedRequest.success) {
+      return { kind: 'deferred', reason: 'input_invalid', attempts: [] };
+    }
+    const { text, category, isCaption } = parsedRequest.data;
+    const userPrompt = buildInboundRewriteUserPrompt({ text, category, isCaption });
+    if (encoder.encode(userPrompt).length > AI_BOUNDS.maxInputUtf8Bytes) {
+      return { kind: 'deferred', reason: 'input_invalid', attempts: [] };
+    }
+    return runGeminiRewrite<AiInboundRewriteOutput, AiInboundRewriteSuccess>({
+      logPrefix: 'ai.inbound_rewrite',
+      promptVersion: AI_INBOUND_REWRITE_PROMPT_VERSION,
+      systemPrompt: inboundSystemPrompt,
+      userPrompt,
+      maxOutputTokens: AI_INBOUND_REWRITE_MAX_OUTPUT_TOKENS,
+      parse: (rawText) => {
+        const parsed = parseAiInboundRewriteOutputJson(rawText);
+        return parsed.ok ? { ok: true as const, value: parsed.rewrite } : { ok: false as const };
+      },
+      guard: (parsed) =>
+        checkInboundRewritePreservesNumbers({ rawText: text, rewrittenText: parsed.text }),
+      buildSuccess: ({ parsed, modelId, usage, attempts }) => ({
+        kind: 'rewritten' as const,
+        text: parsed.text,
+        modelId,
+        usage: [usage],
+        attempts,
+      }),
+    });
+  }
+
+  return { rewriteNewsDraft, rewriteInboundPost };
 }
 
 function classifyExhausted(attempts: readonly AiAttemptRecord[]): AiDeferredReason {

@@ -39,6 +39,18 @@ export const INBOUND_STRINGS = {
     en: '❌ Reject',
     fa: '❌ رد',
   } satisfies Localized,
+  inboundEditButton: {
+    en: '✏️ Edit',
+    fa: '✏️ ویرایش',
+  } satisfies Localized,
+  inboundEditInstructions: {
+    en: 'Edit your original message — I’ll send a fresh preview.',
+    fa: 'پیام اصلی را ویرایش کن — پیش‌نمایش تازه می‌فرستم.',
+  } satisfies Localized,
+  inboundPreviewAlreadyDecided: {
+    en: 'This preview was already decided — send the post again for a new version.',
+    fa: 'این پیش‌نمایش قبلاً تعیین تکلیف شده — برای نسخهٔ تازه، پست را دوباره بفرستید.',
+  } satisfies Localized,
   inboundRejected: {
     en: 'Rejected — nothing was published.',
     fa: 'رد شد — چیزی منتشر نشد.',

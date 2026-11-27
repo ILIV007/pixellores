@@ -1829,6 +1829,29 @@ status = 'ready'` (the rowcount the authority; the post-fence re-read
       flags flipped; live end-to-end publishing stays slice 8's job.
       45 unit + 26 REAL-D1 tests registered in test:db (plus 1
       owner-stats case in the admin-panel suite).
+- [x] Slice 4 follow-up — inbound Soul rewrite (ADR-0073, app 1.49.0,
+      2026-11-28, owner order 2026-11-27 23:39): the Workers-AI-first
+      inbound rewriter is retired; the rewrite is now the Gemini-only
+      Soul rewrite service (ADR-0070's service, new `rewriteInboundPost`
+      method with its own prompt `pixel-inbound-soul-rewrite-v1`, output
+      schema, and single-text preservation guard — Soul belongs only to
+      Gemini, Workers AI never author the final post). The rewrite emits
+      form #4 markers (`**…**` bold headline + main figure, `> …` quote + attribution) which the formatter turns into Telegram entities
+      (Latin digits folded, trailing footer never duplicated, owner's
+      literal `**` never parsed on the unrewritten path); rich is chosen
+      when the rewritten content carries entities. Routing is now
+      always-preview in every mode except paused — `auto`/`safe-auto`
+      no longer direct-publish — with Edit / Publish / Reject buttons
+      (Approve = Publish, one button, no held-approved queue); Edit is a
+      native Telegram message edit of the source message, which
+      re-processes WITHOUT an AI rewrite and re-shows the preview.
+      Preview flags flipped in `env.preview.vars` only
+      (`ADMIN_POST_ENABLED`, `ADMIN_POST_LIVE_PUBLISH_ENABLED`,
+      `AI_ENABLED`, `AI_GEMINI_ENABLED` = true; `AI_GEMINI_REWRITE_ENABLED`
+      stays false so the cron bridge never requires pipeline rewrites;
+      `AI_IMAGE_ENABLED` / `AI_FAILOVER_ENABLED` stay false). No new
+      migration, schema stays 12. Live verification still owed: the
+      owner sends a post to @Pixel_IVbot (bots cannot message bots).
 - [x] Slice 5 — game-page links + Epic free-games + Tier V anchors + live
       watchlists (app 1.43.0, schema 8 — DDL 0008): game-page links are a
       first-class element — a store-domain allowlist (Steam / Epic Games /

@@ -11,6 +11,7 @@ import {
   recordSoulVersion,
   setCurrentSoulVersion,
 } from '../../src/adapters/db/soul-store';
+import type { AdminPostExecutionResult } from '../../src/application/admin-post/admin-post-service';
 import {
   createInboundPipelineService,
   type InboundPipelineService,
@@ -111,6 +112,32 @@ function buildService(transport: InboundTransport): InboundPipelineService {
   });
 }
 
+/** Preview buttons are [Edit, Publish, Reject] (ADR-0073 §5): Publish is index 1. */
+function publishToken(result: AdminPostExecutionResult): string {
+  if (result.kind !== 'preview') {
+    throw new Error(`expected a preview, got ${result.kind}`);
+  }
+  const button = result.buttons[0]?.[1];
+  if (button === undefined || !button.callbackData.startsWith('a:')) {
+    throw new Error('expected Publish button missing');
+  }
+  return button.callbackData.slice(2);
+}
+
+/** Approve a preview via its Publish button. */
+async function approvePreview(
+  service: InboundPipelineService,
+  preview: AdminPostExecutionResult,
+): Promise<void> {
+  const answered = await service.handleCallback({
+    telegramUserId: OWNER_ID,
+    role: 'owner',
+    uiLanguage: 'en',
+    token: publishToken(preview),
+  });
+  expect(answered.kind).toBe('answer');
+}
+
 function inboundInput(
   overrides: Partial<InboundProcessInput> & { text: string },
 ): InboundProcessInput {
@@ -205,7 +232,7 @@ describe('slice 8 — Soul v1 stamping (real D1, fake transport)', () => {
     ).rejects.toThrow();
   });
 
-  it('stamps soul_version 1 on a directly published inbound post', async () => {
+  it('stamps soul_version 1 on a previewed-then-approved inbound post', async () => {
     await seedSoul(1, true);
     const fake = createFakeTransport();
     const service = buildService(fake.transport);
@@ -216,7 +243,9 @@ describe('slice 8 — Soul v1 stamping (real D1, fake transport)', () => {
         text: '🔵 بازی «Hounded» برای PS5 در ۲۰۲۷ معرفی شد #تأییدشده\n\nبازی ماجراجویی سگ‌محور Hounded برای PS5 معرفی شد؛ نقش اصلی یک سگ Border Collie به نام Duke است.',
       }),
     );
-    expect(result.kind).toBe('reply');
+    // ADR-0073 §5: auto mode previews first; the publish happens on approve.
+    expect(result.kind).toBe('preview');
+    await approvePreview(service, result);
     const row = await findPublishedPostBySource(executor, {
       sourceChatId: PV_CHAT_ID,
       sourceMessageId,
@@ -236,7 +265,9 @@ describe('slice 8 — Soul v1 stamping (real D1, fake transport)', () => {
         text: '🔵 بازی «Hounded» برای PS5 در ۲۰۲۷ معرفی شد #تأییدشده\n\nبازی ماجراجویی سگ‌محور Hounded برای PS5 معرفی شد.',
       }),
     );
-    expect(result.kind).toBe('reply');
+    // ADR-0073 §5: auto mode previews first; the publish happens on approve.
+    expect(result.kind).toBe('preview');
+    await approvePreview(service, result);
     const row = await findPublishedPostBySource(executor, {
       sourceChatId: PV_CHAT_ID,
       sourceMessageId,

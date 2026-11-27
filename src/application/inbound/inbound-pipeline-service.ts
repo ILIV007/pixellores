@@ -1,10 +1,12 @@
 import type { DbExecutor } from '../../adapters/db/db-executor';
 import {
   createInboundApproval,
+  findPendingInboundApprovalBySource,
   findPublishedPostBySource,
   getInboundApproval,
   recordPublishedPost,
   transitionInboundApproval,
+  updateInboundApprovalContent,
   updatePublishedPostAfterEdit,
 } from '../../adapters/db/inbound-store';
 import {
@@ -24,6 +26,7 @@ import {
   composeTelegramHtml,
   escapeTelegramHtml,
   telegramBlockquote,
+  wrapTelegramHtml,
   type TelegramSafeHtml,
 } from '../../admin/telegram-html';
 import type { AdminUiLanguage } from '../../admin/ui-language';
@@ -41,10 +44,10 @@ import {
 import {
   classifyGaming,
   GAMING_CATEGORIES,
-  isSignalOnlyCategory,
   type GamingCategory,
 } from '../../domain/inbound/classifier';
 import { cleanInboundText } from '../../domain/inbound/cleaner';
+import { hasFormMarkers } from '../../domain/inbound/form-markers';
 import {
   formatInboundPost,
   INBOUND_FOOTER,
@@ -61,9 +64,11 @@ import type { Clock } from '../../shared/time/clock';
 import type { Logger } from '../../observability/logger';
 import {
   createRichTextEnvelope,
+  MESSAGE_ENTITY_TYPES,
+  type RichTextEntity,
   type RichTextEnvelope,
 } from '../../domain/telegram/rich-text-envelope';
-import type { InboundRewriter } from './ai-rewriter';
+import type { InboundRewriter } from './soul-rewriter';
 
 /**
  * Slice 4 — inbound AI-admin pipeline (DESIGN §10.1/§10.2).
@@ -97,6 +102,8 @@ import type { InboundRewriter } from './ai-rewriter';
 
 export const INBOUND_APPROVE_ACTION = 'inbound.approve';
 export const INBOUND_REJECT_ACTION = 'inbound.reject';
+/** The preview Edit button (ADR-0073 §6): arms the native message edit. */
+export const INBOUND_EDIT_ACTION = 'inbound.edit';
 export const INBOUND_APPROVAL_TTL_MS = INBOUND_APPROVAL_EXPIRY_MS;
 
 /** Minimal transport: the real Bot API client is adapted to it in the webhook handler. */
@@ -277,19 +284,103 @@ function envelopeForPart(part: InboundPostPart) {
   return createRichTextEnvelope({
     kind: part.kind === 'caption' ? 'caption' : 'text',
     text: part.text,
-    entities: [],
+    entities: part.entities ?? [],
   });
+}
+
+/**
+ * Render one part's form #4 entities as classic HTML (ADR-0073 §4):
+ * bold spans become <b>, blockquote spans become <blockquote>, with
+ * nesting (bold inside a quote) preserved. Entities never cross — the
+ * marker parser guarantees bold strictly inside blockquote; a crossing
+ * or equal-range set fails closed to null and the caller falls back to
+ * plain escaped text.
+ */
+export function renderInboundEntitiesToHtml(
+  text: string,
+  entities: readonly RichTextEntity[],
+): TelegramSafeHtml | null {
+  if (entities.length === 0) {
+    return escapeTelegramHtml(text);
+  }
+  const sorted = [...entities].sort((a, b) => a.offset - b.offset || b.length - a.length);
+  for (let i = 0; i < sorted.length; i += 1) {
+    for (let j = i + 1; j < sorted.length; j += 1) {
+      const a = sorted[i]!;
+      const b = sorted[j]!;
+      const aEnd = a.offset + a.length;
+      const bEnd = b.offset + b.length;
+      if (aEnd <= b.offset || bEnd <= a.offset) {
+        continue;
+      }
+      const aContainsB = a.offset <= b.offset && aEnd >= bEnd;
+      const bContainsA = b.offset <= a.offset && bEnd >= aEnd;
+      if (!aContainsB && !bContainsA) {
+        return null;
+      }
+      if (a.offset === b.offset && aEnd === bEnd) {
+        return null;
+      }
+    }
+  }
+  // Recursive render over the sorted entities: direct children of a
+  // range are emitted in order, each wrapped in its tag. `fromIndex`
+  // keeps the recursion from re-entering the entity being rendered —
+  // children always sort after their parent (offset asc, length desc),
+  // so the child scan starts just past the parent.
+  const renderRange = (start: number, end: number, fromIndex: number): TelegramSafeHtml | null => {
+    const parts: TelegramSafeHtml[] = [];
+    let cursor = start;
+    for (let i = fromIndex; i < sorted.length; i += 1) {
+      const entity = sorted[i]!;
+      if (entity.offset < start || entity.offset + entity.length > end) {
+        continue;
+      }
+      // Skip entities already consumed as a child of an earlier sibling.
+      if (entity.offset < cursor) {
+        continue;
+      }
+      if (entity.type !== 'bold' && entity.type !== 'blockquote') {
+        return null;
+      }
+      if (entity.offset > cursor) {
+        parts.push(escapeTelegramHtml(text.slice(cursor, entity.offset)));
+      }
+      const inner = renderRange(entity.offset, entity.offset + entity.length, i + 1);
+      if (inner === null) {
+        return null;
+      }
+      parts.push(wrapTelegramHtml(entity.type === 'bold' ? 'b' : 'blockquote', inner));
+      cursor = entity.offset + entity.length;
+    }
+    if (end > cursor) {
+      parts.push(escapeTelegramHtml(text.slice(cursor, end)));
+    }
+    return parts.join('') as TelegramSafeHtml;
+  };
+  return renderRange(0, text.length, 0);
 }
 
 /**
  * Classic HTML rendering of one formatted part: plain text is escaped, and
  * the rendered footer (never modeled) becomes a trailing blockquote — the
- * AI-admin classic style — instead of plain footer text.
+ * AI-admin classic style — instead of plain footer text. When the part
+ * carries form #4 entities they render as <b> / <blockquote> HTML.
  */
 function classicHtmlForPart(part: InboundPostPart): TelegramSafeHtml {
   if (part.text.endsWith(FOOTER_BLOCK)) {
     const body = part.text.slice(0, -FOOTER_BLOCK.length);
-    return composeTelegramHtml([escapeTelegramHtml(body), telegramBlockquote(INBOUND_FOOTER)]);
+    const rendered =
+      part.entities !== undefined && part.entities.length > 0
+        ? renderInboundEntitiesToHtml(body, part.entities)
+        : escapeTelegramHtml(body);
+    return composeTelegramHtml([
+      rendered ?? escapeTelegramHtml(body),
+      telegramBlockquote(INBOUND_FOOTER),
+    ]);
+  }
+  if (part.entities !== undefined && part.entities.length > 0) {
+    return renderInboundEntitiesToHtml(part.text, part.entities) ?? escapeTelegramHtml(part.text);
   }
   return escapeTelegramHtml(part.text);
 }
@@ -334,6 +425,53 @@ function parseStoredContent(json: string): StoredInboundContent | null {
     if (typeof partRecord.text !== 'string' || partRecord.text.length === 0) {
       return null;
     }
+    // Form #4 entities (ADR-0073 §3): the bare {type, offset, length}
+    // shape only, in-range against the part text. A corrupt entity set
+    // rejects the whole stored content (the approve path answers
+    // storedContentCorrupt, never publishes).
+    const entities = partRecord.entities;
+    if (entities !== undefined) {
+      if (!Array.isArray(entities)) {
+        return null;
+      }
+      for (const entity of entities) {
+        if (typeof entity !== 'object' || entity === null) {
+          return null;
+        }
+        const entityRecord = entity as Record<string, unknown>;
+        for (const key of Object.keys(entityRecord)) {
+          if (key !== 'type' && key !== 'offset' && key !== 'length') {
+            return null;
+          }
+        }
+        if (
+          typeof entityRecord.type !== 'string' ||
+          !(MESSAGE_ENTITY_TYPES as readonly string[]).includes(entityRecord.type)
+        ) {
+          return null;
+        }
+        if (
+          typeof entityRecord.offset !== 'number' ||
+          !Number.isSafeInteger(entityRecord.offset) ||
+          (entityRecord.offset as number) < 0
+        ) {
+          return null;
+        }
+        if (
+          typeof entityRecord.length !== 'number' ||
+          !Number.isSafeInteger(entityRecord.length) ||
+          (entityRecord.length as number) <= 0
+        ) {
+          return null;
+        }
+        if (
+          (entityRecord.offset as number) + (entityRecord.length as number) >
+          (partRecord.text as string).length
+        ) {
+          return null;
+        }
+      }
+    }
   }
   const category = record.category;
   if (
@@ -359,7 +497,10 @@ export function createInboundPipelineService(deps: InboundPipelineDeps): Inbound
   const { executor, clock, logger, config, transport, rewriter } = deps;
   const richMode: InboundRichMode = config.richMode ?? 'auto';
 
-  async function processPipeline(input: InboundProcessInput): Promise<
+  async function processPipeline(
+    input: InboundProcessInput,
+    options?: { readonly skipRewrite?: boolean },
+  ): Promise<
     | { readonly ok: true; readonly processed: ProcessedPost }
     | {
         readonly ok: false;
@@ -396,10 +537,12 @@ export function createInboundPipelineService(deps: InboundPipelineDeps): Inbound
     const isCaption = media !== undefined;
 
     // AI rewrite with the Pixel persona; any failure falls back to the
-    // cleaned text — never fabricate.
+    // cleaned text — never fabricate. `skipRewrite` (the pending-preview
+    // edit path, ADR-0073 §6) keeps the owner's correction authoritative:
+    // no AI pass over text the owner just fixed by hand.
     let bodyText = cleaned;
     let rewriteUsed = false;
-    if (rewriter !== undefined && cleaned.length > 0) {
+    if (rewriter !== undefined && cleaned.length > 0 && options?.skipRewrite !== true) {
       const outcome = await rewriter.rewrite({ text: cleaned, category, isCaption });
       if (outcome.kind === 'ok') {
         bodyText = outcome.text;
@@ -433,8 +576,14 @@ export function createInboundPipelineService(deps: InboundPipelineDeps): Inbound
       partCount: 1,
       media: kind === 'text' ? 'none' : kind,
       richMode,
+      // A rewritten post carrying form #4 markers goes rich (ADR-0073 §4).
+      contentHasEntities: rewriteUsed && hasFormMarkers(bodyText),
     });
-    const parts = formatInboundPost({ text: bodyText, media: kind === 'text' ? 'none' : kind });
+    const parts = formatInboundPost({
+      text: bodyText,
+      media: kind === 'text' ? 'none' : kind,
+      markers: rewriteUsed,
+    });
     const content: StoredInboundContent = {
       kind,
       ...(fileId !== undefined ? { fileId } : {}),
@@ -698,29 +847,19 @@ export function createInboundPipelineService(deps: InboundPipelineDeps): Inbound
     }
   }
 
-  async function routeApproval(
+  /**
+   * Build the approval preview for an EXISTING approval row: mint fresh
+   * single-use tokens (approve / reject / edit) and return the preview
+   * result. Shared by `routeApproval` (new approval) and the pending-
+   * edit path (updated approval, ADR-0073 §6).
+   */
+  async function buildApprovalPreview(
     input: InboundProcessInput,
     processed: ProcessedPost,
+    approvalId: string,
   ): Promise<AdminPostExecutionResult> {
     const ui = input.uiLanguage;
     const nowMs = clock.now();
-    const created = await createInboundApproval(executor, {
-      id: randomToken(),
-      sourceChatId: input.chatId,
-      sourceMessageId: input.sourceMessageId ?? 0,
-      sourceUpdateId: input.updateId,
-      createdByUserId: input.telegramUserId,
-      contentJson: processed.contentJson,
-      fingerprint: processed.fingerprint,
-      category: processed.category,
-      presentation: processed.presentation,
-      expiresAtMs: nowMs + INBOUND_APPROVAL_TTL_MS,
-      nowMs,
-    });
-    if (created.kind === 'already_pending') {
-      return reply(ui, INBOUND_STRINGS.inboundAlreadyPending);
-    }
-    const approvalId = created.id;
     const document = previewDocument(processed);
     if (document === null || !document.ok) {
       return reply(ui, ADMIN_POST_STRINGS.captureInvalidContent);
@@ -730,6 +869,7 @@ export function createInboundPipelineService(deps: InboundPipelineDeps): Inbound
     // exists, so a token minted here always has a live target.
     const approveToken = randomToken();
     const rejectToken = randomToken();
+    const editToken = randomToken();
     await issueActionToken(executor, {
       token: approveToken,
       telegramUserId: input.telegramUserId,
@@ -752,6 +892,17 @@ export function createInboundPipelineService(deps: InboundPipelineDeps): Inbound
       expiresAtMs: nowMs + INBOUND_APPROVAL_TTL_MS,
       nowMs,
     });
+    await issueActionToken(executor, {
+      token: editToken,
+      telegramUserId: input.telegramUserId,
+      permission: 'draft.approve',
+      action: INBOUND_EDIT_ACTION,
+      targetType: 'inbound_approval',
+      targetId: approvalId,
+      payloadJson: JSON.stringify({ approvalId }),
+      expiresAtMs: nowMs + INBOUND_APPROVAL_TTL_MS,
+      nowMs,
+    });
     const header = localize(
       ui,
       INBOUND_STRINGS.inboundApprovalPreviewHeader(
@@ -762,6 +913,10 @@ export function createInboundPipelineService(deps: InboundPipelineDeps): Inbound
     );
     const buttons: AdminPostButtons = [
       [
+        {
+          text: localize(ui, INBOUND_STRINGS.inboundEditButton),
+          callbackData: `a:${editToken}`,
+        },
         {
           text: localize(ui, INBOUND_STRINGS.inboundApproveButton),
           callbackData: `a:${approveToken}`,
@@ -782,6 +937,31 @@ export function createInboundPipelineService(deps: InboundPipelineDeps): Inbound
     };
   }
 
+  async function routeApproval(
+    input: InboundProcessInput,
+    processed: ProcessedPost,
+  ): Promise<AdminPostExecutionResult> {
+    const ui = input.uiLanguage;
+    const nowMs = clock.now();
+    const created = await createInboundApproval(executor, {
+      id: randomToken(),
+      sourceChatId: input.chatId,
+      sourceMessageId: input.sourceMessageId ?? 0,
+      sourceUpdateId: input.updateId,
+      createdByUserId: input.telegramUserId,
+      contentJson: processed.contentJson,
+      fingerprint: processed.fingerprint,
+      category: processed.category,
+      presentation: processed.presentation,
+      expiresAtMs: nowMs + INBOUND_APPROVAL_TTL_MS,
+      nowMs,
+    });
+    if (created.kind === 'already_pending') {
+      return reply(ui, INBOUND_STRINGS.inboundAlreadyPending);
+    }
+    return buildApprovalPreview(input, processed, created.id);
+  }
+
   async function processNewInbound(input: InboundProcessInput): Promise<AdminPostExecutionResult> {
     const ui = input.uiLanguage;
     const processed = await processPipeline(input);
@@ -798,26 +978,18 @@ export function createInboundPipelineService(deps: InboundPipelineDeps): Inbound
       }
     }
 
-    // Routing per mode (DESIGN §10.2). Edits override every mode including
-    // paused and go through processEdit, never here.
+    // Routing per mode (DESIGN §10.2, ADR-0073 §5): every mode except
+    // paused goes through the approval preview — auto / safe-auto no
+    // longer publish directly. The preview IS the approval: Publish
+    // approves and sends in one act (there is no held-approved queue
+    // for owner posts). Edits override every mode including paused and
+    // go through processEdit, never here.
     const settings = await readPublishingSettings(executor);
     if (settings.mode === 'paused') {
       logger.info('inbound.route.paused', {});
       return reply(ui, ADMIN_POST_STRINGS.pausedBotOff);
     }
-    if (settings.mode === 'approval') {
-      return routeApproval(input, processed.processed);
-    }
-    // 'auto' and 'safe-auto': direct unless the category is signal-only.
-    if (settings.mode === 'safe-auto' && isSignalOnlyCategory(processed.processed.category)) {
-      return routeApproval(input, processed.processed);
-    }
-    const outcome = await publishProcessed(processed.processed, {
-      sourceChatId: input.chatId,
-      sourceMessageId: input.sourceMessageId ?? 0,
-      createdByUserId: input.telegramUserId,
-    });
-    return sendOutcomeReply(ui, outcome, processed.processed.category);
+    return routeApproval(input, processed.processed);
   }
 
   async function processEdit(input: InboundProcessInput): Promise<AdminPostExecutionResult> {
@@ -828,8 +1000,47 @@ export function createInboundPipelineService(deps: InboundPipelineDeps): Inbound
       sourceMessageId,
     });
     if (row === null) {
-      // An edit of a never-published message stays silent (legacy).
-      return { kind: 'none' };
+      // ADR-0073 §6: an edit of a message with a PENDING approval
+      // preview updates the preview — the owner's correction is
+      // authoritative, so it re-processes WITHOUT an AI rewrite, then
+      // re-shows the preview with fresh tokens. The 24h expiry is NOT
+      // extended by an edit.
+      const pending = await findPendingInboundApprovalBySource(executor, {
+        sourceChatId: input.chatId,
+        sourceMessageId,
+      });
+      if (pending === null) {
+        // An edit of a never-published, never-pending message stays silent (legacy).
+        return { kind: 'none' };
+      }
+      const processed = await processPipeline(input, { skipRewrite: true });
+      if (!processed.ok) {
+        switch (processed.reason) {
+          case 'album':
+            return reply(ui, ADMIN_POST_STRINGS.captureAlbumRejected);
+          case 'unsupported_media':
+            return reply(ui, ADMIN_POST_STRINGS.captureMediaRejected);
+          case 'unsafe_link':
+            return reply(ui, INBOUND_STRINGS.inboundUnsafeLink);
+          case 'no_text_content':
+            return reply(ui, ADMIN_POST_STRINGS.noTextContent);
+        }
+      }
+      const next = processed.processed;
+      const updated = await updateInboundApprovalContent(executor, {
+        id: pending.id,
+        contentJson: next.contentJson,
+        fingerprint: next.fingerprint,
+        nowMs: clock.now(),
+      });
+      if (!updated) {
+        // The approval was decided concurrently — the old preview's
+        // buttons already answer honestly for a non-pending row.
+        logger.info('inbound.edit.preview_already_decided', {});
+        return reply(ui, INBOUND_STRINGS.inboundPreviewAlreadyDecided);
+      }
+      logger.info('inbound.edit.preview_updated', {});
+      return buildApprovalPreview(input, next, pending.id);
     }
     // Edits override every mode, including paused (DESIGN §10.2) — but the
     // live gate still applies, and it is checked BEFORE any channel
@@ -949,7 +1160,11 @@ export function createInboundPipelineService(deps: InboundPipelineDeps): Inbound
       logger.warn('inbound.callback.permission_revoked', { action: record.action });
       return answer(ui, ADMIN_POST_STRINGS.permissionRevoked);
     }
-    if (record.action !== INBOUND_APPROVE_ACTION && record.action !== INBOUND_REJECT_ACTION) {
+    if (
+      record.action !== INBOUND_APPROVE_ACTION &&
+      record.action !== INBOUND_REJECT_ACTION &&
+      record.action !== INBOUND_EDIT_ACTION
+    ) {
       return answer(ui, ADMIN_POST_STRINGS.callbackInvalidToken);
     }
     let approvalId = '';
@@ -982,6 +1197,14 @@ export function createInboundPipelineService(deps: InboundPipelineDeps): Inbound
         nowMs,
       });
       return answer(ui, INBOUND_STRINGS.inboundApprovalExpired);
+    }
+
+    if (record.action === INBOUND_EDIT_ACTION) {
+      // ADR-0073 §6: the Edit button arms the native message edit — the
+      // owner edits the original message and the pending-preview branch
+      // of processEdit re-shows the preview. The token is single-use;
+      // the fresh preview carries a fresh Edit token.
+      return answer(ui, INBOUND_STRINGS.inboundEditInstructions);
     }
 
     if (record.action === INBOUND_REJECT_ACTION) {

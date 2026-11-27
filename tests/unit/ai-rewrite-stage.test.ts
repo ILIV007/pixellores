@@ -16,6 +16,7 @@ import {
   type AiRewriteOutputRejectCode,
 } from '../../src/domain/ai/rewrite-schema';
 import {
+  checkInboundRewritePreservesNumbers,
   checkRewritePreservesNumbers,
   foldDigitsForRewriteGuard,
 } from '../../src/domain/ai/rewrite-guard';
@@ -245,6 +246,49 @@ describe('claim-preservation guard (ADR-0070 §3, ADR-0066 digit folding)', () =
       rawClaimTexts: [],
       rewrittenHeadlineFa: 'تیتر تازه',
       rewrittenSummaryFa: 'خلاصهٔ تازه',
+    });
+    expect(outcome.ok).toBe(true);
+  });
+});
+
+describe('inbound claim-preservation guard (ADR-0073 §1, ADR-0066 digit folding)', () => {
+  const RAW = 'تریلر جدید GTA VI منتشر شد؛ فروش به ۳٫۷۹ میلیارد دلار رسید.';
+
+  it('accepts a rewritten Latin number that matches a raw Persian one after folding', () => {
+    const outcome = checkInboundRewritePreservesNumbers({
+      rawText: RAW,
+      rewrittenText: '**تریلر جدید GTA VI**\nفروش به 3.79 میلیارد دلار رسید.',
+    });
+    expect(outcome.ok).toBe(true);
+  });
+
+  it('refuses a rewritten number that is not in the raw text', () => {
+    const outcome = checkInboundRewritePreservesNumbers({
+      rawText: RAW,
+      rewrittenText: 'فروش به 3.80 میلیارد دلار رسید.',
+    });
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.code).toBe('number_not_in_raw');
+      expect(outcome.token).toBe('3.80');
+    }
+  });
+
+  it('refuses an empty rewrite', () => {
+    const outcome = checkInboundRewritePreservesNumbers({
+      rawText: RAW,
+      rewrittenText: '   ',
+    });
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.code).toBe('empty_rewrite');
+    }
+  });
+
+  it('passes a rewrite with no numbers at all', () => {
+    const outcome = checkInboundRewritePreservesNumbers({
+      rawText: 'تریلر جدید منتشر شد.',
+      rewrittenText: '**تریلر جدید** منتشر شد.',
     });
     expect(outcome.ok).toBe(true);
   });

@@ -18,7 +18,7 @@
     "enabled": true,
   },
   "vars": {
-    "APP_VERSION": "1.48.0",
+    "APP_VERSION": "1.49.0",
     "ENVIRONMENT": "development",
     "LOG_LEVEL": "info",
     // Phase 1A build/schema metadata (non-secret — ADR-0020). APP_COMMIT is
@@ -239,7 +239,7 @@
     "preview": {
       "name": "pixel-preview",
       "vars": {
-        "APP_VERSION": "1.48.0",
+        "APP_VERSION": "1.49.0",
         "ENVIRONMENT": "preview",
         "LOG_LEVEL": "info",
         "APP_COMMIT": "local-dev",
@@ -258,6 +258,14 @@
         // Local default above stays "false". ADMIN_MANAGE_ENABLED stays
         // "false" (slice 2 untouched).
         "ADMIN_PANEL_ENABLED": "false",
+        // ADR-0073 inbound AI-admin gates: owner-authorized Preview
+        // enablement (owner order 2026-11-27 23:39 Tehran) — the
+        // owner-send-post flow (inbound pipeline + admin-post capture)
+        // is wired only while ADMIN_POST_ENABLED is on, and the live
+        // publish gate stays independent (a wired transport never
+        // implies a live send). Local defaults above stay "false".
+        "ADMIN_POST_ENABLED": "true",
+        "ADMIN_POST_LIVE_PUBLISH_ENABLED": "true",
         // Phase 4 ingestion gate ships DISABLED on preview too (ADR-0038):
         // activation is a post-review operator procedure (runbook Phase 4).
         // The reviewed Phase 3 engine behavior is preserved unchanged.
@@ -277,12 +285,15 @@
         // (ADR-0009). R1.10.5 owner channel identity: @pixellores
         // (https://t.me/pixellores). Format-validated; unconsumed today.
         "TARGET_CHANNEL": "@pixellores",
-        // Phase 6 AI adapter gates ship DISABLED on preview (ADR-0041):
-        // the AI draft service is the typed deferred `ai_disabled` outcome
-        // with zero provider calls. Activation is a separate reviewed
-        // owner procedure; no model is invoked by this declaration.
-        "AI_ENABLED": "false",
-        "AI_GEMINI_ENABLED": "false",
+        // Phase 6 AI adapter gates: AI_ENABLED + AI_GEMINI_ENABLED ship
+        // ENABLED on preview (ADR-0073, owner order 2026-11-27 23:39
+        // Tehran) — the inbound Soul rewrite (Gemini ONLY) needs them;
+        // the pipeline-draft rewrite stage gate AI_GEMINI_REWRITE_ENABLED
+        // stays "false" (its default) so the cron bridge never requires
+        // rewrites for pipeline drafts. AI_IMAGE_ENABLED and
+        // AI_FAILOVER_ENABLED stay "false".
+        "AI_ENABLED": "true",
+        "AI_GEMINI_ENABLED": "true",
         // ADR-0072 image-generation gate ships DISABLED on preview too:
         // the image service defers with zero provider calls and no-photo
         // posts go out as text exactly as before.
