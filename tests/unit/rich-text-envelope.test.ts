@@ -549,7 +549,19 @@ describe('rich-text envelope — nesting, crossing, duplicates, canonical order'
     );
   });
 
-  it('keeps code/pre isolated from every other entity', () => {
+  it('keeps code/pre isolated from every other entity — except ADR-0071 style-contains-code', () => {
+    // A style STRICTLY containing code is the ADR-0071 figures main-line
+    // shape (bold line, mono value inside) — legal. An EQUAL-range
+    // style+code pair stays rejected: Telegram flattened exactly that
+    // shape live on msg 16 (bold+code over the same range → code-only).
+    expect(textEnvelope('code piece', [entity('bold', 0, 10), entity('code', 2, 3)])).toMatchObject(
+      { ok: true },
+    );
+    expect(textEnvelope('code piece', [entity('code', 0, 4), entity('bold', 0, 4)])).toEqual({
+      ok: false,
+      reason: 'nesting_violation',
+    });
+    // Code still never contains anything, and `pre` stays fully isolated.
     expect(textEnvelope('code piece', [entity('code', 0, 4), entity('bold', 2, 4)])).toEqual({
       ok: false,
       reason: 'nesting_violation',
@@ -868,7 +880,7 @@ describe('rich-text envelope — R1.19.1 corrected style containment matrix (N1)
     expect(wire[1]).toMatchObject({ type: 'bold', offset: 7, length: 7 });
   });
 
-  it('still rejects: non-style inner in a link, code/pre in ANY overlap with a style, quotes', () => {
+  it('still rejects: non-style inner in a link, code containing a style, pre overlaps, quotes', () => {
     // link ⊃ hashtag: a NON-style inner stays a nesting violation.
     expect(
       textEnvelope('abcdefghij', [
@@ -876,8 +888,14 @@ describe('rich-text envelope — R1.19.1 corrected style containment matrix (N1)
         entity('hashtag', 2, 3),
       ]),
     ).toEqual({ ok: false, reason: 'nesting_violation' });
-    // code/pre stay isolated in BOTH directions with a style.
-    expect(textEnvelope('abcdefghij', [entity('bold', 0, 10), entity('code', 2, 3)])).toEqual({
+    // Code never CONTAINS a style (ADR-0071 allows only style ⊃ code,
+    // strictly). Equal-range style+code stays rejected (live msg-16
+    // flattening). `pre` stays isolated in BOTH directions with a style.
+    expect(textEnvelope('abcdefghij', [entity('code', 0, 10), entity('bold', 2, 3)])).toEqual({
+      ok: false,
+      reason: 'nesting_violation',
+    });
+    expect(textEnvelope('abcdefghij', [entity('bold', 0, 10), entity('code', 0, 10)])).toEqual({
       ok: false,
       reason: 'nesting_violation',
     });

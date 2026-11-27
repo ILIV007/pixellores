@@ -54,6 +54,18 @@
  *   (deterministic; no silent widening/repositioning/deduplication); equal
  *   ranges of DIFFERENT types are legal when at least one containment
  *   direction is legal (e.g. bold+italic, bold+text_link);
+ * - ADR-0071 exception to code isolation (owner order 2026-11-22, live
+ *   finding on msg 16): a formatting STYLE (bold/italic/underline/
+ *   strikethrough/spoiler) may STRICTLY contain an inline `code` entity —
+ *   the figures main-line shape (`<b>label: <code>$3.79B</code></b>`).
+ *   The official rule forbids styles containing code, and the equal-range
+ *   shape (`<b><code>X</code></b>`) was observed LIVE to flatten to
+ *   code-only — so equal-range style+code stays REJECTED here, code still
+ *   never contains anything, and `pre` stays fully isolated. The
+ *   strict-containment shape is the owner's instructed form and NEEDS live
+ *   verification on the first real post after deploy (no dry-run exists
+ *   for entity parsing): if Telegram rejects or flattens it, the render
+ *   falls back to code-only for the main figure.
  * - the canonical envelope imposes a DETERMINISTIC entity ordering (offset
  *   ascending, length descending, type, then metadata) — entity array order
  *   carries no Telegram semantics, and byte-identical original JSON array
@@ -276,7 +288,11 @@ const STYLE_TYPES: ReadonlySet<string> = new Set([
 
 const QUOTE_TYPES: ReadonlySet<string> = new Set(['blockquote', 'expandable_blockquote']);
 
-/** code/pre can neither contain others nor be contained (leaf-isolated). */
+/**
+ * code/pre are isolated leaves — with the ADR-0071 exception that a
+ * formatting style may STRICTLY contain `code` (never equal ranges, never
+ * `pre`, code never contains). See `canContain` / `validatePair`.
+ */
 const ISOLATED_TYPES: ReadonlySet<string> = new Set(['code', 'pre']);
 
 function isContainableType(type: string): boolean {
@@ -285,6 +301,18 @@ function isContainableType(type: string): boolean {
 
 function canContain(outer: RichTextEntity, inner: RichTextEntity): boolean {
   if (ISOLATED_TYPES.has(outer.type) || ISOLATED_TYPES.has(inner.type)) {
+    // ADR-0071 exception: a formatting style may STRICTLY contain inline
+    // code (the figures main-line shape). Equal ranges stay illegal — the
+    // live msg-16 finding flattened equal-range bold+code to code-only.
+    // `pre` never participates; code never contains anything.
+    if (
+      inner.type === 'code' &&
+      STYLE_TYPES.has(outer.type) &&
+      outer.offset < inner.offset &&
+      outer.offset + outer.length > inner.offset + inner.length
+    ) {
+      return true;
+    }
     return false;
   }
   // R1.19.1 (N1): a style may BE PART OF any other entity except pre/code
@@ -695,6 +723,18 @@ function validatePair(a: RichTextEntity, b: RichTextEntity): PairFailure {
     return null;
   }
   if (ISOLATED_TYPES.has(a.type) || ISOLATED_TYPES.has(b.type)) {
+    // ADR-0071: the ONE legal overlap involving `code` is a formatting
+    // style STRICTLY containing it (the figures main-line shape). Equal
+    // ranges stay a violation (observed live to flatten), code never
+    // contains, and `pre` stays fully isolated in both directions.
+    const styleStrictlyContainsCode = (outer: RichTextEntity, inner: RichTextEntity): boolean =>
+      inner.type === 'code' &&
+      STYLE_TYPES.has(outer.type) &&
+      outer.offset < inner.offset &&
+      outer.offset + outer.length > inner.offset + inner.length;
+    if (styleStrictlyContainsCode(a, b) || styleStrictlyContainsCode(b, a)) {
+      return null;
+    }
     return 'nesting_violation';
   }
   if (a.offset === b.offset && aEnd === bEnd) {

@@ -417,7 +417,10 @@ describe('slice 9 — the wired autonomous chain', () => {
       { id: publications.rows[1]!.id, status: 'published' },
     ]);
     expect(transport.calls).toHaveLength(2);
-    expect(transport.calls[0]?.text).toContain('تیتر زنجیرهٔ سرتاسری ۰۹');
+    // ADR-0071: the v3 render folds digits to Latin — the STORED
+    // headline keeps its Persian digits (line 169), the SENT text does
+    // not.
+    expect(transport.calls[0]?.text).toContain('تیتر زنجیرهٔ سرتاسری \u206609\u2069');
     for (const row of publications.rows) {
       const found = await findPublicationById(chain.executor, row.id);
       expect(found?.status).toBe('published');

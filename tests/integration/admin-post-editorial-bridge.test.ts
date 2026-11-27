@@ -24,10 +24,14 @@ import { createDbExecutor, type DbExecutor } from '../../src/adapters/db/db-exec
  *   publish with the live flag OFF (honest stop, nothing sent) and ON
  *   (exact single channel send, no parse_mode).
  *
- * The unverified status is preserved end-to-end: the rendered channel text
- * carries the fixed unverified note, and the bridge is idempotent (a second
- * conversion of the same editorial draft is an honest pointer, never a
- * duplicate of the news).
+ * The v3 form is preserved end-to-end (ADR-0071): the rendered channel
+ * text carries the bold headline, the body, and the house footer — with
+ * NO trust label, NO unverified line, and NO source line — and the bridge
+ * is idempotent (a second conversion of the same editorial draft is an
+ * honest pointer, never a duplicate of the news). The pipeline fixture
+ * draft is RAW prompt-v3 (no soulForm), so its title here is the plain
+ * bold headline; the category-emoji title is the same form with a
+ * soulForm-carrying (rewritten) draft, covered by the render unit tests.
  */
 
 const FAKE_WEBHOOK_SECRET = 'test-webhook-secret-0000000000000000';
@@ -57,20 +61,25 @@ const LIVE_ENV = { ...BRIDGE_ENV, ADMIN_POST_LIVE_PUBLISH_ENABLED: 'true' };
 
 // The EXACT known pipeline output of buildPipelineReadyDraft() — the
 // deterministic render these tests assert against.
+//
+// NOTE (rebase onto PR #31, ADR-0070): the shared fixture now emits a
+// RAW prompt-v3 draft — Workers AI does raw extraction only, so the
+// stored document honestly carries NO soulForm (PR #31 migrated the
+// fake output to the v3 shape; a v2-shaped output fails the strict v3
+// schema). The v3 render therefore titles with the PLAIN bold headline
+// here — no emoji is invented for a raw draft ("never backfilled, never
+// invented"). The emoji title itself is covered by the render unit
+// tests, which feed a soulForm-carrying document (🏆 GTA form); in
+// production the emoji returns once the Gemini rewrite writes soulForm.
 const PIPELINE_HEADLINE = 'به‌روزرسانی بزرگ بازی نمونه با بخش داستانی تازه منتشر شد';
 const PIPELINE_SUMMARY =
   'استودیوی نمونه از انتشار به‌روزرسانی بزرگ بازی نمونه خبر داد؛ این به‌روزرسانی بخش داستانی تازه و بهبود عملکرد را به همراه دارد.';
-const PIPELINE_CLAIM =
-  'به‌روزرسانی بزرگ بازی نمونه با بخش داستانی تازه و بهبود عملکرد در دسترس قرار گرفت.';
-const EXPECTED_POST_TEXT = [
-  PIPELINE_HEADLINE,
-  PIPELINE_SUMMARY,
-  `• ${PIPELINE_CLAIM}`,
-  EDITORIAL_POST_LABELS.unverifiedNote,
-  EDITORIAL_POST_LABELS.footer,
-].join('\n\n');
+const PIPELINE_TITLE = PIPELINE_HEADLINE;
+const EXPECTED_POST_TEXT = [PIPELINE_TITLE, PIPELINE_SUMMARY, EDITORIAL_POST_LABELS.footer].join(
+  '\n\n',
+);
 const EXPECTED_POST_ENTITIES = [
-  { type: 'bold', offset: 0, length: PIPELINE_HEADLINE.length },
+  { type: 'bold', offset: 0, length: PIPELINE_TITLE.length },
   {
     type: 'blockquote',
     offset: EXPECTED_POST_TEXT.length - EDITORIAL_POST_LABELS.footer.length,

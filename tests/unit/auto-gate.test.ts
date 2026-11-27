@@ -188,16 +188,18 @@ describe('auto-gate ag1 — the fail-closed refusal family', () => {
     }
   });
 
-  it('refuses document_unreadable when the strict reader refuses the stored shape', () => {
-    // A claim whose status is NOT exactly 'unverified' — the laundered
-    // status the renderer refuses — can never be AUTO-approved.
+  it('does NOT refuse on a non-unverified claim status anymore (ADR-0071): the render accepts the claim on its text alone, and the fact-guard report decides', () => {
+    // ADR-0071 (owner order 2026-11-22): the claim `status` is no longer
+    // a render contract — the unverified line is gone from posts and the
+    // internal gate is the fact-guard report, not the status field. With
+    // a clean report over the same claim, the gate reaches eligible_auto.
     const document: Record<string, unknown> = {
       schemaVersion: 1,
       headlineFa: 'تیتر آزمون گیت',
       summaryFa: 'خلاصهٔ آزمون گیت.',
       modelClaims: [
         {
-          text: 'ادعای آزمون.',
+          text: 'ادعای آزمون 0 بر پایهٔ شواهد ثبت‌شده ارائه شد.',
           evidenceIds: ['ev-0'],
           claimType: 'source_report',
           status: 'confirmed',
@@ -206,10 +208,7 @@ describe('auto-gate ag1 — the fail-closed refusal family', () => {
       factGuard: cleanReport(1),
     };
     const verdict = evaluateAutoPublishGate(JSON.stringify(document));
-    expect(verdict.kind).toBe('refused');
-    if (verdict.kind === 'refused') {
-      expect(verdict.reason).toBe('document_unreadable');
-    }
+    expect(verdict.kind).toBe('eligible_auto');
   });
 
   it('refuses composition_not_sendable when the strict composition exceeds the send caps', () => {

@@ -252,9 +252,30 @@ export async function handleScheduled(
                     caption:
                       input.caption === undefined ? undefined : (input.caption as RichTextEnvelope),
                   }),
+                // ADR-0071: the editorial album rides the same client —
+                // one media group, caption on the first photo only. The
+                // media reference splits the same way the client splits
+                // it for sendPhoto (https:// → URL, else file_id); the
+                // reply's per-item file_ids ride through for the
+                // ledger's reuse.
+                sendMediaGroupRich: (input) =>
+                  botApi.sendMediaGroupRich({
+                    chatId: input.chatId,
+                    items: input.items.map((item, ordinal) => ({
+                      type: 'photo' as const,
+                      ...(item.media.startsWith('https://')
+                        ? { url: item.media }
+                        : { fileId: item.media }),
+                      ...(ordinal === 0 && item.caption !== undefined
+                        ? { caption: item.caption as RichTextEnvelope }
+                        : {}),
+                    })),
+                  }),
               },
-        // ADR-0068: the ledger for the single-photo path (the album
-        // media seam stays unwired here — the ledger may exist alone).
+        // ADR-0068 + ADR-0071: the ledger for the photo paths (the
+        // DURABLE-album media seam stays unwired here — the ledger may
+        // exist alone; the editorial album rides the channel transport
+        // above, not the media seam).
         mediaAssets: createMediaAssetStore(executor),
         sendGate: { enabled: mode === 'auto' || mode === 'safe-auto' },
         contextProvider: createStoriesPolicyContextProvider(executor),
