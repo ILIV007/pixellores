@@ -252,6 +252,11 @@
         // queue provisioning and migration 0003. Local defaults stay disabled;
         // production resources remain unprovisioned.
         "JOBS_ENABLED": "true",
+        // Slice 3 admin panel gate: owner-authorized Preview enablement
+        // (owner order 2026-11-27 23:17 Tehran) — panel code is complete
+        // and the webhook is healthy live; local default above stays
+        // "false". ADMIN_MANAGE_ENABLED stays "false" (slice 2 untouched).
+        "ADMIN_PANEL_ENABLED": "true",
         // Phase 4 ingestion gate ships DISABLED on preview too (ADR-0038):
         // activation is a post-review operator procedure (runbook Phase 4).
         // The reviewed Phase 3 engine behavior is preserved unchanged.
