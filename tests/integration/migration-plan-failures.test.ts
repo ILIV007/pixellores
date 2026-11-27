@@ -135,9 +135,9 @@ describe('applyMigrations — failure atomicity (proof 6)', () => {
 
     // Version-1 objects are intact and the database can still be upgraded by
     // a valid pending migration afterwards (recovery path) — here via the
-    // REAL pending migrations, landing at the shipped schema version 11
-    // (R1.20-R1 + R1.22 + slice 4 + slice 5 + slice 6 + slice 8 + slice 9: the LINEAR plan continues through the LOCAL-ONLY
-    // 0004 -> 4, 0005 -> 5, 0006 -> 6, 0007 -> 7, 0008 -> 8, 0009 -> 9, 0010 -> 10 and 0011 -> 11).
+    // REAL pending migrations, landing at the shipped schema version 13
+    // (R1.20-R1 + R1.22 + slice 4 + slice 5 + slice 6 + slice 8 + slice 9 + ADR-0074: the LINEAR plan continues through the LOCAL-ONLY
+    // 0004 -> 4, 0005 -> 5, 0006 -> 6, 0007 -> 7, 0008 -> 8, 0009 -> 9, 0010 -> 10, 0011 -> 11, 0012 -> 12 and 0013 -> 13).
     const recovery = await applyMigrations(db);
     expect(recovery.observedVersion).toBe(1);
     expect(recovery.applied.map((migration) => migration.id)).toEqual([
@@ -152,8 +152,9 @@ describe('applyMigrations — failure atomicity (proof 6)', () => {
       '0010_soul_versioning',
       '0011_autonomous_soul_stamp',
       '0012_ai_image_provenance',
+      '0013_bridge_gate_progress',
     ]);
-    expect(await appliedSchemaVersion()).toBe(12);
-    expect(await appliedMigrationId()).toBe('0012_ai_image_provenance');
+    expect(await appliedSchemaVersion()).toBe(13);
+    expect(await appliedMigrationId()).toBe('0013_bridge_gate_progress');
   });
 });

@@ -213,6 +213,187 @@ export async function listReadyDrafts(
   return rows.rows;
 }
 
+/**
+ * ADR-0074 — the bridge's progress-ordered ready-draft scan (migration
+ * 0013). The plain oldest-first scan livelocks when the oldest drafts
+ * fail the TOTAL deterministic gate on every pass: the same front rows
+ * are re-scanned forever and drafts behind them are never reached.
+ * This scan orders by (consecutive gate failures ASC, created_at ASC,
+ * id ASC) over the `draft_gate_evaluations` progress table, so each
+ * pass reaches unevaluated drafts first and deterministically-failing
+ * drafts sink below fresh ones instead of head-blocking the queue. The
+ * ordering NEVER changes what the gate decides — a draft's verdict is
+ * computed from its own stored bytes, whatever its position in the
+ * scan. A draft with no evaluation row counts as zero failures.
+ */
+export interface BridgeReadyDraftRow extends ReadyDraftRow {
+  /** Consecutive gate failures recorded for this draft (0 when unevaluated). */
+  readonly consecutive_failures: number;
+}
+
+export async function listReadyDraftsForBridge(
+  executor: DbExecutor,
+  input: { readonly limit: number },
+): Promise<readonly BridgeReadyDraftRow[]> {
+  const limit = Math.max(1, Math.min(25, Math.floor(input.limit)));
+  const rows = await executor.query<BridgeReadyDraftRow>({
+    sql: `SELECT d.id, d.story_id, d.document_json, d.created_at,
+                 COALESCE(g.consecutive_failures, 0) AS consecutive_failures
+            FROM drafts d
+            LEFT JOIN draft_gate_evaluations g ON g.draft_id = d.id
+           WHERE d.status = 'ready'
+           ORDER BY COALESCE(g.consecutive_failures, 0) ASC, d.created_at ASC, d.id ASC
+           LIMIT ?`,
+    params: [limit],
+  });
+  return rows.rows;
+}
+
+/** The source-item fields the fact-guard re-evaluation rebuilds from. */
+export interface SourceItemForReevaluation {
+  readonly id: string;
+  readonly title: string;
+  readonly body_excerpt: string | null;
+  readonly content_hash: string;
+}
+
+/**
+ * ADR-0074 — the stored source item a fact-guard re-evaluation rebuilds
+ * its excerpt from (title + body_excerpt, the mapper's own composition).
+ * The caller verifies `content_hash` against the stored report's
+ * snapshot BEFORE rebuilding anything — a changed item can never
+ * produce a report that claims an identity it does not have.
+ */
+export async function findSourceItemForReevaluation(
+  executor: DbExecutor,
+  sourceItemId: string,
+): Promise<SourceItemForReevaluation | null> {
+  return executor.first<SourceItemForReevaluation>({
+    sql: `SELECT id, title, body_excerpt, content_hash FROM source_items WHERE id = ?`,
+    params: [sourceItemId],
+  });
+}
+
+/**
+ * ADR-0074 — the fenced fact-guard report replacement: the derived
+ * `factGuard` payload inside `drafts.document_json` is replaced ONLY
+ * when the row is still `ready` AND its document is byte-identical to
+ * the one the caller evaluated (the rewrite handler's compare-and-swap
+ * discipline). The rowcount is the authority: 0 means another writer
+ * moved the document first and NOTHING was applied. Model claims,
+ * excerpts and titles are never touched here — only the derived report.
+ */
+export async function replaceDraftFactGuardReport(
+  executor: DbExecutor,
+  input: {
+    readonly draftId: string;
+    /** The document_json the caller evaluated — the CAS expectation. */
+    readonly expectedDocumentJson: string;
+    /** The NEW document_json (same document, rebuilt factGuard). */
+    readonly documentJson: string;
+    readonly nowMs: number;
+  },
+): Promise<boolean> {
+  const meta = await executor.run({
+    sql: `UPDATE drafts SET document_json = ?, updated_at = ?
+           WHERE id = ? AND status = 'ready' AND document_json = ?`,
+    params: [input.documentJson, input.nowMs, input.draftId, input.expectedDocumentJson],
+  });
+  return meta.changes > 0;
+}
+
+/** The gate verdict family a progress row records (never a free string). */
+export type GateEvaluationOutcome = 'eligible_auto' | 'requires_review' | 'refused';
+
+/**
+ * ADR-0074 — record one bridge gate evaluation (migration 0013). The
+ * upsert is the progress memory: a failure increments
+ * `consecutive_failures`, an eligible verdict resets it to 0, and the
+ * last failure reason rides along for diagnosis. The write is
+ * best-effort progress, never a gate: a caller that cannot record an
+ * evaluation logs and continues — the pass's verdicts stand either way.
+ */
+export async function recordGateEvaluation(
+  executor: DbExecutor,
+  input: {
+    readonly draftId: string;
+    readonly outcome: GateEvaluationOutcome;
+    /** Stable verdict reason (gate refusal reason or 'fact_guard_findings'); null when eligible. */
+    readonly failureReason: string | null;
+    readonly nowMs: number;
+  },
+): Promise<void> {
+  await executor.run({
+    sql: `INSERT INTO draft_gate_evaluations
+            (draft_id, last_evaluated_at_ms, last_outcome, consecutive_failures, last_failure_reason, updated_at_ms)
+          VALUES (?, ?, ?, ?, ?, ?)
+          ON CONFLICT(draft_id) DO UPDATE SET
+            last_evaluated_at_ms = excluded.last_evaluated_at_ms,
+            last_outcome = excluded.last_outcome,
+            consecutive_failures = CASE WHEN excluded.last_outcome IN ('requires_review', 'refused')
+              THEN draft_gate_evaluations.consecutive_failures + 1 ELSE 0 END,
+            last_failure_reason = excluded.last_failure_reason,
+            updated_at_ms = excluded.updated_at_ms`,
+    params: [
+      input.draftId,
+      input.nowMs,
+      input.outcome,
+      input.outcome === 'eligible_auto' ? 0 : 1,
+      input.failureReason,
+      input.nowMs,
+    ],
+  });
+}
+
+/** The system actor that performs fact-guard re-evaluations. */
+export const FACT_GUARD_REEVALUATION_ACTOR_ID = 'fact_guard:reevaluation' as const;
+/** The audit action for a rebuilt stored fact-guard report. */
+export const FACT_GUARD_REEVALUATION_AUDIT_ACTION = 'fact_guard_reevaluated' as const;
+
+/**
+ * ADR-0074 — ONE system audit event per rebuilt fact-guard report (the
+ * auto-approval audit discipline: metadata carries ids and counts only
+ * — never document content, never excerpts; the audit failure does NOT
+ * roll back the report replacement, it is recorded as the honest gap;
+ * a duplicate audit id is absorbed, never a second event).
+ */
+export async function insertFactGuardReevaluationAudit(
+  executor: DbExecutor,
+  input: {
+    readonly draftId: string;
+    readonly nowMs: number;
+    readonly metadata: {
+      readonly factGuardVersion: number;
+      readonly claimsRequiringReviewBefore: number;
+      readonly claimsRequiringReviewAfter: number;
+      readonly snapshotSourceItemId: string;
+    };
+  },
+): Promise<void> {
+  try {
+    await executor.run({
+      sql: `INSERT INTO audit_events (id, actor_type, actor_id, action, target_type,
+              target_id, trace_id, metadata_json, created_at)
+            VALUES (?, 'system', ?, ?, 'draft', ?, NULL, ?, ?)`,
+      params: [
+        `fact-guard-reeval:${input.draftId}:${input.nowMs}`,
+        FACT_GUARD_REEVALUATION_ACTOR_ID,
+        FACT_GUARD_REEVALUATION_AUDIT_ACTION,
+        input.draftId,
+        JSON.stringify(input.metadata),
+        input.nowMs,
+      ],
+    });
+  } catch (error) {
+    if (!(isAppError(error) && error.code === 'db_constraint_violation')) {
+      throw error;
+    }
+    // A duplicate audit id means the same re-evaluation was recorded
+    // twice within the same millisecond window — the audit absorption,
+    // never a second event.
+  }
+}
+
 export interface EditorialStoryRow {
   readonly id: string;
   readonly story_key: string;

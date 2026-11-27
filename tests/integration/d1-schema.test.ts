@@ -21,7 +21,7 @@ const db: D1Database = env.DB;
 /** All 27 approved blueprint tables + the application `schema_metadata` table
  *  + the 5 admin-post tables (0005) + the 2 inbound tables (0007) + the 6
  *  live-watchlist tables (0008) + the 4 post-management / near-dup tables
- *  (0009). */
+ *  (0009) + the 1 bridge gate-evaluation table (0013). */
 const EXPECTED_TABLES: readonly string[] = [
   'admins',
   'admin_action_tokens',
@@ -38,6 +38,7 @@ const EXPECTED_TABLES: readonly string[] = [
   'channel_post_deletes',
   'claims',
   'corrections',
+  'draft_gate_evaluations',
   'draft_revisions',
   'drafts',
   'entities',
@@ -94,6 +95,7 @@ const EXPECTED_INDEXES: readonly string[] = [
   'idx_evidence_source',
   'idx_entity_alias_lookup',
   'idx_fingerprints_story',
+  'idx_gate_evaluations_progress',
   'idx_inbound_approvals_pending',
   'idx_inbound_approvals_state',
   'idx_jobs_aggregate',
@@ -166,15 +168,15 @@ beforeEach(async () => {
 });
 
 describe('migration application', () => {
-  it('applies every migration as an atomic batch and reports metadata (schema v10, linear chain)', async () => {
+  it('applies every migration as an atomic batch and reports metadata (schema v13, linear chain)', async () => {
     expect(await namedTables()).toEqual([...EXPECTED_TABLES].sort());
 
     const metadata = await db
       .prepare(`SELECT key, value FROM schema_metadata ORDER BY key`)
       .all<{ key: string; value: string }>();
     const byKey = new Map(metadata.results.map((row) => [row.key, row.value]));
-    expect(byKey.get('schema_version')).toBe('12');
-    expect(byKey.get('migration_id')).toBe('0012_ai_image_provenance');
+    expect(byKey.get('schema_version')).toBe('13');
+    expect(byKey.get('migration_id')).toBe('0013_bridge_gate_progress');
     expect(byKey.get('applied_at')).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
@@ -200,15 +202,15 @@ describe('migration application', () => {
 });
 
 describe('schema contracts', () => {
-  it('creates exactly the 46 expected tables (27 approved + schema_metadata + 5 admin-post + 2 inbound + 6 live-watchlist + 4 post-management/near-dup + 1 soul)', async () => {
+  it('creates exactly the 47 expected tables (27 approved + schema_metadata + 5 admin-post + 2 inbound + 6 live-watchlist + 4 post-management/near-dup + 1 soul + 1 bridge gate-evaluation)', async () => {
     const tables = await namedTables();
-    expect(tables).toHaveLength(46);
+    expect(tables).toHaveLength(47);
     expect(tables).toEqual([...EXPECTED_TABLES].sort());
   });
 
-  it('creates exactly the 55 expected indexes (29 approved + lifecycle + DLQ + ownership + 5 admin-post + 1 editorial provenance + 4 inbound + 6 live-watchlist + 7 post-management/near-dup)', async () => {
+  it('creates exactly the 56 expected indexes (29 approved + lifecycle + DLQ + ownership + 5 admin-post + 1 editorial provenance + 4 inbound + 6 live-watchlist + 7 post-management/near-dup + 1 bridge gate progress)', async () => {
     const indexes = await namedIndexes();
-    expect(indexes).toHaveLength(55);
+    expect(indexes).toHaveLength(56);
     expect(indexes).toEqual([...EXPECTED_INDEXES].sort());
   });
 

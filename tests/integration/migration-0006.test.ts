@@ -125,9 +125,9 @@ describe('R1.22 — migration 0006: editorial→post provenance (schema 5 → 6)
     expect(idRow?.value).toBe('0006_admin_post_editorial_source');
 
     // The FULL plan continues the linear chain past 0006: exactly 0007
-    // + 0008 + 0009 + 0010 + 0011 + 0012 are pending (first run) and the database lands at version 12
-    // with the 0011 migration id. Later tests in this file observe the v11
-    // state; the 0006 provenance contracts below are unaffected by 0007/0008/0009/0010/0011.
+    // + 0008 + 0009 + 0010 + 0011 + 0012 + 0013 are pending (first run) and the database lands at version 13
+    // with the 0013 migration id. Later tests in this file observe the v13
+    // state; the 0006 provenance contracts below are unaffected by 0007/0008/0009/0010/0011/0012/0013.
     const full = await applyMigrations(db);
     expect(full.applied.map((migration) => migration.id)).toEqual([
       '0007_inbound_pipeline',
@@ -136,13 +136,14 @@ describe('R1.22 — migration 0006: editorial→post provenance (schema 5 → 6)
       '0010_soul_versioning',
       '0011_autonomous_soul_stamp',
       '0012_ai_image_provenance',
+      '0013_bridge_gate_progress',
     ]);
-    expect(full.finalVersion).toBe(12);
-    expect(await appliedSchemaVersion()).toBe(12);
+    expect(full.finalVersion).toBe(13);
+    expect(await appliedSchemaVersion()).toBe(13);
     const fullIdRow = await executor.first<{ value: string }>({
       sql: `SELECT value FROM schema_metadata WHERE key = 'migration_id'`,
     });
-    expect(fullIdRow?.value).toBe('0012_ai_image_provenance');
+    expect(fullIdRow?.value).toBe('0013_bridge_gate_progress');
   });
 
   it('preserves every legacy captured row byte-identically with NULL editorial provenance', async () => {
@@ -241,6 +242,6 @@ describe('R1.22 — migration 0006: editorial→post provenance (schema 5 → 6)
     await applyMigrations(db);
     const rerun = await applyMigrations(db);
     expect(rerun.applied).toEqual([]);
-    expect(rerun.finalVersion).toBe(12);
+    expect(rerun.finalVersion).toBe(13);
   });
 });

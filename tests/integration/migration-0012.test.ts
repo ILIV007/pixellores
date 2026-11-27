@@ -44,23 +44,23 @@ beforeEach(async () => {
   // Build the version-11 baseline ONCE per test; storage persists across
   // tests WITHIN this file, so on later tests the V11 plan is a no-op.
   await applyMigrations(db, V11_ONLY);
-  // Upgrade to the real append-only plan — on the first run ONLY 0012 is
-  // pending; on later tests this is an idempotent no-op. Either way the
-  // database ends at version 12.
+  // Upgrade to the real append-only plan — on the first run ONLY 0012 + 0013
+  // are pending; on later tests this is an idempotent no-op. Either way the
+  // database ends at version 13.
   const upgrade = await applyMigrations(db);
-  expect(upgrade.finalVersion).toBe(12);
+  expect(upgrade.finalVersion).toBe(13);
 });
 
 describe('ADR-0072 — migration 0012: AI image provenance (schema 11 → 12)', () => {
-  it('applies exactly 0012 as the only pending step on a fresh schema-v11 database', async () => {
+  it('lands at version 13 with the 0013 migration id on a fresh schema-v11 database (0012 + 0013 pending)', async () => {
     const rerun = await applyMigrations(db);
     expect(rerun.applied).toEqual([]);
-    expect(rerun.finalVersion).toBe(12);
-    expect(await appliedSchemaVersion()).toBe(12);
+    expect(rerun.finalVersion).toBe(13);
+    expect(await appliedSchemaVersion()).toBe(13);
     const idRow = await executor.first<{ value: string }>({
       sql: `SELECT value FROM schema_metadata WHERE key = 'migration_id'`,
     });
-    expect(idRow?.value).toBe('0012_ai_image_provenance');
+    expect(idRow?.value).toBe('0013_bridge_gate_progress');
   });
 
   it('adds the four nullable ai_* columns; pre-existing rows stay NULL', async () => {

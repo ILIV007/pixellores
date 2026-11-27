@@ -207,6 +207,8 @@ export async function handleScheduled(
           duplicates: bridged.duplicates,
           requiresReview: bridged.requiresReview,
           refused: bridged.refused,
+          reevaluated: bridged.reevaluated,
+          reevaluationSkipped: bridged.reevaluationSkipped,
           deferredGuideLane: bridged.deferredGuideLane,
           deferredCategoryCap: bridged.deferredCategoryCap,
           deferredRewrite: bridged.deferredRewrite,

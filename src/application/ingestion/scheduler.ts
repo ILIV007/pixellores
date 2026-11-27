@@ -135,6 +135,8 @@ export async function scheduleDueSources(deps: ScheduleDueSourcesDeps): Promise<
   // tables change nothing about the ingestion capability.
   // Slice 9: v11 (0011 on top of 0010) likewise — the autonomous Soul
   // stamp changes nothing about the ingestion capability.
+  // ADR-0074: v13 (0013 on top of 0012) likewise — the gate-evaluation
+  // progress table changes nothing about the ingestion capability.
   const capability = await resolveSchemaCapability(executor);
   if (capability.kind === 'unresolved') {
     logger?.warn('ingestion.schedule.capability_unresolved', {
@@ -151,7 +153,8 @@ export async function scheduleDueSources(deps: ScheduleDueSourcesDeps): Promise<
     capability.kind === 'known_v9_post_management' ||
     capability.kind === 'known_v10_soul' ||
     capability.kind === 'known_v11_autonomous_soul' ||
-    capability.kind === 'known_v12_ai_image';
+    capability.kind === 'known_v12_ai_image' ||
+    capability.kind === 'known_v13_bridge_gate_progress';
 
   // Catalog completeness probe (R08): which registry sources are missing
   // a `sources` row or a `source_state` row — even when the table is NOT
