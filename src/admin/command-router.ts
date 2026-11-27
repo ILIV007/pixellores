@@ -71,7 +71,7 @@ import { ADMIN_ALBUM_CAPTURE_STRINGS, ALBUM_CAPTURE_COMMAND } from './album-capt
 import { parseAlbumCaptureArgument, type AlbumCaptureKind } from '../domain/media/album-capture';
 import { ADMIN_MANAGE_STRINGS, ADMINS_COMMAND } from './admin-manage-strings';
 import { parseAdminManageArgument } from './admin-manage-command';
-import { ADMIN_PANEL_STRINGS, MENU_COMMAND } from './panel-strings';
+import { ADMIN_PANEL_STRINGS, MENU_COMMAND, type PanelScreen } from './panel-strings';
 import { parseMenuArgument } from './panel-command';
 import type {
   ParsedMediaAttachment,
@@ -477,16 +477,20 @@ export type TelegramAction =
     }
   | {
       /**
-       * Slice 3 — one admin panel screen (`/menu mode|cap|event|posts|ai`).
-       * Same gating as `panel_main`; the service owns ALL reads. The `ai`
-       * screen (the presence slice) is VIEWING only — booleans, no writes.
+       * Slice 3 (extended by the combined panel, ADR-0075) — one admin
+       * panel screen (`/menu <screen>`, the 14-screen grammar). Same
+       * gating as `panel_main`; the service owns ALL reads. The `ai`
+       * screen (the presence slice) is VIEWING only — booleans, no
+       * writes.
        */
       readonly type: 'panel_screen';
       readonly chatId: number;
       readonly telegramUserId: number;
       readonly role: AdminRole;
       readonly uiLanguage: AdminUiLanguage;
-      readonly screen: 'mode' | 'cap' | 'event' | 'posts' | 'ai';
+      // 'main' is the bare `/menu` form (panel_main) — a screen argument
+      // never names it (parseMenuArgument enforces the same exclusion).
+      readonly screen: Exclude<PanelScreen, 'main'>;
     };
 
 export interface CommandRouteContext {

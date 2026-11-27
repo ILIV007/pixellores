@@ -2096,3 +2096,84 @@ export async function commitEditorialReuse(
     targetInvalid: false,
   };
 }
+
+/**
+ * Combined panel (§5/§10) — the drafts-by-status counts for the Drafts &
+ * Queue counts line and the Stats screen. One GROUP BY read; a status
+ * absent from the result is zero. The drafts CHECK vocabulary is fixed,
+ * but an unknown status can only come from a hand-edited database — it
+ * contributes to `total` only and never crashes the render.
+ */
+export interface DraftStatusCounts {
+  readonly ready: number;
+  readonly approved: number;
+  readonly approvalRequired: number;
+  readonly rejected: number;
+  readonly total: number;
+}
+
+export async function countDraftsByStatus(executor: DbExecutor): Promise<DraftStatusCounts> {
+  const { rows } = await executor.query<{ readonly status: string; readonly total: number }>({
+    sql: `SELECT status, COUNT(*) AS total FROM drafts GROUP BY status`,
+    params: [],
+  });
+  let ready = 0;
+  let approved = 0;
+  let approvalRequired = 0;
+  let rejected = 0;
+  let total = 0;
+  for (const row of rows) {
+    const count =
+      typeof row.total === 'number' && Number.isInteger(row.total) && row.total > 0 ? row.total : 0;
+    total += count;
+    if (row.status === 'ready') {
+      ready = count;
+    } else if (row.status === 'approved' || row.status === 'auto_approved') {
+      approved += count;
+    } else if (row.status === 'approval_required') {
+      approvalRequired = count;
+    } else if (row.status === 'rejected') {
+      rejected = count;
+    }
+  }
+  return { ready, approved, approvalRequired, rejected, total };
+}
+
+/**
+ * Combined panel (§10) — the D1 totals for the Stats screen. Four scalar
+ * sub-selects in one read; a row of zeros is returned only when the
+ * tables are genuinely empty.
+ */
+export interface EditorialTotals {
+  readonly stories: number;
+  readonly drafts: number;
+  readonly claims: number;
+  readonly sourceItems: number;
+}
+
+export async function countEditorialTotals(executor: DbExecutor): Promise<EditorialTotals> {
+  const row = await executor.first<{
+    readonly stories: number;
+    readonly drafts: number;
+    readonly claims: number;
+    readonly sourceItems: number;
+  }>({
+    sql: `SELECT
+            (SELECT COUNT(*) FROM stories) AS stories,
+            (SELECT COUNT(*) FROM drafts) AS drafts,
+            (SELECT COUNT(*) FROM claims) AS claims,
+            (SELECT COUNT(*) FROM source_items) AS sourceItems`,
+    params: [],
+  });
+  if (row === null) {
+    return { stories: 0, drafts: 0, claims: 0, sourceItems: 0 };
+  }
+  const safe = (value: unknown): number =>
+    typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : 0;
+  return {
+    stories: safe(row.stories),
+    drafts: safe(row.drafts),
+    claims: safe(row.claims),
+    sourceItems: safe(row.sourceItems),
+  };
+}

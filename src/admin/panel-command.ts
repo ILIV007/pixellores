@@ -2,11 +2,20 @@
  * Slice 3 — the `/menu` argument parser (the R1.18.1 grammar discipline).
  *
  * Grammar (exactly one of):
- *   `/menu`         main panel
- *   `/menu mode`    mode screen
- *   `/menu cap`     cap screen
- *   `/menu event`   event screen
- *   `/menu posts`   channel-post housekeeping screen (slice 6)
+ *   `/menu`           main panel
+ *   `/menu mode`      mode screen
+ *   `/menu cap`       cap screen
+ *   `/menu event`     event screen
+ *   `/menu schedule`  schedule screen (combined panel §4)
+ *   `/menu drafts`    drafts & queue screen (combined panel §5)
+ *   `/menu posts`     channel-post housekeeping screen (slice 6)
+ *   `/menu manual`    manual-post screen (combined panel §7)
+ *   `/menu ai`        AI & Soul screen (combined panel §8)
+ *   `/menu settings`  settings screen (combined panel §9)
+ *   `/menu stats`     stats screen (combined panel §10)
+ *   `/menu admins`    admins screen (combined panel §11)
+ *   `/menu debug`     debug/status screen (combined panel §12)
+ *   `/menu help`      help screen (combined panel §13)
  *
  * Validation happens BEFORE any store access:
  * - The remainder must be a single token — newlines, control characters
@@ -22,7 +31,21 @@ export type MenuArgumentParse =
   | { readonly kind: 'screen'; readonly screen: Exclude<PanelScreen, 'main'> }
   | { readonly kind: 'invalid' };
 
-const MENU_SCREENS: readonly string[] = ['mode', 'cap', 'event', 'posts', 'ai'];
+const MENU_SCREENS: readonly string[] = [
+  'mode',
+  'cap',
+  'event',
+  'schedule',
+  'drafts',
+  'posts',
+  'manual',
+  'ai',
+  'settings',
+  'stats',
+  'admins',
+  'debug',
+  'help',
+];
 
 function isMenuScreen(value: string): value is Exclude<PanelScreen, 'main'> {
   return (MENU_SCREENS as readonly string[]).includes(value);

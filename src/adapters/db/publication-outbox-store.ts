@@ -1307,3 +1307,25 @@ export async function listRecentPublications(
       updatedAt: row.updated_at,
     }));
 }
+
+/**
+ * Combined panel (§4) — the cancellable publication rows for the Schedule
+ * screen's "Clear queue" action: every row the Phase 9C fence accepts
+ * (`pending` / `retry_wait` / `failed`), oldest first, bounded to 64.
+ * The caller cancels each row through the fenced `cancelPublicationById`
+ * (one audit event per row) — this list itself writes nothing.
+ */
+export async function listCancellablePublications(
+  executor: DbExecutor,
+  input: { readonly limit: number },
+): Promise<readonly PublicationRow[]> {
+  const limit = Math.max(1, Math.min(64, Math.floor(input.limit)));
+  const rows = await executor.query<PublicationDbRow>({
+    sql: `SELECT * FROM publications
+          WHERE status IN ('pending', 'retry_wait', 'failed')
+          ORDER BY updated_at ASC
+          LIMIT ?`,
+    params: [limit],
+  });
+  return rows.rows.map(toPublicationRow).filter((row): row is PublicationRow => row !== null);
+}

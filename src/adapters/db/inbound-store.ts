@@ -393,6 +393,7 @@ export async function transitionInboundApproval(
 }
 
 /**
+/**
  * Update a PENDING approval's stored content + fingerprint (ADR-0073 §6:
  * the owner edited the source message while the preview was pending).
  * Returns false when the row is no longer pending (decided concurrently)
@@ -415,4 +416,48 @@ export async function updateInboundApprovalContent(
     params: [input.contentJson, input.fingerprint, input.nowMs, input.id],
   });
   return (meta.changes ?? 0) > 0;
+}
+
+/**
+ * Combined panel (ADR-0075 §7) — the pending inbound approvals for the
+ * Manual Post screen: still `pending` AND not yet expired, oldest first
+ * (the most urgent approval — the 24h TTL — surfaces first). Bounded to 10.
+ */
+export async function listPendingInboundApprovals(
+  executor: DbExecutor,
+  input: { readonly nowMs: number; readonly limit: number },
+): Promise<readonly InboundApprovalRow[]> {
+  const limit = Math.max(1, Math.min(10, Math.floor(input.limit)));
+  const { rows } = await executor.query<InboundApprovalDbRow>({
+    sql: `SELECT id, source_chat_id, source_message_id, source_update_id,
+              created_by_user_id, content_json, fingerprint, category,
+              presentation, state, expires_at_ms, created_at_ms, updated_at_ms
+            FROM inbound_approvals
+            WHERE state = 'pending' AND expires_at_ms > ?
+            ORDER BY created_at_ms ASC
+            LIMIT ?`,
+    params: [input.nowMs, limit],
+  });
+  return rows.map(toInboundApprovalRow).filter((row): row is InboundApprovalRow => row !== null);
+}
+
+/**
+ * Combined panel (ADR-0075 §7) — the most recent owner-published posts for
+ * the Manual Post screen. Newest first, bounded to 10.
+ */
+export async function listRecentPublishedPosts(
+  executor: DbExecutor,
+  input: { readonly limit: number },
+): Promise<readonly PublishedPostRow[]> {
+  const limit = Math.max(1, Math.min(10, Math.floor(input.limit)));
+  const { rows } = await executor.query<PublishedPostDbRow>({
+    sql: `SELECT id, source_chat_id, source_message_id, channel_message_ids,
+              kind, media_file_id, category, presentation, created_by_user_id,
+              soul_version, created_at_ms, updated_at_ms
+            FROM published_posts
+            ORDER BY created_at_ms DESC
+            LIMIT ?`,
+    params: [limit],
+  });
+  return rows.map(toPublishedPostRow).filter((row): row is PublishedPostRow => row !== null);
 }

@@ -138,3 +138,21 @@ export async function recordSoulVersion(
     params: [input.version, input.text, input.sha256, input.createdBy, input.nowMs],
   });
 }
+
+/**
+ * Combined panel (§8) — the full persona text of one Soul version, for
+ * the AI & Soul screen's short persona line. Null when the version has
+ * no row (a database with a pointer but no souls rows resolves to NULL
+ * there — the screen answers honestly unavailable instead of inventing
+ * a persona).
+ */
+export async function getSoulText(executor: DbExecutor, version: number): Promise<string | null> {
+  const row = await executor.first<{ readonly text: string }>({
+    sql: `SELECT text FROM souls WHERE version = ?`,
+    params: [version],
+  });
+  if (row === null || typeof row.text !== 'string' || row.text.length === 0) {
+    return null;
+  }
+  return row.text;
+}
