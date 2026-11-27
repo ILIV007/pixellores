@@ -256,8 +256,6 @@ function tracedDraftJson(userContent: string | undefined, claimText: string): st
     'missing-evidence-id';
   return JSON.stringify({
     headlineFa: 'تیتر زنجیرهٔ سرتاسری ۹۴',
-    categoryEmoji: '🔵',
-    trustLabel: '#گزارش‌شده',
     summaryFa: 'خلاصهٔ زنجیرهٔ سرتاسری ۹۴ بر اساس شواهد ارائه‌شده.',
     claims: [
       {

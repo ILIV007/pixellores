@@ -222,6 +222,8 @@ describe('bridge guide lane + category cap (ADR-0068)', () => {
       refused: 0,
       deferredGuideLane: 1,
       deferredCategoryCap: 0,
+      deferredRewrite: 0,
+      failedRewrite: 0,
       rejected: 0,
     });
     // The one guide that rode the pass is P2 (60); the other stays ready.
@@ -271,6 +273,8 @@ describe('bridge guide lane + category cap (ADR-0068)', () => {
       refused: 0,
       deferredGuideLane: 0,
       deferredCategoryCap: 1,
+      deferredRewrite: 0,
+      failedRewrite: 0,
       rejected: 0,
     });
     expect(await listPublicationPriorities()).toEqual([80, 80]);
@@ -318,6 +322,8 @@ describe('bridge guide lane + category cap (ADR-0068)', () => {
       refused: 0,
       deferredGuideLane: 0,
       deferredCategoryCap: 1,
+      deferredRewrite: 0,
+      failedRewrite: 0,
       rejected: 0,
     });
     expect(await listDraftStatuses()).toEqual([
