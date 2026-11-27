@@ -13,6 +13,7 @@ import {
 import {
   aiRewriteOutputSchema,
   parseAiRewriteOutputJson,
+  type AiRewriteOutputRejectCode,
 } from '../../src/domain/ai/rewrite-schema';
 import {
   checkRewritePreservesNumbers,
@@ -122,6 +123,15 @@ describe('rewrite output schema (ADR-0070 §3)', () => {
     trustLabel: '#گزارش‌شده',
   };
 
+  /** Narrow a parse result to its stable rejection code. */
+  function rewriteRejectCode(rawText: string): AiRewriteOutputRejectCode {
+    const parsed = parseAiRewriteOutputJson(rawText);
+    if (parsed.ok) {
+      throw new Error('expected the parse to fail');
+    }
+    return parsed.code;
+  }
+
   it('accepts a well-formed rewrite', () => {
     const parsed = parseAiRewriteOutputJson(JSON.stringify(VALID));
     expect(parsed.ok).toBe(true);
@@ -133,23 +143,19 @@ describe('rewrite output schema (ADR-0070 §3)', () => {
 
   it('rejects malformed, empty and schema-mismatched output', () => {
     expect(parseAiRewriteOutputJson('not json').ok).toBe(false);
-    expect(parseAiRewriteOutputJson('').code).toBe('empty_output');
-    expect(parseAiRewriteOutputJson('   ').code).toBe('empty_output');
-    expect(parseAiRewriteOutputJson('{"headlineFa": "ناقص').code).toBe('malformed_json');
-    expect(parseAiRewriteOutputJson(JSON.stringify({ ...VALID, extra: true })).code).toBe(
-      'schema_mismatch',
-    );
+    expect(rewriteRejectCode('')).toBe('empty_output');
+    expect(rewriteRejectCode('   ')).toBe('empty_output');
+    expect(rewriteRejectCode('{"headlineFa": "ناقص')).toBe('malformed_json');
+    expect(rewriteRejectCode(JSON.stringify({ ...VALID, extra: true }))).toBe('schema_mismatch');
   });
 
   it('rejects a claims field and out-of-vocabulary Soul form values', () => {
     // The rewrite output has NO claims: it re-voices, it does not re-extract.
-    expect(parseAiRewriteOutputJson(JSON.stringify({ ...VALID, claims: [] })).code).toBe(
+    expect(rewriteRejectCode(JSON.stringify({ ...VALID, claims: [] }))).toBe('schema_mismatch');
+    expect(rewriteRejectCode(JSON.stringify({ ...VALID, categoryEmoji: '🎲' }))).toBe(
       'schema_mismatch',
     );
-    expect(parseAiRewriteOutputJson(JSON.stringify({ ...VALID, categoryEmoji: '🎲' })).code).toBe(
-      'schema_mismatch',
-    );
-    expect(parseAiRewriteOutputJson(JSON.stringify({ ...VALID, trustLabel: '#خبر' })).code).toBe(
+    expect(rewriteRejectCode(JSON.stringify({ ...VALID, trustLabel: '#خبر' }))).toBe(
       'schema_mismatch',
     );
     // Every Soul v1 §3 value parses.
@@ -278,7 +284,7 @@ function buildRawBuiltDraft(semanticDraft: AiSemanticDraft) {
   return buildDraftDocument({
     sourceItemId: ITEM_ID,
     sourceName: 'منبع رسمی',
-    excerpt: { id: ITEM_ID, text: 'متن شاهد آزمایشی', truncated: false, stance: 'mentions' },
+    excerpt: { text: 'متن شاهد آزمایشی', truncated: false },
     semanticDraft,
     evidenceGuard: GUARD_REPORT,
     candidateDiscovery: NO_CANDIDATES_REPORT,
@@ -494,10 +500,12 @@ function createFakeExecutor(nowMs: number): FakeExecutorState & DbExecutor {
   return state as FakeExecutorState & DbExecutor;
 }
 
-function createFakeGeminiPort(outcomes: readonly AiCallOutcome[] = []): {
+type FakeGeminiPort = {
   readonly calls: { modelId: string; maxOutputTokens: number }[];
   setOutcomes(next: readonly AiCallOutcome[]): void;
-} & AiProviderPort {
+} & AiProviderPort;
+
+function createFakeGeminiPort(outcomes: readonly AiCallOutcome[] = []): FakeGeminiPort {
   const calls: { modelId: string; maxOutputTokens: number }[] = [];
   const queue = [...outcomes];
   return {
@@ -515,10 +523,7 @@ function createFakeGeminiPort(outcomes: readonly AiCallOutcome[] = []): {
       }
       return next;
     },
-  } as {
-    calls: { modelId: string; maxOutputTokens: number }[];
-    setOutcomes(next: readonly AiCallOutcome[]): void;
-  } & AiProviderPort;
+  } as FakeGeminiPort;
 }
 
 const NOW = 1_700_000_000_000;
@@ -551,7 +556,7 @@ const REWRITE_REQUEST = {
 function baseRewriteService(
   overrides: {
     executor?: DbExecutor;
-    port?: AiProviderPort;
+    port?: FakeGeminiPort;
     aiEnabled?: boolean;
     geminiEnabled?: boolean;
     rewriteEnabled?: boolean;
@@ -559,7 +564,7 @@ function baseRewriteService(
   } = {},
 ): {
   service: ReturnType<typeof createAiRewriteService>;
-  port: { readonly calls: { modelId: string; maxOutputTokens: number }[] } & AiProviderPort;
+  port: FakeGeminiPort;
   logLines: string[];
 } {
   const executor = overrides.executor ?? createFakeExecutor(NOW);

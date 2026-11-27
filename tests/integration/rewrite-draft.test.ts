@@ -78,7 +78,7 @@ function buildRawDraftJson(): string {
     buildDraftDocument({
       sourceItemId: ITEM_ID,
       sourceName: 'منبع رسمی',
-      excerpt: { id: ITEM_ID, text: 'متن شاهد آزمایشی', truncated: false, stance: 'mentions' },
+      excerpt: { text: 'متن شاهد آزمایشی', truncated: false },
       semanticDraft: {
         headlineFa: 'تیتر خام',
         summaryFa: 'خلاصهٔ خام',
