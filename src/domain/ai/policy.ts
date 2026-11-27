@@ -133,6 +133,14 @@ export const AI_PROMPT_VERSION = 'pixel-news-draft-v3';
 export const AI_REWRITE_MAX_OUTPUT_TOKENS = 1024;
 export const AI_REWRITE_MAX_ATTEMPTS_PER_DRAFT = 2;
 
+/**
+ * Inbound-rewrite output bound (ADR-0073 §1): the inbound rewrite returns
+ * the COMPLETE post text (up to ~4096 chars), not a headline + summary
+ * pair, so it gets 2048 output tokens. The budget counts REQUESTS, not
+ * tokens — the larger cap costs no extra budget.
+ */
+export const AI_INBOUND_REWRITE_MAX_OUTPUT_TOKENS = 2048;
+
 /** Validated, testable application bounds (round 1.10.6 instruction §3). */
 export const AI_BOUNDS = {
   /** Public input bound (evidence text total, UTF-8 bytes). */

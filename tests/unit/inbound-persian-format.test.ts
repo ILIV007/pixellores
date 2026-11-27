@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   chunkPostText,
+  foldDigitsToLatin,
   formatInboundPost,
   normalizePersianText,
 } from '../../src/domain/inbound/persian-format';
@@ -64,5 +65,75 @@ describe('inbound Persian format', () => {
     expect(parts.length).toBeGreaterThan(1);
     expect(parts.slice(1).every((part) => part.kind === 'text')).toBe(true);
     expect(parts[parts.length - 1]?.text).toContain('👾 @pixellores');
+  });
+});
+
+/**
+ * Form #4 rendering (ADR-0073 §3): Latin digits, a trailing footer is
+ * never duplicated, and — only when the text was AI-rewritten — the
+ * `**…**` / `> …` markers become entities in the part's own coordinates.
+ * An unrewritten owner's literal `**` is never parsed (fail-closed).
+ */
+describe('inbound Persian format — form #4 (ADR-0073)', () => {
+  it('folds Persian/Arabic digits to Latin (ADR-0066)', () => {
+    expect(foldDigitsToLatin('فروش ۳٫۷۹ میلیارد دلار')).toBe('فروش 3.79 میلیارد دلار');
+    expect(foldDigitsToLatin('١٢٬٣٤٥ تومان')).toBe('12,345 تومان');
+    const parts = formatInboundPost({ text: 'فروش ۳٫۷۹ میلیارد دلار شد.', media: 'none' });
+    expect(parts[0]?.text).toContain('3.79 میلیارد دلار');
+    expect(parts[0]?.text).not.toContain('۳٫۷۹');
+  });
+
+  it('strips a trailing footer line so the footer is never duplicated', () => {
+    const parts = formatInboundPost({
+      text: 'متن خبر.\n\n👾 @pixellores',
+      media: 'none',
+    });
+    const occurrences = parts.flatMap((part) => part.text.match(/👾 @pixellores/g) ?? []);
+    expect(occurrences).toHaveLength(1);
+  });
+
+  it('parses markers into entities only when markers=true', () => {
+    const parts = formatInboundPost({ text: '**تیتر**\nمتن خبر.', media: 'none', markers: true });
+    expect(parts).toHaveLength(1);
+    expect(parts[0]?.text).not.toContain('**');
+    const bold = parts[0]?.entities?.find((entity) => entity.type === 'bold');
+    expect(bold).toBeDefined();
+    expect(parts[0]?.text.slice(bold!.offset, bold!.offset + bold!.length)).toBe('تیتر');
+  });
+
+  it('leaves an owner’s literal ** untouched when markers is off', () => {
+    const parts = formatInboundPost({ text: '**تیتر**\nمتن خبر.', media: 'none' });
+    expect(parts[0]?.text).toContain('**تیتر**');
+    expect(parts[0]?.entities ?? []).toHaveLength(0);
+  });
+
+  it('keeps every entity in-range across page splits', () => {
+    const paragraph = 'متن پاراگراف تکراری برای تست تقسیم‌بندی پست بلند. ';
+    const long = Array.from({ length: 200 }, () => paragraph).join('\n\n');
+    const parts = formatInboundPost({
+      text: `${long}\n\n**تیتر مهم**`,
+      media: 'none',
+      markers: true,
+    });
+    expect(parts.length).toBeGreaterThan(1);
+    for (const part of parts) {
+      for (const entity of part.entities ?? []) {
+        expect(entity.offset).toBeGreaterThanOrEqual(0);
+        expect(entity.offset + entity.length).toBeLessThanOrEqual(part.text.length);
+        expect(part.text.slice(entity.offset, entity.offset + entity.length)).not.toBe('');
+      }
+    }
+    const last = parts[parts.length - 1]!;
+    const bold = last.entities?.find((entity) => entity.type === 'bold');
+    expect(bold).toBeDefined();
+    expect(last.text.slice(bold!.offset, bold!.offset + bold!.length)).toBe('تیتر مهم');
+  });
+
+  it('carries markers into a media caption’s entities', () => {
+    const parts = formatInboundPost({ text: '**کپشن** عکس.', media: 'photo', markers: true });
+    expect(parts[0]?.kind).toBe('caption');
+    const bold = parts[0]?.entities?.find((entity) => entity.type === 'bold');
+    expect(bold).toBeDefined();
+    expect(parts[0]?.text.slice(bold!.offset, bold!.offset + bold!.length)).toBe('کپشن');
   });
 });

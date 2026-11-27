@@ -13,7 +13,7 @@ import {
   createAiDraftService,
   type AiDraftServiceConfig,
 } from '../../src/application/ai/draft-service';
-import { createAiInboundRewriter } from '../../src/application/inbound/ai-rewriter';
+import { createAiRewriteService } from '../../src/application/ai/rewrite-service';
 import type { AiCallOutcome, AiProvider, AiProviderPort } from '../../src/domain/ai/types';
 import { createLogger } from '../../src/observability/logger';
 
@@ -123,8 +123,8 @@ function createStatefulExecutor(): StatefulFake {
   return state;
 }
 
-function readBreakerRow(executor: StatefulFake): unknown {
-  const raw = executor.settings.get(aiCircuitBreakerSettingsKey('workers-ai'));
+function readBreakerRow(executor: StatefulFake, scope: AiProvider = 'workers-ai'): unknown {
+  const raw = executor.settings.get(aiCircuitBreakerSettingsKey(scope));
   return raw === undefined ? undefined : JSON.parse(raw);
 }
 
@@ -449,7 +449,7 @@ describe('AI draft service — charge-on-success refund rules', () => {
   });
 });
 
-describe('inbound AI rewriter — circuit breaker and charge-on-success', () => {
+describe('inbound Soul rewrite — circuit breaker and charge-on-success (ADR-0073)', () => {
   let executor: StatefulFake;
   let clock: ReturnType<typeof createFakeClock>;
   let port: FakePort & AiProviderPort;
@@ -457,59 +457,73 @@ describe('inbound AI rewriter — circuit breaker and charge-on-success', () => 
   beforeEach(() => {
     executor = createStatefulExecutor();
     clock = createFakeClock();
-    port = createFakePort('workers-ai');
+    port = createFakePort('gemini');
   });
 
-  function buildRewriter() {
-    return createAiInboundRewriter({
+  function buildRewriteService() {
+    return createAiRewriteService({
       executor,
-      ports: { 'workers-ai': port },
+      ports: { gemini: port },
       clock,
       logger: silentLogger,
-      config: baseConfig(),
+      config: {
+        aiEnabled: true,
+        geminiEnabled: true,
+        // ADR-0073 §2: the inbound rewrite deliberately does NOT need the
+        // pipeline-draft stage flag — it stays off here to lock that in.
+        rewriteEnabled: false,
+        workersAiBindingPresent: false,
+        geminiApiKeyPresent: true,
+      },
     });
   }
 
   const INPUT = { text: 'متن خام', category: 'news' as const, isCaption: false };
 
   async function failingRewrite() {
-    port.setOutcomes([{ kind: 'transient' }, { kind: 'transient' }]);
-    return buildRewriter().rewrite(INPUT);
+    port.setOutcomes([{ kind: 'transient' }, { kind: 'transient' }, { kind: 'transient' }]);
+    return buildRewriteService().rewriteInboundPost(INPUT);
   }
 
   it('opens after consecutive failures, then returns circuit_open with zero calls/charges', async () => {
-    for (let i = 0; i < 3; i += 1) {
+    // Two invocations × 3 Gemini models = 6 consecutive failures ≥
+    // threshold 5; both invocations still run (the gate checks before
+    // each call, and 3 < 5 at the second invocation's start).
+    for (let i = 0; i < 2; i += 1) {
       const outcome = await failingRewrite();
       expect(outcome).toMatchObject({ kind: 'deferred', reason: 'provider_unavailable' });
     }
-    expect(readBreakerRow(executor)).toMatchObject({ state: 'open' });
+    expect(readBreakerRow(executor, 'gemini')).toMatchObject({ state: 'open' });
 
     const batchCallsBefore = executor.batchCalls;
     const portCallsBefore = port.calls.length;
-    const outcome = await buildRewriter().rewrite(INPUT);
-    expect(outcome).toEqual({ kind: 'deferred', reason: 'circuit_open', attempts: 0 });
+    const outcome = await buildRewriteService().rewriteInboundPost(INPUT);
+    expect(outcome).toEqual({ kind: 'deferred', reason: 'circuit_open', attempts: [] });
     expect(port.calls).toHaveLength(portCallsBefore);
     expect(executor.batchCalls).toBe(batchCallsBefore);
     expect(executor.budgetRequests).toBe(0);
   });
 
   it('half-open probe success closes the breaker; failures refund', async () => {
-    for (let i = 0; i < 3; i += 1) {
+    for (let i = 0; i < 2; i += 1) {
       await failingRewrite();
     }
     clock.setNow(clock.now() + AI_CIRCUIT_BREAKER_COOLDOWN_MS + 1);
-    port.setOutcomes([{ kind: 'ok', rawText: 'متن بازنویسی‌شده.' }]);
-    const probe = await buildRewriter().rewrite(INPUT);
-    expect(probe.kind).toBe('ok');
-    expect(readBreakerRow(executor)).toMatchObject({ state: 'closed', consecutive_failures: 0 });
+    port.setOutcomes([{ kind: 'ok', rawText: JSON.stringify({ text: 'متن بازنویسی‌شده.' }) }]);
+    const probe = await buildRewriteService().rewriteInboundPost(INPUT);
+    expect(probe.kind).toBe('rewritten');
+    expect(readBreakerRow(executor, 'gemini')).toMatchObject({
+      state: 'closed',
+      consecutive_failures: 0,
+    });
     expect(executor.budgetRequests).toBe(1); // probe kept; failures refunded
   });
 
   it('a refund failure never fails the rewrite', async () => {
     executor.failRefunds = true;
-    port.setOutcomes([{ kind: 'transient' }, { kind: 'transient' }]);
-    const outcome = await buildRewriter().rewrite(INPUT);
+    port.setOutcomes([{ kind: 'transient' }, { kind: 'transient' }, { kind: 'transient' }]);
+    const outcome = await buildRewriteService().rewriteInboundPost(INPUT);
     expect(outcome).toMatchObject({ kind: 'deferred', reason: 'provider_unavailable' });
-    expect(port.calls).toHaveLength(2);
+    expect(port.calls).toHaveLength(3);
   });
 });

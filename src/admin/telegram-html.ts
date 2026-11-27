@@ -179,6 +179,21 @@ export function telegramBlockquote(text: string): TelegramSafeHtml {
 }
 
 /**
+ * Wrap an ALREADY-SAFE fragment in an allowlisted tag. The tag name is
+ * restricted to 'b' | 'blockquote' and the inner fragment is already
+ * TelegramSafeHtml — no untrusted markup can enter through either side.
+ * Used by renderers that nest formatting (e.g. a bold span inside a
+ * quote): the leaf builders above escape their input, so they cannot
+ * wrap a fragment that already carries tags.
+ */
+export function wrapTelegramHtml(
+  tag: 'b' | 'blockquote',
+  inner: TelegramSafeHtml,
+): TelegramSafeHtml {
+  return `<${tag}>${inner}</${tag}>` as TelegramSafeHtml;
+}
+
+/**
  * Emit an <a href="…">…</a> fragment. The target must validate as a safe
  * https URL (URL-parsed, credential-free, hazard-free — ADR-0029); the
  * CANONICAL form is attribute-escaped before interpolation. Unsafe targets

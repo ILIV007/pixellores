@@ -391,3 +391,28 @@ export async function transitionInboundApproval(
   });
   return (meta.changes ?? 0) > 0;
 }
+
+/**
+ * Update a PENDING approval's stored content + fingerprint (ADR-0073 §6:
+ * the owner edited the source message while the preview was pending).
+ * Returns false when the row is no longer pending (decided concurrently)
+ * — the caller answers honestly instead of overwriting a decided row.
+ * The 24h expiry is deliberately NOT extended by an edit.
+ */
+export async function updateInboundApprovalContent(
+  executor: DbExecutor,
+  input: {
+    readonly id: string;
+    readonly contentJson: string;
+    readonly fingerprint: string;
+    readonly nowMs: number;
+  },
+): Promise<boolean> {
+  const meta = await executor.run({
+    sql: `UPDATE inbound_approvals
+             SET content_json = ?, fingerprint = ?, updated_at_ms = ?
+           WHERE id = ? AND state = 'pending'`,
+    params: [input.contentJson, input.fingerprint, input.nowMs, input.id],
+  });
+  return (meta.changes ?? 0) > 0;
+}

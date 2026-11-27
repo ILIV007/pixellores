@@ -63,4 +63,28 @@ describe('inbound rich decision', () => {
       }),
     ).toBe('classic');
   });
+
+  it('chooses rich when the rewritten content carries form #4 entities (ADR-0073 §4)', () => {
+    expect(
+      decideRichPresentation({
+        sourceWasRich: false,
+        partCount: 1,
+        media: 'none',
+        richMode: 'auto',
+        contentHasEntities: true,
+      }),
+    ).toBe('rich');
+  });
+
+  it('chooses classic when rich mode is off, even with form #4 entities', () => {
+    expect(
+      decideRichPresentation({
+        sourceWasRich: false,
+        partCount: 1,
+        media: 'none',
+        richMode: 'off',
+        contentHasEntities: true,
+      }),
+    ).toBe('classic');
+  });
 });

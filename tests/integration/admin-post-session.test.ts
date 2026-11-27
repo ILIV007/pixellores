@@ -121,18 +121,18 @@ beforeEach(async () => {
 });
 
 describe('R1.20-R1 — the explicit capture session (real webhook, real D1)', () => {
-  it('an ordinary admin message OUTSIDE a session creates NO admin-post draft data (it enters the inbound pipeline)', async () => {
+  it('an ordinary admin message OUTSIDE a session creates NO admin-post draft data (it enters the inbound pipeline and previews)', async () => {
     await seedAdmin(EDITOR_ID, 'editor');
     const outcome = await deliver(FLAG_ON_ENV, textUpdate(9100, EDITOR_ID, 'یک پیام عادی'));
-    // Slice 4: no session -> the message enters the inbound pipeline, which
-    // answers per the publish mode (live publish off -> DISABLED reply).
-    // Offline that reply cannot be delivered (honest 503), and the live
-    // gate stops before any send or record: no draft data, no published
-    // post, no approval row.
+    // Slice 4 + ADR-0073 §5: no session -> the message enters the inbound
+    // pipeline, which always previews first — so a pending approval row
+    // exists. The live gate stops the PUBLISH (live publish off -> the
+    // preview send cannot be delivered offline, honest 503), never the
+    // preview itself: no draft data, no published post.
     expect(outcome.status).toBe(503);
     expect(await versionCount()).toBe(0);
     expect(await tableCount('published_posts')).toBe(0);
-    expect(await tableCount('inbound_approvals')).toBe(0);
+    expect(await tableCount('inbound_approvals')).toBe(1);
     expect(
       await executor.first<{ count: number }>({
         sql: 'SELECT COUNT(*) AS count FROM admin_post_drafts',

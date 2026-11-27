@@ -26,6 +26,9 @@ ADR. New unresolved decisions would be added here with status Open.
 | OD-017 | Rewrite input excludes the source-report excerpt; `soulVersion` is prompt-encoded | Closed   | 2026-11-27 | ADR-0070 |
 | OD-018 | Editorial post render, v3 form (msg-16 shape)                                     | Closed   | 2026-11-22 | ADR-0071 |
 | OD-019 | Generated image in a real-photo album                                             | **Open** | —          | ADR-0072 |
+| OD-020 | Inbound rewrite: no channel-history memory                                        | Closed   | 2026-11-28 | ADR-0073 |
+| OD-021 | Inbound rewrite: no external fact verification                                    | Closed   | 2026-11-28 | ADR-0073 |
+| OD-022 | Inbound preview: Approve = Publish, one button, no held queue                     | Closed   | 2026-11-28 | ADR-0073 |
 
 ---
 
@@ -490,3 +493,49 @@ migration.
 **Decision:** none yet — **Open**. No ADR change needed for the trigger
 itself (the assembler already pins the ordering); the trigger, when
 decided, lands in the scheduler's album resolution.
+
+---
+
+## OD-020 — Inbound rewrite: no channel-history memory — **CLOSED**
+
+**Context:** the owner order (2026-11-27 23:39) asks Pixel to rewrite an
+owner-sent post in the Soul voice. A rewrite that knew the channel's past
+posts and stories could match their register better — but the inbound flow
+has no retrieval over past posts or stories, and the rewrite input is only
+the cleaned text + its category.
+
+**Decision (ADR-0073 §8):** the inbound rewrite does NOT use channel
+history. Soul v1 (statically encoded in the inbound prompt) carries the
+voice; the rewrite sees only the owner's text and its category. History
+retrieval is a follow-up if the owner ever asks for it — not part of this
+change.
+
+---
+
+## OD-021 — Inbound rewrite: no external fact verification — **CLOSED**
+
+**Context:** "fix the facts" for an owner-sent post could mean verifying
+its claims against external sources. The inbound post carries no source
+excerpt, and no verification step exists in the pipeline.
+
+**Decision (ADR-0073 §9):** the inbound rewrite does NOT verify facts
+against external sources. The preservation guard keeps every supplied
+fact verbatim (URLs, game names, versions, prices, platforms, dates,
+quotes) and the rewrite prompt forbids inventing facts — but a wrong
+fact the owner sends stays wrong. Verification would need a source
+excerpt attached to the post, which the owner-send flow does not carry.
+
+---
+
+## OD-022 — Inbound preview: Approve = Publish, one button, no held-approved queue — **CLOSED**
+
+**Context:** the always-preview routing (ADR-0073 §5) shows a preview
+with Edit / Publish / Reject in every mode except paused. A distinct
+"Approve now, send later" step was considered and rejected.
+
+**Decision (ADR-0073 §5):** Approve and Send-now are ONE button
+(Publish). The preview IS the approval: approving publishes
+immediately. There is no held-approved queue — the preview token is
+single-use and the service cannot re-show a preview later, so a
+separate hold step would strand the post. If the owner wants a distinct
+hold step, that is follow-up work, not part of this change.

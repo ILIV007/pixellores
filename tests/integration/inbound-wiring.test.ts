@@ -221,8 +221,8 @@ beforeEach(async () => {
 });
 
 describe('slice 4 — inbound wiring (real ingress, fake Bot API)', () => {
-  it('a plain owner message with no open session publishes through the inbound pipeline', async () => {
-    const { client, sends } = createCapturingBotApi();
+  it('a plain owner message with no open session previews first, then publishes on approve', async () => {
+    const { client, sends, answers } = createCapturingBotApi();
     const ingress = buildIngress(client);
     const updateId = nextUpdateId();
     const messageId = 5001;
@@ -236,17 +236,24 @@ describe('slice 4 — inbound wiring (real ingress, fake Bot API)', () => {
     );
     expect(outcome).toBe('processed');
 
+    // ADR-0073 §5: auto mode previews first — nothing reaches the channel yet.
+    expect(sends.filter((send) => send.chatId === DESTINATION)).toHaveLength(0);
+    const control = sends.find((send) => send.keyboardTokens.length === 3);
+    expect(control).toBeDefined();
+    const approveToken = control?.keyboardTokens[1]?.slice(2);
+    expect(approveToken).toBeDefined();
+
+    const callbackOutcome = await ingress.processUpdate(
+      callbackUpdate(nextUpdateId(), approveToken ?? ''),
+    );
+    expect(callbackOutcome).toBe('processed');
+
     const channelSends = sends.filter((send) => send.chatId === DESTINATION);
     expect(channelSends).toHaveLength(1);
     expect(channelSends[0]?.method).toBe('sendMessage');
     expect(channelSends[0]?.text).toContain('https://example.com/trailer');
-    // The confirmation reply reaches the owner's private chat.
-    expect(
-      sends.some(
-        (send) =>
-          send.chatId === OWNER_ID && (send.text ?? '').includes('Published to the channel'),
-      ),
-    ).toBe(true);
+    // The confirmation reaches the owner as the callback answer.
+    expect(answers.some((text) => text.includes('Published to the channel — trailer.'))).toBe(true);
 
     const row = await findPublishedPostBySource(executor, {
       sourceChatId: OWNER_ID,
@@ -269,10 +276,11 @@ describe('slice 4 — inbound wiring (real ingress, fake Bot API)', () => {
       ),
     );
     expect(previewOutcome).toBe('processed');
-    // The preview is content + control; only the control carries buttons.
-    const control = sends.find((send) => send.keyboardTokens.length === 2);
+    // The preview is content + control; only the control carries buttons
+    // ([Edit, Publish, Reject] — ADR-0073 §5).
+    const control = sends.find((send) => send.keyboardTokens.length === 3);
     expect(control).toBeDefined();
-    const approveToken = control?.keyboardTokens[0]?.slice(2);
+    const approveToken = control?.keyboardTokens[1]?.slice(2);
     expect(approveToken).toBeDefined();
     expect(sends.filter((send) => send.chatId === DESTINATION)).toHaveLength(0);
 
@@ -297,8 +305,8 @@ describe('slice 4 — inbound wiring (real ingress, fake Bot API)', () => {
       ),
     );
     expect(previewOutcome).toBe('processed');
-    const control = sends.find((send) => send.keyboardTokens.length === 2);
-    const approveToken = control?.keyboardTokens[0]?.slice(2);
+    const control = sends.find((send) => send.keyboardTokens.length === 3);
+    const approveToken = control?.keyboardTokens[1]?.slice(2);
     expect(approveToken).toBeDefined();
 
     const callbackOutcome = await ingress.processUpdate(
@@ -309,8 +317,8 @@ describe('slice 4 — inbound wiring (real ingress, fake Bot API)', () => {
     expect(sends.filter((send) => send.chatId === DESTINATION)).toHaveLength(1);
   });
 
-  it('a redelivered update is a duplicate: the post is published exactly once', async () => {
-    const { client, sends } = createCapturingBotApi();
+  it('a redelivered update is a duplicate: one preview is created, and the post is published exactly once on approve', async () => {
+    const { client, sends, answers } = createCapturingBotApi();
     const ingress = buildIngress(client);
     const update = ownerMessage(
       nextUpdateId(),
@@ -320,6 +328,17 @@ describe('slice 4 — inbound wiring (real ingress, fake Bot API)', () => {
 
     expect(await ingress.processUpdate(update)).toBe('processed');
     expect(await ingress.processUpdate(update)).toBe('duplicate');
+    // The redelivery created no second preview and published nothing.
+    expect(sends.filter((send) => send.keyboardTokens.length === 3)).toHaveLength(1);
+    expect(sends.filter((send) => send.chatId === DESTINATION)).toHaveLength(0);
+
+    const control = sends.find((send) => send.keyboardTokens.length === 3);
+    const approveToken = control?.keyboardTokens[1]?.slice(2);
+    expect(approveToken).toBeDefined();
+    expect(await ingress.processUpdate(callbackUpdate(nextUpdateId(), approveToken ?? ''))).toBe(
+      'processed',
+    );
+    expect(answers.some((text) => text.includes('Published to the channel — trailer.'))).toBe(true);
     expect(sends.filter((send) => send.chatId === DESTINATION)).toHaveLength(1);
   });
 });

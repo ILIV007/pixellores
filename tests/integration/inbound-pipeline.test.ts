@@ -15,9 +15,10 @@ import {
 import type {
   InboundRewriter,
   InboundRewriteOutcome,
-} from '../../src/application/inbound/ai-rewriter';
+} from '../../src/application/inbound/soul-rewriter';
 import type { AdminPostExecutionResult } from '../../src/application/admin-post/admin-post-service';
 import type { Clock } from '../../src/shared/time/clock';
+import type { InboundRichMode } from '../../src/domain/inbound/rich-decision';
 
 /**
  * Slice 4 — the inbound AI-admin pipeline end to end over the real workerd
@@ -25,6 +26,11 @@ import type { Clock } from '../../src/shared/time/clock';
  * fallback -> preservation -> format -> rich decision -> route per mode
  * -> publish + PV copy + published_posts row; approval previews with
  * 24h expiry; in-place edits; dedupe; owner stats (cap-exempt, visible).
+ *
+ * ADR-0073 §5: every mode except paused goes through the approval
+ * preview — auto / safe-auto no longer publish directly. The preview
+ * buttons are [Edit, Publish, Reject] (indices 0, 1, 2); Publish
+ * approves and sends in one act.
  *
  * The Telegram transport is faked (no network, no real Bot API); every
  * other layer — D1, migrations, stores, domain modules — is real.
@@ -212,6 +218,7 @@ function buildService(options: {
   transport?: InboundTransport;
   rewriter?: InboundRewriter;
   clock?: Clock;
+  richMode?: InboundRichMode;
 }): {
   readonly service: InboundPipelineService;
   readonly clock: Clock & { advance: (ms: number) => void };
@@ -222,7 +229,11 @@ function buildService(options: {
     executor,
     clock,
     logger: silentLogger(),
-    config: { livePublishEnabled: options.live ?? true, destination: DESTINATION },
+    config: {
+      livePublishEnabled: options.live ?? true,
+      destination: DESTINATION,
+      richMode: options.richMode,
+    },
     transport: options.transport,
     rewriter: options.rewriter,
   });
@@ -266,6 +277,7 @@ function previewButtons(
   return result.buttons;
 }
 
+/** Preview buttons are [Edit, Publish, Reject] (ADR-0073 §5). */
 function buttonToken(result: AdminPostExecutionResult, index: number): string {
   const buttons = previewButtons(result);
   const button = buttons[0]?.[index];
@@ -274,6 +286,32 @@ function buttonToken(result: AdminPostExecutionResult, index: number): string {
   }
   expect(button.callbackData.startsWith('a:')).toBe(true);
   return button.callbackData.slice(2);
+}
+
+/** The preview's text: the rich envelope text, else the classic HTML. */
+function previewText(result: AdminPostExecutionResult): string {
+  if (result.kind !== 'preview') {
+    throw new Error(`expected a preview, got ${result.kind}`);
+  }
+  return result.content.text?.text ?? result.content.caption?.text ?? result.classicText ?? '';
+}
+
+/** Approve a preview via its Publish button (index 1) and return the answer. */
+async function approvePreview(
+  service: InboundPipelineService,
+  preview: AdminPostExecutionResult,
+): Promise<string> {
+  const answered = await service.handleCallback({
+    telegramUserId: OWNER_ID,
+    role: 'owner',
+    uiLanguage: 'en',
+    token: buttonToken(preview, 1),
+  });
+  expect(answered.kind).toBe('answer');
+  if (answered.kind !== 'answer') {
+    throw new Error('expected an answer');
+  }
+  return answered.callbackText;
 }
 
 async function setMode(mode: PublishMode): Promise<void> {
@@ -293,20 +331,22 @@ beforeEach(async () => {
     params: [OWNER_ID, `admin-${OWNER_ID}`, NOW, NOW],
   });
   // The publish mode persists in D1 across tests in this file: reset to
-  // the default ('auto', direct) so each test starts from the same mode.
+  // the default ('auto') so each test starts from the same mode.
   await setPublishMode(executor, { mode: 'auto', actorId: OWNER_ID, nowMs: NOW });
 });
 
 describe('slice 4 — inbound pipeline (real D1, fake transport)', () => {
-  it('publishes a trailer post directly in auto mode and records the owner bucket, never the cap', async () => {
+  it('auto mode: a trailer post previews first, approve publishes and records the owner bucket, never the cap', async () => {
     const fake = createFakeTransport();
     const { service } = buildService({ transport: fake.transport });
     const input = inboundInput({
       text: 'New trailer for Elden Ring is out! https://example.com/trailer',
     });
-    const result = await service.processInbound(input);
+    const preview = await service.processInbound(input);
+    expect(preview.kind).toBe('preview');
+    expect(fake.calls).toHaveLength(0);
 
-    expect(replyText(result)).toContain('Published to the channel — trailer.');
+    expect(await approvePreview(service, preview)).toContain('Published to the channel — trailer.');
     const channelSends = fake.calls.filter((call) => call.chatId === DESTINATION);
     expect(channelSends).toHaveLength(1);
     expect(channelSends[0]?.method).toBe('sendMessageClassic');
@@ -328,7 +368,7 @@ describe('slice 4 — inbound pipeline (real D1, fake transport)', () => {
     expect(counts.published).toBe(1);
   });
 
-  it('routes signal-only categories to approval in safe-auto, and direct posts stay direct', async () => {
+  it('safe-auto: signal-only and direct posts both preview first', async () => {
     await setMode('safe-auto');
     const fake = createFakeTransport();
     const { service } = buildService({ transport: fake.transport });
@@ -342,8 +382,8 @@ describe('slice 4 — inbound pipeline (real D1, fake transport)', () => {
     const trailer = await service.processInbound(
       inboundInput({ text: 'New trailer for Elden Ring is out! https://example.com/trailer' }),
     );
-    expect(replyText(trailer)).toContain('Published to the channel — trailer.');
-    expect(fake.calls.filter((call) => call.chatId === DESTINATION)).toHaveLength(1);
+    expect(trailer.kind).toBe('preview');
+    expect(fake.calls).toHaveLength(0);
   });
 
   it('approval mode: preview, approve publishes, the token is single-use, reject rejects', async () => {
@@ -360,9 +400,11 @@ describe('slice 4 — inbound pipeline (real D1, fake transport)', () => {
       // so the preview shows the exact form that will be published.
       expect(preview.classicText).toBeDefined();
       expect(preview.content.media).toBe('none');
+      // Three buttons: [Edit, Publish, Reject].
+      expect(preview.buttons[0]).toHaveLength(3);
     }
-    const approveToken = buttonToken(preview, 0);
-    const rejectToken = buttonToken(preview, 1);
+    const approveToken = buttonToken(preview, 1);
+    const rejectToken = buttonToken(preview, 2);
 
     const approved = await service.handleCallback({
       telegramUserId: OWNER_ID,
@@ -392,7 +434,7 @@ describe('slice 4 — inbound pipeline (real D1, fake transport)', () => {
     const preview2 = await service.processInbound(
       inboundInput({ text: 'Patch 1.4.3 is live for Elden Ring https://example.com/patch2' }),
     );
-    const rejectToken2 = buttonToken(preview2, 1);
+    const rejectToken2 = buttonToken(preview2, 2);
     const rejected = await service.handleCallback({
       telegramUserId: OWNER_ID,
       role: 'owner',
@@ -416,7 +458,7 @@ describe('slice 4 — inbound pipeline (real D1, fake transport)', () => {
     const preview = await service.processInbound(
       inboundInput({ text: 'New trailer for Elden Ring is out! https://example.com/trailer' }),
     );
-    const approveToken = buttonToken(preview, 0);
+    const approveToken = buttonToken(preview, 1);
 
     clock.advance(25 * 3_600_000);
     const answered = await service.handleCallback({
@@ -457,11 +499,12 @@ describe('slice 4 — inbound pipeline (real D1, fake transport)', () => {
     ]);
     const { service } = buildService({ transport: fake.transport, rewriter: rewriter.rewriter });
 
-    const result = await service.processInbound(
+    const preview = await service.processInbound(
       inboundInput({ text: 'New trailer for Elden Ring is out! https://example.com/trailer' }),
     );
-    expect(replyText(result)).toContain('Published to the channel');
+    expect(preview.kind).toBe('preview');
     expect(rewriter.calls).toBe(1);
+    expect(await approvePreview(service, preview)).toContain('Published to the channel');
     const sent = fake.calls.find((call) => call.chatId === DESTINATION);
     expect(sent?.text).toContain('New trailer for Elden Ring is out!');
   });
@@ -473,10 +516,11 @@ describe('slice 4 — inbound pipeline (real D1, fake transport)', () => {
     ]);
     const { service } = buildService({ transport: fake.transport, rewriter: rewriter.rewriter });
 
-    const result = await service.processInbound(
+    const preview = await service.processInbound(
       inboundInput({ text: 'New trailer for Elden Ring is out! https://example.com/trailer' }),
     );
-    expect(replyText(result)).toContain('Published to the channel');
+    expect(preview.kind).toBe('preview');
+    expect(await approvePreview(service, preview)).toContain('Published to the channel');
     const sent = fake.calls.find((call) => call.chatId === DESTINATION);
     expect(sent?.text).toContain('https://example.com/trailer');
   });
@@ -490,9 +534,9 @@ describe('slice 4 — inbound pipeline (real D1, fake transport)', () => {
       text: 'New trailer for Elden Ring is out! https://example.com/trailer',
       entities: [{ type: 'bold', offset: 0, length: 11 }],
     };
-    const result = await service.processInbound(inboundInput({ text: richText.text, richText }));
-
-    expect(replyText(result)).toContain('Published to the channel — trailer.');
+    const preview = await service.processInbound(inboundInput({ text: richText.text, richText }));
+    expect(preview.kind).toBe('preview');
+    expect(await approvePreview(service, preview)).toContain('Published to the channel — trailer.');
     // The rich send failed definitively (proved non-delivery), so the same
     // part went out as classic HTML instead — exactly one channel message.
     const channelSends = fake.calls.filter((call) => call.chatId === DESTINATION);
@@ -511,9 +555,10 @@ describe('slice 4 — inbound pipeline (real D1, fake transport)', () => {
       entities: [{ type: 'bold', offset: 0, length: 11 }],
     };
     const input = inboundInput({ text: richText.text, richText });
-    const result = await service.processInbound(input);
+    const preview = await service.processInbound(input);
+    expect(preview.kind).toBe('preview');
 
-    expect(replyText(result)).toContain('OUTCOME UNKNOWN');
+    expect(await approvePreview(service, preview)).toContain('OUTCOME UNKNOWN');
     // No classic retry (the rich send may have succeeded), no published row.
     expect(fake.calls.filter((call) => call.chatId === DESTINATION)).toHaveLength(0);
     const row = await findPublishedPostBySource(executor, {
@@ -529,7 +574,7 @@ describe('slice 4 — inbound pipeline (real D1, fake transport)', () => {
     const sourceMessageId = nextMessageId();
     const caption = 'Patch 1.4.2 is live for Elden Ring https://example.com/patch';
 
-    const published = await service.processInbound(
+    const preview = await service.processInbound(
       inboundInput({
         text: caption,
         sourceMessageId,
@@ -538,7 +583,8 @@ describe('slice 4 — inbound pipeline (real D1, fake transport)', () => {
         hasMediaAttachment: true,
       }),
     );
-    expect(replyText(published)).toContain('Published to the channel — patch.');
+    expect(preview.kind).toBe('preview');
+    expect(await approvePreview(service, preview)).toContain('Published to the channel — patch.');
     const photoSend = fake.calls.find((call) => call.method === 'sendPhotoRich');
     expect(photoSend?.chatId).toBe(DESTINATION);
     const channelMessageId = photoSend?.messageId;
@@ -571,13 +617,14 @@ describe('slice 4 — inbound pipeline (real D1, fake transport)', () => {
     const { service } = buildService({ transport: fake.transport });
     const sourceMessageId = nextMessageId();
 
-    const published = await service.processInbound(
+    const preview = await service.processInbound(
       inboundInput({
         text: 'New trailer for Elden Ring is out! https://example.com/trailer',
         sourceMessageId,
       }),
     );
-    expect(replyText(published)).toContain('Published to the channel');
+    expect(preview.kind).toBe('preview');
+    expect(await approvePreview(service, preview)).toContain('Published to the channel');
     const firstSend = fake.calls.find((call) => call.chatId === DESTINATION);
     const channelMessageId = firstSend?.messageId;
 
@@ -630,12 +677,13 @@ describe('slice 4 — inbound pipeline (real D1, fake transport)', () => {
     const fake = createFakeTransport();
     const { service } = buildService({ transport: fake.transport });
     const sourceMessageId = nextMessageId();
-    await service.processInbound(
+    const preview = await service.processInbound(
       inboundInput({
         text: 'New trailer for Elden Ring is out! https://example.com/trailer',
         sourceMessageId,
       }),
     );
+    expect(await approvePreview(service, preview)).toContain('Published to the channel');
     await setMode('paused');
     const edited = await service.processInbound(
       inboundInput({
@@ -671,15 +719,18 @@ describe('slice 4 — inbound pipeline (real D1, fake transport)', () => {
     expect(fake.calls).toHaveLength(0);
   });
 
-  it('live flag off: direct publish is refused honestly and nothing is sent or recorded', async () => {
+  it('live flag off: the preview is shown but approve is refused honestly and nothing is sent or recorded', async () => {
     const fake = createFakeTransport();
     const { service } = buildService({ transport: fake.transport, live: false });
     const input = inboundInput({
       text: 'New trailer for Elden Ring is out! https://example.com/trailer',
     });
 
-    const result = await service.processInbound(input);
-    expect(replyText(result)).toContain('Publishing is DISABLED');
+    // The preview itself sends nothing — the live gate stops the publish.
+    const preview = await service.processInbound(input);
+    expect(preview.kind).toBe('preview');
+    expect(fake.calls).toHaveLength(0);
+    expect(await approvePreview(service, preview)).toContain('Publishing is DISABLED');
     expect(fake.calls).toHaveLength(0);
     const row = await findPublishedPostBySource(executor, {
       sourceChatId: PV_CHAT_ID,
@@ -696,7 +747,7 @@ describe('slice 4 — inbound pipeline (real D1, fake transport)', () => {
       text: 'New trailer for Elden Ring is out! https://example.com/trailer',
     });
     const preview = await service.processInbound(input);
-    const approveToken = buttonToken(preview, 0);
+    const approveToken = buttonToken(preview, 1);
     const approvalId = await pendingApprovalId(input.sourceMessageId ?? 0);
 
     const offline = buildService({ transport: fake.transport, live: false }).service;
@@ -713,6 +764,158 @@ describe('slice 4 — inbound pipeline (real D1, fake transport)', () => {
     expect(fake.calls).toHaveLength(0);
     const approval = await getInboundApproval(executor, approvalId);
     expect(approval?.state).toBe('pending');
+  });
+
+  it('edit button: tapping Edit answers with instructions and the preview stays pending', async () => {
+    const fake = createFakeTransport();
+    const { service } = buildService({ transport: fake.transport });
+    const input = inboundInput({
+      text: 'New trailer for Elden Ring is out! https://example.com/trailer',
+    });
+    const preview = await service.processInbound(input);
+    expect(preview.kind).toBe('preview');
+    const editToken = buttonToken(preview, 0);
+
+    const answered = await service.handleCallback({
+      telegramUserId: OWNER_ID,
+      role: 'owner',
+      uiLanguage: 'en',
+      token: editToken,
+    });
+    expect(answered.kind).toBe('answer');
+    if (answered.kind === 'answer') {
+      expect(answered.callbackText).toContain('Edit your original message');
+    }
+    expect(fake.calls).toHaveLength(0);
+    const approval = await getInboundApproval(
+      executor,
+      await pendingApprovalId(input.sourceMessageId ?? 0),
+    );
+    expect(approval?.state).toBe('pending');
+  });
+
+  it('editing the source message while a preview is pending updates the preview without an AI rewrite', async () => {
+    const fake = createFakeTransport();
+    const rewriter = createFakeRewriter([
+      {
+        kind: 'ok',
+        text: '**تریلر جدید «Elden Ring»** منتشر شد! نسخهٔ **۱.۴.۲** هم‌اکنون در دسترس است. https://example.com/trailer',
+        attempts: 1,
+      },
+    ]);
+    const { service } = buildService({ transport: fake.transport, rewriter: rewriter.rewriter });
+    const sourceMessageId = nextMessageId();
+
+    const preview = await service.processInbound(
+      inboundInput({
+        text: 'New trailer for «Elden Ring» is out! Version 1.4.2 is live. https://example.com/trailer',
+        sourceMessageId,
+      }),
+    );
+    expect(preview.kind).toBe('preview');
+    expect(rewriter.calls).toBe(1);
+    // The preview shows the rewrite (rich: form #4 markers became entities).
+    const envelope = preview.kind === 'preview' ? preview.content.text : undefined;
+    expect(envelope).toBeDefined();
+    expect(envelope?.entities.some((entity) => entity.type === 'bold')).toBe(true);
+    const oldApproveToken = buttonToken(preview, 1);
+
+    // The owner edits the source message: the pending branch re-processes
+    // WITHOUT an AI rewrite and re-shows the preview.
+    const updated = await service.processInbound(
+      inboundInput({
+        kind: 'edited_message',
+        text: 'New trailer for Elden Ring is out now! https://example.com/trailer',
+        sourceMessageId,
+      }),
+    );
+    expect(updated.kind).toBe('preview');
+    expect(rewriter.calls).toBe(1);
+    expect(previewText(updated)).toContain('out now');
+    expect(previewText(updated)).not.toContain('تریلر جدید');
+
+    // Approving via the OLD preview's Publish token publishes the CURRENT
+    // (edited) content — the fingerprint is verified against the updated row.
+    const answered = await service.handleCallback({
+      telegramUserId: OWNER_ID,
+      role: 'owner',
+      uiLanguage: 'en',
+      token: oldApproveToken,
+    });
+    expect(answered.kind).toBe('answer');
+    if (answered.kind === 'answer') {
+      expect(answered.callbackText).toContain('Published to the channel');
+    }
+    const sent = fake.calls.find((call) => call.chatId === DESTINATION);
+    expect(sent?.text).toContain('out now');
+    expect(sent?.text).not.toContain('تریلر جدید');
+  });
+
+  it('a Soul rewrite’s form #4 markers become entities on the rich preview and bold HTML in the classic preview', async () => {
+    const rewritten =
+      '**تریلر جدید «Elden Ring»** منتشر شد! نسخهٔ **۱.۴.۲** هم‌اکنون در دسترس است. https://example.com/trailer\n> "Best trailer of the year"\n> — IGN';
+    const source =
+      'New trailer for «Elden Ring» is out! Version 1.4.2 is live. https://example.com/trailer "Best trailer of the year" — IGN';
+
+    // Rich presentation (default auto): the envelope carries the entities.
+    const richFake = createFakeTransport();
+    const richRewriter = createFakeRewriter([{ kind: 'ok', text: rewritten, attempts: 1 }]);
+    const rich = buildService({
+      transport: richFake.transport,
+      rewriter: richRewriter.rewriter,
+    }).service;
+    const richPreview = await rich.processInbound(inboundInput({ text: source }));
+    expect(richPreview.kind).toBe('preview');
+    if (richPreview.kind !== 'preview') {
+      throw new Error('expected a preview');
+    }
+    const envelope = richPreview.content.text;
+    expect(envelope).toBeDefined();
+    const envelopeText = envelope?.text ?? '';
+    expect(envelopeText).not.toContain('**');
+    expect(envelopeText).toContain('1.4.2');
+    expect(envelopeText).not.toContain('۱.۴.۲');
+    const boldSpans = (envelope?.entities ?? []).filter((entity) => entity.type === 'bold');
+    expect(boldSpans.length).toBeGreaterThanOrEqual(2);
+    expect(
+      boldSpans.some((entity) =>
+        envelopeText.slice(entity.offset, entity.offset + entity.length).includes('1.4.2'),
+      ),
+    ).toBe(true);
+    const quote = (envelope?.entities ?? []).find((entity) => entity.type === 'blockquote');
+    expect(quote).toBeDefined();
+    // Bidi isolation wraps each Latin word (⁦…⁩), so strip it for the
+    // substring assertion — the words are contiguous in the channel text.
+    const stripIsolation = (value: string): string =>
+      value.replaceAll('\u2066', '').replaceAll('\u2069', '');
+    expect(
+      stripIsolation(
+        envelopeText.slice(quote?.offset ?? 0, (quote?.offset ?? 0) + (quote?.length ?? 0)),
+      ),
+    ).toContain('Best trailer of the year');
+
+    // Classic presentation (richMode off): the same markers render as HTML.
+    const classicFake = createFakeTransport();
+    const classicRewriter = createFakeRewriter([{ kind: 'ok', text: rewritten, attempts: 1 }]);
+    const classic = buildService({
+      transport: classicFake.transport,
+      rewriter: classicRewriter.rewriter,
+      richMode: 'off',
+    }).service;
+    const classicPreview = await classic.processInbound(inboundInput({ text: source }));
+    expect(classicPreview.kind).toBe('preview');
+    if (classicPreview.kind !== 'preview') {
+      throw new Error('expected a preview');
+    }
+    const classicText = classicPreview.classicText ?? '';
+    expect(classicText).toContain('<b>');
+    expect(classicText).toContain('</b>');
+    expect(classicText).toContain('<blockquote>');
+    expect(classicText.replaceAll('\u2066', '').replaceAll('\u2069', '')).toContain(
+      'Best trailer of the year',
+    );
+    expect(classicText).toContain('1.4.2');
+    expect(classicText).not.toContain('**');
   });
 
   it('documents and albums are rejected explicitly, never silently dropped', async () => {

@@ -8,7 +8,6 @@ import {
   AI_CIRCUIT_BREAKER_COOLDOWN_MS,
   aiCircuitBreakerSettingsKey,
 } from '../../src/application/ai/ai-circuit-breaker';
-import { createAiInboundRewriter } from '../../src/application/inbound/ai-rewriter';
 import type { AiCallOutcome, AiProvider, AiProviderPort } from '../../src/domain/ai/types';
 import { createLogger } from '../../src/observability/logger';
 
@@ -43,8 +42,6 @@ const VALID_REQUEST = {
   locale: 'fa',
   evidence: [{ id: 'ev-1', text: 'متن شاهد عمومی' }],
 };
-
-const REWRITE_INPUT = { text: 'متن خام', category: 'news' as const, isCaption: false };
 
 // Day 1 Tehran 2025-10-06 15:30; DAY2 = Tehran 2025-10-07 00:01.
 const DAY1 = Date.UTC(2025, 9, 6, 12, 0, 0);
@@ -735,66 +732,6 @@ describe('event-relation service — breaker + refund hooks (ai-policy-v2.3 gap 
     expect(
       JSON.parse(executor.settings.get(aiCircuitBreakerSettingsKey('workers-ai')) ?? '{}'),
     ).toMatchObject({ state: 'closed', consecutive_failures: 0 });
-  });
-});
-
-describe('inbound rewriter — failover + pressure (ai-policy-v2.3)', () => {
-  let executor: StatefulFake;
-  let clock: ReturnType<typeof createFakeClock>;
-  let primaryPort: FakePort & AiProviderPort;
-  let backupPort: FakePort & AiProviderPort;
-
-  beforeEach(() => {
-    executor = createStatefulExecutor();
-    clock = createFakeClock();
-    primaryPort = createFakePort('workers-ai');
-    backupPort = createFakePort('workers-ai-backup');
-  });
-
-  function buildService() {
-    return createAiInboundRewriter({
-      executor,
-      ports: { 'workers-ai': primaryPort, 'workers-ai-backup': backupPort },
-      clock,
-      logger: silentLogger,
-      config: {
-        aiEnabled: true,
-        geminiEnabled: false,
-        failoverEnabled: true,
-        workersAiBindingPresent: true,
-        geminiApiKeyPresent: false,
-      },
-    });
-  }
-
-  it('primary denied → the rewrite succeeds on the backup account', async () => {
-    seedBudgets(executor, 'workers-ai', DAY1_BUCKET, 114);
-    backupPort.setOutcomes([{ kind: 'ok', rawText: 'متن بازنویسی‌شده.' }]);
-    const outcome = await buildService().rewrite(REWRITE_INPUT);
-    expect(outcome).toMatchObject({ kind: 'ok', attempts: 1 });
-    expect(primaryPort.calls).toHaveLength(0);
-    expect(backupPort.calls).toHaveLength(1);
-    expect(executor.budgets.get(budgetKey('workers-ai-backup', DAY1_BUCKET))).toBe(1);
-  });
-
-  it('reserve-window denial on the only reachable account → typed budget_pressure', async () => {
-    seedBudgets(executor, 'workers-ai', DAY1_BUCKET, 114);
-    const service = createAiInboundRewriter({
-      executor,
-      ports: { 'workers-ai': primaryPort },
-      clock,
-      logger: silentLogger,
-      config: {
-        aiEnabled: true,
-        geminiEnabled: false,
-        failoverEnabled: false, // backup unreachable in this deployment
-        workersAiBindingPresent: true,
-        geminiApiKeyPresent: false,
-      },
-    });
-    const outcome = await service.rewrite(REWRITE_INPUT);
-    expect(outcome).toMatchObject({ kind: 'deferred', reason: 'budget_pressure' });
-    expect(primaryPort.calls).toHaveLength(0);
   });
 });
 

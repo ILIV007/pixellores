@@ -67,7 +67,8 @@ import { createEditorialReviewService } from '../../../application/editorial/dra
 import { createAdminQueueViewService } from '../../../application/publishing/queue-view-service';
 import { createAdminStoryViewService } from '../../../application/publishing/story-view-service';
 import { createAdminPostService } from '../../../application/admin-post/admin-post-service';
-import { createAiInboundRewriter } from '../../../application/inbound/ai-rewriter';
+import { createAiRewriteService } from '../../../application/ai/rewrite-service';
+import { createSoulInboundRewriter } from '../../../application/inbound/soul-rewriter';
 import {
   createInboundPipelineService,
   type InboundTransport,
@@ -301,14 +302,15 @@ export async function handleTelegramWebhook(
       : undefined;
 
   // Slice 4: the inbound AI-admin pipeline is wired ONLY while the admin
-  // post gate is ON (it shares the capture surface). The rewriter uses the
-  // SAME Workers AI port + budget-authority shape as the editorial draft
-  // service; the Gemini fallback is WIRED (ADR-0067): the port is built
-  // when GEMINI_API_KEY is present, over the platform fetch and the
-  // validated GEMINI_API_BASE_URL origin — the ladder still gates it on
-  // the operator flag + key + port + PARTIAL eligibility, and the AI flags
-  // ship OFF on preview, so the rewriter defers and the pipeline runs on
-  // the cleaned text until the operator flips the flag after the live test.
+  // post gate is ON (it shares the capture surface). The rewriter is the
+  // Soul adapter over the ADR-0070 rewrite service (ADR-0073 §1): Gemini
+  // ONLY — Soul belongs only to Gemini, Workers AI never author the final
+  // post. The Gemini port is built when GEMINI_API_KEY is present, over
+  // the platform fetch and the validated GEMINI_API_BASE_URL origin — the
+  // service still gates on the operator flags + key + port + PARTIAL
+  // eligibility, and the AI flags ship OFF on preview, so the rewriter
+  // defers and the pipeline runs on the cleaned text until the operator
+  // flips the flag after the live test.
   // ai-policy-v2.3 (ADR-0069): the BACKUP-account REST port is built ONLY
   // when the operator kill switch is on AND the backup account id var AND
   // the backup API token secret are ALL present — fail-closed: any
@@ -336,18 +338,21 @@ export async function handleTelegramWebhook(
       env.BACKUP_WORKERS_AI_API_TOKEN,
     );
   }
-  const inboundRewriter = createAiInboundRewriter({
-    executor,
-    ports: inboundPorts,
-    clock: systemClock,
-    logger: ctx.logger,
-    config: {
-      aiEnabled: aiFlags.config.AI_ENABLED,
-      geminiEnabled: aiFlags.config.AI_GEMINI_ENABLED,
-      failoverEnabled: aiFlags.config.AI_FAILOVER_ENABLED,
-      workersAiBindingPresent,
-      geminiApiKeyPresent: env.GEMINI_API_KEY !== undefined,
-    },
+  const inboundRewriter = createSoulInboundRewriter({
+    rewriteService: createAiRewriteService({
+      executor,
+      ports: inboundPorts,
+      clock: systemClock,
+      logger: ctx.logger,
+      config: {
+        aiEnabled: aiFlags.config.AI_ENABLED,
+        geminiEnabled: aiFlags.config.AI_GEMINI_ENABLED,
+        rewriteEnabled: aiFlags.config.AI_GEMINI_REWRITE_ENABLED,
+        failoverEnabled: aiFlags.config.AI_FAILOVER_ENABLED,
+        workersAiBindingPresent,
+        geminiApiKeyPresent: env.GEMINI_API_KEY !== undefined,
+      },
+    }),
   });
   // The transport adapter maps the SAME real Bot API client instance onto
   // the minimal inbound transport (no second client, no bypass path).

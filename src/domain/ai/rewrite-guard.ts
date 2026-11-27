@@ -74,3 +74,28 @@ export function checkRewritePreservesNumbers(input: {
   }
   return { ok: true };
 }
+
+/**
+ * Check a rewritten inbound post against the owner's raw text (ADR-0073
+ * §1): the single-text twin of `checkRewritePreservesNumbers`. Every
+ * digit-sequence in the rewritten text must occur in the folded raw
+ * text; the FIRST offending sequence is named (the folded token only —
+ * never raw post text) so the refusal stays log-safe.
+ */
+export function checkInboundRewritePreservesNumbers(input: {
+  readonly rawText: string;
+  readonly rewrittenText: string;
+}):
+  | { readonly ok: true }
+  | { readonly ok: false; readonly code: RewriteGuardRefusalCode; readonly token?: string } {
+  if (input.rewrittenText.trim().length === 0) {
+    return { ok: false, code: 'empty_rewrite' };
+  }
+  const rawFolded = foldDigitsForRewriteGuard(input.rawText);
+  for (const token of rewriteDigitSequences(input.rewrittenText)) {
+    if (!rawFolded.includes(token)) {
+      return { ok: false, code: 'number_not_in_raw', token };
+    }
+  }
+  return { ok: true };
+}
