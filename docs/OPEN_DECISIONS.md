@@ -24,6 +24,7 @@ ADR. New unresolved decisions would be added here with status Open.
 | OD-015 | Backfill: drafts created while the rewrite flag was OFF                           | **Open** | —          | ADR-0070 |
 | OD-016 | `quota_denied` consumes no rewrite attempt                                        | Closed   | 2026-11-27 | ADR-0070 |
 | OD-017 | Rewrite input excludes the source-report excerpt; `soulVersion` is prompt-encoded | Closed   | 2026-11-27 | ADR-0070 |
+| OD-018 | Editorial post render, v3 form (msg-16 shape)                                     | Closed   | 2026-11-22 | ADR-0071 |
 
 ---
 
@@ -447,3 +448,15 @@ adding a fact the rewrite may use. The rewrite block's `soulVersion`
 is the version the PROMPT encodes (`v1`), not D1's
 `soul.current_version` — a Soul v2 requires a prompt v2 bump, so the
 stamp can never claim a Soul the prompt does not carry.
+
+---
+
+## OD-018 — Editorial post render, v3 form (msg-16 shape) — **CLOSED**
+
+**Decided:** owner order, 2026-11-22 ~11:55–12:08 (v2 example msg 15 superseded by the v3 example msg 16, approved overall ~12:06 «همین فرم درکل خوبه!»).
+
+**Decision:** the editorial post render composes the v3 form — bold category-emoji title + Latin game name on its own line (italic, optional inline game-page link), body, real-quote blockquote (attribution on its own line INSIDE the blockquote), ONE dedicated figures block (each figure once, Latin digits only, main figure bold+mono via bold-spanning-the-line), unlabeled verdict, house footer blockquote. No trust label, no ⏺ separator, no unverified line, no «حرف آخر:» label, no source line. Numbers fold to Latin at render time; Latin spans are bidi-isolated. An over-long photo caption trims to 1024 units (photo kept, never a second send); text fallback only when no photo exists.
+
+**Implementation:** `renderEditorialPostText` / `renderEditorialPostCaption` (`src/domain/admin-post/editorial-post-render.ts`) + the ADR-0071 envelope exception (a style may strictly contain inline `code`; equal-range style+code stays rejected per the live msg-16 flattening) + the scheduler caption wiring. The claim `status` is no longer a render contract; the fact-guard report remains the internal gate (auto-gate). Full record: ADR-0071.
+
+**Open follow-ups (not in this change):** (1) prompt v3 + mapper must start writing the structured `figures` / `quote` / `verdict` / `gameName` / `gamePageUrl` fields the render consumes (until then: derived figures, no quote/verdict, alias game name, plain italic name); (2) the bold+mono main figure needs live verification on the first real post after deploy (no dry-run for entity parsing) — fallback is code-only. (The multi-photo album, max 4 source photos in one media group, IS in this change — ADR-0071.)

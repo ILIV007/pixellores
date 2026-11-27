@@ -17,10 +17,13 @@ import {
  *  1. THE DOCUMENT RE-READ: the stored bytes are re-validated through the
  *     SAME strict reader discipline the send path uses
  *     (`renderEditorialPostText`). A document whose shape the renderer
- *     refuses (a laundered claim status, an unsupported schemaVersion, a
- *     malformed shape) can never be AUTO-approved, and a composition the
- *     renderer refuses on its caps is a DOOMED publication — never created
- *     quietly (the album producer's lesson, applied to AUTO).
+ *     refuses (an unsupported schemaVersion, a malformed shape) can never
+ *     be AUTO-approved, and a composition the renderer refuses on its
+ *     caps is a DOOMED publication — never created quietly (the album
+ *     producer's lesson, applied to AUTO). ADR-0071: the render NO LONGER
+ *     polices the claim `status` (owner order 2026-11-22 — the unverified
+ *     line is gone from posts); the status discipline lives here, in the
+ *     fact-guard report basis below, not in the renderer.
  *  2. THE FACT-GUARD REPORT: the report MUST be present (its absence — the
  *     flag-off historical shape — is the fail-closed refusal, never a
  *     pass), well-formed, version-supported, and evaluated over a
@@ -112,10 +115,12 @@ const DOCUMENT_SHAPE_FAILURES: ReadonlySet<string> = new Set([
  */
 export function evaluateAutoPublishGate(documentJson: string): AutoGateVerdict {
   // 1. THE DOCUMENT RE-READ through the send path's strict reader: the
-  //    renderer validates the shape AND the claim-status discipline AND
-  //    the composition caps in ONE pass — a draft that cannot be rendered
-  //    can never be AUTO-approved (a doomed publication is never created
-  //    quietly).
+  //    renderer validates the shape AND the composition caps in ONE pass —
+  //    a draft that cannot be rendered can never be AUTO-approved (a doomed
+  //    publication is never created quietly). ADR-0071: the claim `status`
+  //    is NOT policed here anymore — the renderer accepts a claim on its
+  //    text alone by owner order, and the fact-guard report basis below is
+  //    the internal gate that still decides eligibility.
   const rendered = renderEditorialPostText(documentJson);
   if (!rendered.ok) {
     const reason = rendered.reason as EditorialPostRenderFailureReason;

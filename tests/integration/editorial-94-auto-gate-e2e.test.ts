@@ -399,7 +399,10 @@ describe('slice 3 — the connected chain to a published AUTO-eligible draft', (
     const row = await findPublicationById(chain.executor, 'pub-e2e94-auto');
     expect(row?.status).toBe('published');
     expect(transport.calls).toHaveLength(1);
-    expect(transport.calls[0]?.text).toContain('تیتر زنجیرهٔ سرتاسری ۹۴');
+    // ADR-0071: the v3 render folds digits to Latin AND isolates the
+    // Latin run (LRI/PDI) — the STORED headline keeps its Persian
+    // digits (line 258), the SENT text does not.
+    expect(transport.calls[0]?.text).toContain('تیتر زنجیرهٔ سرتاسری \u206694\u2069');
 
     // The at-most-once ledger: exactly ONE recorded message, ordinal 0.
     const messages = await listPublicationMessages(chain.executor, 'pub-e2e94-auto');
