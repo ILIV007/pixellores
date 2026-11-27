@@ -190,6 +190,10 @@ export async function handleScheduled(
         destination,
         mode,
         nowMs: Date.now(),
+        // ADR-0070: the rewrite seam — threaded from the resolved
+        // engine flag (Link 4 runs after resolveJobsEngine, so the
+        // per-invocation flag is already parsed and fail-closed).
+        rewriteRequired: resolution.rewriteEnabled,
         logger,
       });
       if (bridged.kind === 'bridged') {
@@ -202,6 +206,8 @@ export async function handleScheduled(
           refused: bridged.refused,
           deferredGuideLane: bridged.deferredGuideLane,
           deferredCategoryCap: bridged.deferredCategoryCap,
+          deferredRewrite: bridged.deferredRewrite,
+          failedRewrite: bridged.failedRewrite,
           rejected: bridged.rejected,
         });
       } else {

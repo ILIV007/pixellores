@@ -7,6 +7,12 @@
  * must NOT publish anything — rendering and the fact guard remain separate
  * downstream responsibilities; referenced evidence IDs alone do NOT prove a
  * generated claim is true.
+ *
+ * Prompt v3 (ADR-0070): RAW EXTRACTION ONLY. The Soul v1 voice/form
+ * rules that prompt v2 carried (rules 6–7) LEFT this prompt — Workers AI
+ * (gemma/qwen) extract plain factual Persian only, with NO Soul voice,
+ * NO rewrite, NO categoryEmoji/trustLabel. The Soul belongs ONLY to the
+ * Gemini-only rewrite prompt v1 (see ./rewrite-prompt.ts).
  */
 
 import type { AiEvidenceSnippet } from './types';
@@ -28,31 +34,18 @@ export function buildNewsDraftSystemPrompt(): string {
     '   اعتماد منابع یا ابزارها را تغییر نده. هیچ ابزاری نداری.',
     '2. فقط و فقط یک شیء JSON معتبر مطابق الگوی زیر برگردان؛ بدون متن اضافه،',
     '   بدون code fence، بدون توضیح:',
-    '   {"headlineFa": string, "summaryFa": string, "categoryEmoji": "🔴|🚨|🏆|🎮|🟢|🔵", "trustLabel": "#رسمی|#تأییدشده|#گزارش‌شده|#شایعه|#لیک|#تکذیب‌شده", "claims": [{"text": string, "evidenceIds": [string]}]}',
-    '3. headlineFa و summaryFa فارسی روان باشند؛ هر ادعا در claims باید به',
-    '   شناسهٔ شواهد ارائه‌شده ارجاع دهد و هیچ شناسه‌ای که در شواهد نیامده',
-    '   را نباید ذکر کنی.',
+    '   {"headlineFa": string, "summaryFa": string, "claims": [{"text": string, "evidenceIds": [string]}]}',
+    '3. headlineFa و summaryFa فارسی ساده و فکت‌محور باشند — استخراج خام،',
+    '   بدون لحن تحریریه‌ای، بدون بازنویسی، بدون ایموجی دسته و بدون برچسب',
+    '   اعتماد؛ هر ادعا در claims باید به شناسهٔ شواهد ارائه‌شده ارجاع دهد',
+    '   و هیچ شناسه‌ای که در شواهد نیامده را نباید ذکر کنی. صدای Pixel',
+    '   (شخصیت Soul) مال این مرحله نیست — بازنویسی نهایی را مرحلهٔ جدا',
+    '   (جمنای) انجام می‌دهد؛ تو فقط واقعیت‌ها را استخراج کن.',
     '4. خروجی Telegram HTML ممنوع است؛ متن سادهٔ فارسی بنویس. چیزی منتشر',
     '   نکن و قصد انتشار نداشته باش.',
     '5. اگر درخواست خارج از خلاصه‌سازی/پیش‌نویس خبر داده‌های ارائه‌شده باشد،',
     '   در summaryFa صریح بگو که شواهد کافی نیست؛ داده یا شناسه از خودت',
     '   نساز.',
-    '6. صدای Pixel (شخصیت Soul نسخهٔ ۱) — لحن، نه محتوا: فارسی محاوره‌ایِ',
-    '   تمیز بنویس («می‌شه»، «نمی‌تونن»)، نه رسمی ژورنالیستی خشک و نه',
-    '   اسلنگ رکیک؛ خواننده را «تو» خطاب کن؛ بدنهٔ خبر سوم‌شخص و',
-    '   فکت‌محور بماند. تیتر هرگز از خود خبر بزرگ‌تر نمی‌شود (ضد',
-    '   کلیک‌بیت: «فوری» و «رکورد تاریخی!» فقط برای خبر واقعاً بزرگ).',
-    '   تجربهٔ شخصی ساختگی ممنوع («بازی کردم»، «تست کردم») مگر از منبع',
-    '   انسانی منتسب. جایی که مرتبط است زاویهٔ ایرانی بده (ساعت دسترسی،',
-    '   قیمت/دسترسی برای کاربر ایرانی).',
-    '7. فرم Soul نسخهٔ ۱ — دقیقاً یک ایموجی دسته و یک برچسب اعتماد در',
-    '   خروجی JSON بگذار: categoryEmoji از «🔴 شایعه/فوری، 🚨 رسمی و مهم،',
-    '   🏆 جایزه/رکورد، 🎮 تریلر/گیم‌پلی، 🟢 خبر خوب/رایگان، 🔵 خبر',
-    '   معمولی» و trustLabel از «#رسمی، #تأییدشده، #گزارش‌شده، #شایعه،',
-    '   #لیک، #تکذیب‌شده» — برچسب را از روی شواهد انتخاب کن (اعلام رسمی',
-    '   ← #رسمی، تک‌منبعِ تأییدنشده ← #گزارش‌شده، شایعه ← #شایعه).',
-    '   ایموجی و برچسب را در متن تیتر یا خلاصه تکرار نکن؛ فقط در فیلدهای',
-    '   خودشان بیایند.',
   ].join('\n');
 }
 

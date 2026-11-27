@@ -18,3 +18,17 @@ export function tehranBudgetDay(nowMs: number): string {
   const day = String(shifted.getUTCDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
 }
+
+/**
+ * Milliseconds until the NEXT Tehran midnight (ADR-0070 §5): the
+ * retry-after for a quota_denied rewrite — the budget resets at the
+ * Tehran-day boundary, so no same-day retry can succeed. Always in
+ * (0, 24h]: at exactly midnight the next boundary is a full day away.
+ */
+export function msUntilNextTehranMidnight(nowMs: number): number {
+  const dayMs = 24 * 60 * 60 * 1000;
+  const shiftedMs = nowMs + TEHRAN_OFFSET_MINUTES * 60 * 1000;
+  const intoDayMs = ((shiftedMs % dayMs) + dayMs) % dayMs;
+  const remaining = dayMs - intoDayMs;
+  return remaining > 0 ? remaining : dayMs;
+}

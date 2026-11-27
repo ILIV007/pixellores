@@ -69,6 +69,7 @@
  * primary + fallback, and neuron cost stays well under the 10,000/day
  * free cap (~11 neurons/call at 384 tokens).
  *
+<<<<<<< HEAD
  * ai-policy-v2.2.1 (2026-11-22, ADR-0067) — Gemini direct-fallback
  * wiring, models only (bounds unchanged). The allowlist's Gemini entry
  * moves from the legacy-gated gemini-2.5-flash-lite to the trio above
@@ -103,6 +104,15 @@
  * (cap − reserve) and defers typed `budget_pressure` (retryable)
  * instead of riding to the terminal hard denial, leaving bounded
  * headroom against accounting drift and one-shot operator probes.
+ * ai-policy-v2.3 + prompt v3 (2026-11-27, ADR-0070, rebased onto
+ * PR #30) — Gemini-as-ADMIN rewrite stage. Prompt v2 → v3: the Soul
+ * v1 voice/form rules (6–7) LEAVE the draft prompt — Workers AI does
+ * RAW extraction only now (plain factual Persian headline + summary +
+ * claims; no categoryEmoji/trustLabel in the output schema). The Soul
+ * moves to the Gemini-only rewrite prompt v1 (pixel-news-rewrite-v1).
+ * The POLICY version stays v2.3 (the failover's version — v2.3 is no
+ * longer reserved, it landed as PR #30; the rewrite rides it and the
+ * PROMPT version carries this change).
  */
 
 import type { AiProvider } from './types';
@@ -111,10 +121,18 @@ import type { AiProvider } from './types';
 export const AI_POLICY_VERSION = 'ai-policy-v2.3';
 
 /** Version marker for the shipped prompt contract (see ./prompt.ts).
- * v2 (ADR-0066): the Soul v1 voice rules + the category-emoji/trust-label
- * output fields. v1 prompts are still readable history — the version is
- * stamped on every ai_run, so a v1/v2 mix is always attributable. */
-export const AI_PROMPT_VERSION = 'pixel-news-draft-v2';
+ * v3 (ADR-0070): raw-extraction-only — the Soul v1 voice rules + the
+ * category-emoji/trust-label output fields LEFT this prompt for the
+ * Gemini-only rewrite prompt v1. v2 prompts are still readable history
+ * — the version is stamped on every ai_run, so a v2/v3 mix is always
+ * attributable. */
+export const AI_PROMPT_VERSION = 'pixel-news-draft-v3';
+
+/** Rewrite-stage bounds (ADR-0070 §4–§5): Gemini-only, 1024 output
+ * tokens (headline + summary + two enum fields); at most 2 rewrite
+ * invocations per draft, then the document is marked rewrite.failed. */
+export const AI_REWRITE_MAX_OUTPUT_TOKENS = 1024;
+export const AI_REWRITE_MAX_ATTEMPTS_PER_DRAFT = 2;
 
 /** Validated, testable application bounds (round 1.10.6 instruction §3). */
 export const AI_BOUNDS = {

@@ -12,7 +12,6 @@
  */
 
 import { z } from 'zod';
-import { SOUL_CATEGORY_EMOJIS, SOUL_TRUST_LABELS } from './types';
 
 /** Maximum generated claims per draft (bounded output contract). */
 export const AI_DRAFT_CLAIMS_MAX = 10;
@@ -21,15 +20,15 @@ export const AI_DRAFT_CLAIMS_MAX = 10;
 export const AI_DRAFT_CLAIM_EVIDENCE_MAX = 8;
 
 /** Shape the model must emit for the news-draft task (versioned).
- * Prompt v2 (Soul v1 §3): the model also picks exactly ONE category
- * emoji and ONE trust label from the FIXED Soul vocabularies — the
- * render owns their display, the draft only carries the choice. */
+ * Prompt v3 (ADR-0070, raw extraction only): the model emits a plain
+ * factual headline + summary + claims — NO categoryEmoji, NO trustLabel.
+ * The Soul v1 form choice moved to the Gemini-only rewrite prompt v1;
+ * a v2-shaped output (with those fields) now fails this strict schema
+ * as invalid_output. */
 export const aiSemanticDraftSchema = z
   .object({
     headlineFa: z.string().min(1).max(200),
     summaryFa: z.string().min(1).max(1000),
-    categoryEmoji: z.enum(SOUL_CATEGORY_EMOJIS),
-    trustLabel: z.enum(SOUL_TRUST_LABELS),
     claims: z
       .array(
         z

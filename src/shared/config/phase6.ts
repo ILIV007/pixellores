@@ -14,6 +14,14 @@
  *   eligibility as PARTIAL since ADR-0067 (the free tier exists per the
  *   2026-11-21 doc-check; the per-project quota is unpublished), so the
  *   flag is the operator opt-in and the 40/day app cap is the bound.
+ * - `AI_GEMINI_REWRITE_ENABLED` ('true' | 'false', default 'false') is
+ *   the INDEPENDENT fail-closed gate for the Gemini-only Soul rewrite
+ *   stage (ADR-0070). It NEVER implies `AI_GEMINI_ENABLED` and is never
+ *   implied by it: the rewrite requires BOTH flags on, plus a present
+ *   key, plus `partial_free_tier` eligibility. While OFF: zero rewrite
+ *   provider calls, zero rewrite jobs enqueued, and the bridge behaves
+ *   exactly as today (raw drafts publish) — the flag is the kill-switch.
+ *   Go-live requires a proven LIVE rewrite (ADR-0070 §10), never a hope.
  * - `GEMINI_API_BASE_URL` (optional string, default the official origin)
  *   is the operator-controlled Gemini API origin (ADR-0067): strict
  *   https-only, no credentials/query/fragment. It exists so a relay/proxy
@@ -81,6 +89,17 @@ export const PHASE_6_CONFIG_SPEC: ConfigSpec = defineConfigSpec([
     phase: 6,
   },
   {
+    name: 'AI_GEMINI_REWRITE_ENABLED',
+    type: 'enum',
+    required: false,
+    secret: false,
+    allowed: [...AI_FLAG_VALUES],
+    default: 'false',
+    description:
+      'Gemini-only Soul rewrite stage gate (non-secret; ADR-0070). INDEPENDENT of AI_GEMINI_ENABLED — the rewrite requires BOTH flags on plus a present key plus partial_free_tier eligibility. Default false: the stage is inert until a live rewrite is proven.',
+    phase: 6,
+  },
+  {
     name: 'GEMINI_API_BASE_URL',
     type: 'string',
     required: false,
@@ -129,6 +148,7 @@ export const PHASE_6_CONFIG_SPEC: ConfigSpec = defineConfigSpec([
 export interface AiConfig {
   readonly AI_ENABLED: boolean;
   readonly AI_GEMINI_ENABLED: boolean;
+  readonly AI_GEMINI_REWRITE_ENABLED: boolean;
   readonly EVENT_RELATION_ENABLED: boolean;
   /**
    * Resolved Gemini API origin (validated or the official default). An
@@ -156,6 +176,7 @@ export function parseAiConfig(env: Readonly<Record<string, unknown>>): {
     config: {
       AI_ENABLED: result.config.AI_ENABLED === 'true',
       AI_GEMINI_ENABLED: result.config.AI_GEMINI_ENABLED === 'true',
+      AI_GEMINI_REWRITE_ENABLED: result.config.AI_GEMINI_REWRITE_ENABLED === 'true',
       EVENT_RELATION_ENABLED: result.config.EVENT_RELATION_ENABLED === 'true',
       GEMINI_API_BASE_URL: result.config.GEMINI_API_BASE_URL ?? GEMINI_API_BASE_URL_DEFAULT,
       AI_FAILOVER_ENABLED: result.config.AI_FAILOVER_ENABLED === 'true',

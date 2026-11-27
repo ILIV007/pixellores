@@ -75,7 +75,9 @@ import { createJobsEngine, DEFAULT_ENGINE_BOUNDS, type JobsEngine } from './engi
 import { createMaintenanceHeartbeatHandler } from './handlers/maintenance-heartbeat';
 import { createSourcePollHandler } from '../ingestion/poll-handler';
 import { createEditorialPrepareDraftHandler } from '../editorial/prepare-draft-handler';
+import { createEditorialRewriteDraftHandler } from '../editorial/rewrite-draft-handler';
 import { createAiDraftService } from '../ai/draft-service';
+import { createAiRewriteService } from '../ai/rewrite-service';
 import { createEventRelationService } from '../ai/event-relation-service';
 import { createWorkersAiAdapter } from '../../adapters/ai/workers-ai-adapter';
 import { createGeminiAdapter } from '../../adapters/ai/gemini-adapter';
@@ -91,6 +93,12 @@ export type EngineResolution =
       readonly engine: JobsEngine;
       readonly ingestionEnabled: boolean;
       readonly editorialEnabled: boolean;
+      /**
+       * ADR-0070: the Gemini rewrite stage flag, resolved once per
+       * invocation — threaded to the bridge seam (Link 4) so a ready
+       * draft is bridged only after its Soul rewrite landed.
+       */
+      readonly rewriteEnabled: boolean;
     };
 
 /**
@@ -273,6 +281,25 @@ export function resolveJobsEngine(env: WorkerEnv, logger?: Logger): EngineResolu
         geminiApiKeyPresent: env.GEMINI_API_KEY !== undefined,
       },
     });
+    // ADR-0070: the Gemini-ONLY Soul rewrite service shares the SAME
+    // ports/budget authority (the SAME gemini 40/day bucket — a rewrite
+    // never bypasses the shared cap). Its effective gate is the GLOBAL
+    // AI_ENABLED kill switch AND the ladder flag AI_GEMINI_ENABLED AND
+    // the independent AI_GEMINI_REWRITE_ENABLED stage flag — ALL
+    // fail-closed, ALL passed here so the service's own layered defense
+    // holds in production wiring (a single flag never opens the stage).
+    const rewriteService = createAiRewriteService({
+      executor,
+      ports,
+      clock,
+      logger: logger ?? createFallbackLogger(),
+      config: {
+        aiEnabled: ai.config.AI_ENABLED,
+        geminiEnabled: ai.config.AI_GEMINI_ENABLED,
+        rewriteEnabled: ai.config.AI_GEMINI_REWRITE_ENABLED,
+        geminiApiKeyPresent: env.GEMINI_API_KEY !== undefined,
+      },
+    });
     handlers.push(
       createEditorialPrepareDraftHandler({
         executor,
@@ -330,6 +357,27 @@ export function resolveJobsEngine(env: WorkerEnv, logger?: Logger): EngineResolu
           // EDITORIAL_ENABLED or AI_ENABLED.
           enabled: true,
         },
+        rewrite: {
+          // ADR-0070: the rewrite job is enqueued at draft creation ONLY
+          // while the independent stage flag is on. OFF (the shipped
+          // default) ⇒ no rewrite job is ever created and the handler
+          // keeps its exact prior behavior.
+          enabled: ai.config.AI_GEMINI_REWRITE_ENABLED,
+        },
+        nowMs: () => clock.now(),
+        logger,
+      }) as never,
+    );
+    // ADR-0070: the rewrite handler is registered ONLY while the
+    // editorial gate is on (same gate as prepare-draft — the
+    // JOB_ENABLEMENT_POLICY pauses the type losslessly when off).
+    // It wires the Gemini-only rewrite service above; the stage flag
+    // itself is re-checked by the handler at execution time.
+    handlers.push(
+      createEditorialRewriteDraftHandler({
+        executor,
+        rewriteService,
+        rewriteEnabled: ai.config.AI_GEMINI_REWRITE_ENABLED,
         nowMs: () => clock.now(),
         logger,
       }) as never,
@@ -355,7 +403,13 @@ export function resolveJobsEngine(env: WorkerEnv, logger?: Logger): EngineResolu
     },
     DEFAULT_ENGINE_BOUNDS,
   );
-  return { kind: 'ready', engine, ingestionEnabled, editorialEnabled };
+  return {
+    kind: 'ready',
+    engine,
+    ingestionEnabled,
+    editorialEnabled,
+    rewriteEnabled: ai.config.AI_GEMINI_REWRITE_ENABLED,
+  };
 }
 
 /**

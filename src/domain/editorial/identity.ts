@@ -155,6 +155,47 @@ export async function aiRunIdForRelationAttempt(
   ]);
 }
 
+/**
+ * ADR-0070 — deterministic ai_runs row id for ONE rewrite invocation:
+ * seeded with the rewrite job id, its generation, and the invocation's
+ * attempt ordinal, so a rewrite run NEVER collides with the news_draft
+ * run of the prepare-draft job, with another draft's rewrite, or with a
+ * second invocation of the same rewrite job. Each real rewrite
+ * invocation stays its own auditable row (task 'news_rewrite').
+ */
+export async function aiRunIdForRewriteAttempt(
+  jobId: string,
+  generation: number,
+  attemptIndex: number,
+): Promise<string> {
+  return prefixedId(AI_RUN_ID_PREFIX, [
+    'ai_run_news_rewrite',
+    jobId,
+    String(generation),
+    String(attemptIndex),
+  ]);
+}
+
+/**
+ * ADR-0070 — deterministic idempotency key for ONE draft's rewrite job:
+ * one draft has at most ONE rewrite job — re-enqueueing the same draft
+ * resolves the SAME job row (`jobs.idempotency_key` UNIQUE), never a
+ * second rewrite pipeline for the same draft.
+ */
+export async function editorialRewriteDraftIdempotencyKey(draftId: string): Promise<string> {
+  return formatIdempotencyKey('editorial.rewrite_draft', [EDITORIAL_IDENTITY_VERSION, draftId]);
+}
+
+/**
+ * ADR-0070 — deterministic durable job id for ONE draft's rewrite job
+ * (derived from the draft id, never from randomness or wall-clock time,
+ * so the prepare-draft handler can create the job row without an id
+ * generator — the engine's dispatch scan picks the pending row up).
+ */
+export async function rewriteJobIdForDraft(draftId: string): Promise<string> {
+  return prefixedId('edrw', ['rewrite_job', draftId]);
+}
+
 /** Draft version produced by THIS phase (one snapshot → one v1 draft). */
 export const EDITORIAL_DRAFT_VERSION = 1;
 
