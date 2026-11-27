@@ -305,6 +305,7 @@ describe('publishing-82 scheduler policy: the deterministic per-candidate jitter
           recentCategories: [],
           sameGame: null,
           eventDriven: false,
+          alternativeCategoryAvailable: true,
         });
         expect(decision.ok).toBe(true);
         if (decision.ok) {

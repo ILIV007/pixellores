@@ -546,3 +546,30 @@ immediately. There is no held-approved queue — the preview token is
 single-use and the service cannot re-show a preview later, so a
 separate hold step would strand the post. If the owner wants a distinct
 hold step, that is follow-up work, not part of this change.
+
+---
+
+## OD-024 — Cap/guide/rewrite deferrals record no progress (mixed-pool head-block) — **Open**
+
+**Context:** ADR-0076 exempts the category cap when the candidate pool
+holds no alternative category — which unblocks tonight's
+single-category queue completely. But a deferral (cap, guide lane, or
+rewrite seam) still writes NOTHING to `draft_gate_evaluations`: the
+draft stays `ready` with `consecutive_failures` reset to 0 (the
+eligible gate row is recorded before the lane/cap step), so it keeps
+its place at the front of the progress-ordered scan. In a MIXED pool,
+five deferred drafts at the front can head-block an alternative
+sitting behind them (scan limit 5) — the same shape as the ADR-0074
+livelock, one layer down.
+
+**Decision (deferred):** record every deferral as a distinct outcome
+(e.g. `last_outcome = 'deferred'` with reason `category_share_cap` /
+`guide_lane` / `rewrite_deferred`) and let the scan order sink
+repeatedly-deferred drafts below unevaluated ones. This needs the
+`last_outcome` CHECK in migration 0013 widened, i.e. migration 0014
+(schema 13 → 14) plus the UPSERT CASE update — a schema change, so it
+ships as its own PR, not smuggled into the ADR-0076 code-only fix.
+Tonight's queue is single-category, so no deferral can occur tonight;
+the follow-up matters once ingestion diversifies the queue.
+
+**Status:** Open — follow-up after the 09:00 review.

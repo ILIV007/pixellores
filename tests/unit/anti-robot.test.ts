@@ -357,6 +357,7 @@ describe('enforceCategoryShare — 40% of the rolling six, exact integer math', 
       category: 'mods',
       recent: [],
       eventDriven: false,
+      alternativeCategoryAvailable: true,
     });
     if (!zero.ok) throw new Error(zero.reason);
     expect(zero.value).toEqual({
@@ -371,6 +372,7 @@ describe('enforceCategoryShare — 40% of the rolling six, exact integer math', 
       category: 'mods',
       recent: [cat('mods', 10)],
       eventDriven: false,
+      alternativeCategoryAvailable: true,
     });
     if (!one.ok) throw new Error(one.reason);
     expect(one.value.allowed).toBe(true);
@@ -381,6 +383,7 @@ describe('enforceCategoryShare — 40% of the rolling six, exact integer math', 
       category: 'mods',
       recent: [cat('mods', 10), cat('mods', 30)],
       eventDriven: false,
+      alternativeCategoryAvailable: true,
     });
     if (!two.ok) throw new Error('expected a decision');
     expect(two.value).toEqual({
@@ -396,9 +399,56 @@ describe('enforceCategoryShare — 40% of the rolling six, exact integer math', 
       category: 'mods',
       recent: [cat('mods', 10), cat('mods', 30)],
       eventDriven: true,
+      alternativeCategoryAvailable: true,
     });
     if (!twoEventDriven.ok) throw new Error(twoEventDriven.reason);
     expect(twoEventDriven.value.allowed).toBe(true);
+  });
+
+  it('ADR-0076 — a single-category pool admits the candidate: the cap cannot shape a mix that does not exist', () => {
+    // The live Nov-27 case: a 2-post mainstream trail, and the pool
+    // holds nothing but mainstream — deferring would stall the channel
+    // forever (the trail can never dilute without a publication).
+    const singlePool = enforceCategoryShare({
+      nowMs: NOW,
+      category: 'mainstream_industry',
+      recent: [cat('mainstream_industry', 10), cat('mainstream_industry', 30)],
+      eventDriven: false,
+      alternativeCategoryAvailable: false,
+    });
+    if (!singlePool.ok) throw new Error(singlePool.reason);
+    expect(singlePool.value.allowed).toBe(true);
+    expect(singlePool.value.rollingCount).toBe(2);
+
+    // The SAME trail with an alternative in the pool still defers —
+    // the cap keeps shaping the mix whenever shaping is possible.
+    const mixedPool = enforceCategoryShare({
+      nowMs: NOW,
+      category: 'mainstream_industry',
+      recent: [cat('mainstream_industry', 10), cat('mainstream_industry', 30)],
+      eventDriven: false,
+      alternativeCategoryAvailable: true,
+    });
+    if (!mixedPool.ok) throw new Error('expected a decision');
+    expect(mixedPool.value).toEqual({
+      allowed: false,
+      reason: 'category_share_cap',
+      rollingCount: 2,
+      windowSize: 6,
+      maxAllowedCount: 2,
+    });
+  });
+
+  it('input contract: a non-boolean alternativeCategoryAvailable fails invalid_input', () => {
+    expect(
+      enforceCategoryShare({
+        nowMs: NOW,
+        category: 'mods',
+        recent: [],
+        eventDriven: false,
+        alternativeCategoryAvailable: 'yes' as unknown as boolean,
+      }),
+    ).toEqual({ ok: false, reason: 'invalid_input' });
   });
 
   it('the rolling window takes the SIX MOST RECENT — an old same-category post outside the window must NOT count', () => {
@@ -418,6 +468,7 @@ describe('enforceCategoryShare — 40% of the rolling six, exact integer math', 
       category: 'mods',
       recent,
       eventDriven: false,
+      alternativeCategoryAvailable: true,
     });
     if (!result.ok) throw new Error(result.reason);
     expect(result.value.rollingCount).toBe(1);
@@ -426,7 +477,13 @@ describe('enforceCategoryShare — 40% of the rolling six, exact integer math', 
 
   it('the category vocabulary is CLOSED: an unknown category fails unknown_category', () => {
     expect(
-      enforceCategoryShare({ nowMs: NOW, category: 'gossip', recent: [], eventDriven: false }),
+      enforceCategoryShare({
+        nowMs: NOW,
+        category: 'gossip',
+        recent: [],
+        eventDriven: false,
+        alternativeCategoryAvailable: true,
+      }),
     ).toEqual({ ok: false, reason: 'unknown_category' });
     expect(
       enforceCategoryShare({
@@ -434,6 +491,7 @@ describe('enforceCategoryShare — 40% of the rolling six, exact integer math', 
         category: 'mods',
         recent: [cat('gossip', 1)],
         eventDriven: false,
+        alternativeCategoryAvailable: true,
       }),
     ).toEqual({ ok: false, reason: 'unknown_category' });
   });
@@ -445,11 +503,18 @@ describe('enforceCategoryShare — 40% of the rolling six, exact integer math', 
         category: 'mods',
         recent: [cat('mods', -1)],
         eventDriven: false,
+        alternativeCategoryAvailable: true,
       }),
     ).toEqual({ ok: false, reason: 'invalid_input' });
     const tooMany = Array.from({ length: 513 }, (_, index) => cat('mods', index + 1));
     expect(
-      enforceCategoryShare({ nowMs: NOW, category: 'mods', recent: tooMany, eventDriven: false }),
+      enforceCategoryShare({
+        nowMs: NOW,
+        category: 'mods',
+        recent: tooMany,
+        eventDriven: false,
+        alternativeCategoryAvailable: true,
+      }),
     ).toEqual({ ok: false, reason: 'invalid_input' });
   });
 });

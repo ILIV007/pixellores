@@ -249,6 +249,25 @@ export async function listReadyDraftsForBridge(
   return rows.rows;
 }
 
+/**
+ * ADR-0076 — the DISTINCT story content types behind the READY pool,
+ * for the category cap's single-category-pool exemption: the cap can
+ * only shape a mix when the pool holds another category. One bounded
+ * indexed scan per bridge pass (the pool is the WHOLE ready set, not
+ * the scanned five — a five-draft window cannot see the alternatives
+ * behind it).
+ */
+export async function listReadyDraftContentTypes(executor: DbExecutor): Promise<readonly string[]> {
+  const rows = await executor.query<{ content_type: string }>({
+    sql: `SELECT DISTINCT s.content_type AS content_type
+            FROM drafts d
+            JOIN stories s ON s.id = d.story_id
+           WHERE d.status = 'ready'`,
+    params: [],
+  });
+  return rows.rows.map((row) => row.content_type);
+}
+
 /** The source-item fields the fact-guard re-evaluation rebuilds from. */
 export interface SourceItemForReevaluation {
   readonly id: string;

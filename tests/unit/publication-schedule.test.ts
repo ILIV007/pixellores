@@ -71,6 +71,7 @@ function baseInput(
     recentCategories: [],
     sameGame: null,
     eventDriven: false,
+    alternativeCategoryAvailable: true,
     ...overrides,
   };
 }
@@ -501,6 +502,30 @@ describe('the non-time-resolvable caps defer with dueAtMs NULL', () => {
       rule: 'category_share_cap',
       rollingCount: 2,
       result: 'bypassed_event_driven',
+    });
+  });
+
+  it('ADR-0076 — a single-category pool schedules despite the cap (bypassed_single_category_pool)', () => {
+    const now = tehranAt(2026, 11, 11, 10, 0);
+    const recentCategories = [
+      { category: 'mods', atMs: now - 5 * MIN },
+      { category: 'mods', atMs: now - 30 * MIN },
+    ];
+    const allowed = schedule(
+      planPublicationTime(
+        baseInput({
+          nowMs: now,
+          category: 'mods',
+          recentCategories,
+          alternativeCategoryAvailable: false,
+        }),
+      ),
+    );
+    expect(allowed.dueAtMs).toBe(now);
+    expect(allowed.appliedRules).toContainEqual({
+      rule: 'category_share_cap',
+      rollingCount: 2,
+      result: 'bypassed_single_category_pool',
     });
   });
 

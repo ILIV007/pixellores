@@ -354,12 +354,28 @@ export interface CategoryShareInput {
   readonly recent: readonly CategoryHistoryEntry[];
   /** The EXPLICIT story-layer event-driven flag — never inferred. */
   readonly eventDriven: boolean;
+  /**
+   * ADR-0076 — the EXPLICIT pool fact, never inferred: false when the
+   * candidate pool holds NO classifiable draft/publication of a mix
+   * category OTHER than the candidate's. The cap is a MIX-SHAPING
+   * rule: it defers the over-represented category so another category
+   * can take its place. When no alternative exists there is no mix to
+   * shape — deferring would only throttle the channel's only content,
+   * and a single-category pool stalls forever (the trail can never
+   * dilute without a publication, and no publication can ever happen:
+   * the Nov-27 live case — a 2-post `mainstream_industry` trail plus
+   * an all-`industry` ready queue, every pass deferring every draft).
+   * With the flag false the candidate is admitted whatever the count.
+   */
+  readonly alternativeCategoryAvailable: boolean;
 }
 
 /**
  * The 40%-of-rolling-six cap with EXACT integer math: the candidate
  * is admitted iff (rollingCount + 1) ≤ 2 (at most 2 of any six
- * window), unless the story layer asserted `eventDriven`. The
+ * window), unless the story layer asserted `eventDriven`, or unless
+ * the candidate pool holds no alternative category (ADR-0076 — the
+ * cap cannot shape a mix that does not exist). The
  * rolling six are the six most recent entries by atMs (ties broken
  * by the earlier input position — deterministic, never by array
  * luck).
@@ -371,6 +387,9 @@ export function enforceCategoryShare(input: CategoryShareInput): CategoryShareRe
     return { ok: false, reason: 'unknown_category' };
   }
   if (typeof input.eventDriven !== 'boolean') return { ok: false, reason: 'invalid_input' };
+  if (typeof input.alternativeCategoryAvailable !== 'boolean') {
+    return { ok: false, reason: 'invalid_input' };
+  }
   if (!Array.isArray(input.recent) || input.recent.length > MAX_CATEGORY_HISTORY) {
     return { ok: false, reason: 'invalid_input' };
   }
@@ -392,7 +411,11 @@ export function enforceCategoryShare(input: CategoryShareInput): CategoryShareRe
   const rollingCount = ordered.filter((item) => item.entry.category === input.category).length;
   const windowSize = CATEGORY_ROLLING_WINDOW;
   const maxAllowedCount = CATEGORY_MAX_ALLOWED_COUNT;
-  if (rollingCount + 1 <= maxAllowedCount || input.eventDriven) {
+  if (
+    rollingCount + 1 <= maxAllowedCount ||
+    input.eventDriven ||
+    !input.alternativeCategoryAvailable
+  ) {
     return { ok: true, value: { allowed: true, rollingCount, windowSize, maxAllowedCount } };
   }
   return {
