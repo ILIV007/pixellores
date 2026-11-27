@@ -25,6 +25,17 @@
  *   the flag OFF the relation step performs ZERO retrieval, ZERO
  *   adjudication, and ZERO writes, and the accepted normal path stays
  *   intact. Only offline tests/demos turn it on with a fixture port.
+ * - `AI_FAILOVER_ENABLED` ('true' | 'false', default 'false';
+ *   ai-policy-v2.3) is the operator KILL SWITCH for the backup-account
+ *   failover path. While OFF the backup REST port is never built and
+ *   every ladder behaves exactly as v2.2. Flipping it OFF after a live
+ *   enable kills failover WITHOUT a redeploy. It never implies
+ *   AI_ENABLED — the global inference kill switch stays independent.
+ * - `BACKUP_CF_ACCOUNT_ID` (non-secret, optional; ai-policy-v2.3) is the
+ *   BACKUP Cloudflare account id for the Workers AI REST path. Strictly
+ *   format-validated when PRESENT (32 lowercase hex); a present-but-
+ *   invalid value fails the whole Phase 6 validation closed. The value
+ *   is operator configuration — never a code constant.
  *
  * Format validation runs whenever a value is PRESENT, regardless of the
  * flag (a present-but-invalid value is never silently ignored).
@@ -91,6 +102,27 @@ export const PHASE_6_CONFIG_SPEC: ConfigSpec = defineConfigSpec([
       'Event-relation adjudication task gate (non-secret; R1.17/ADR-0045). Independent fail-closed flag — never implies AI_ENABLED or EDITORIAL_ENABLED.',
     phase: 6,
   },
+  {
+    name: 'AI_FAILOVER_ENABLED',
+    type: 'enum',
+    required: false,
+    secret: false,
+    allowed: [...AI_FLAG_VALUES],
+    default: 'false',
+    description:
+      'Backup-account failover kill switch (non-secret; ai-policy-v2.3/ADR-0069). Default OFF — the backup REST port is built only when this is true AND the backup secret/var are present. Never implies AI_ENABLED.',
+    phase: 6,
+  },
+  {
+    name: 'BACKUP_CF_ACCOUNT_ID',
+    type: 'string',
+    required: false,
+    secret: false,
+    pattern: /^[0-9a-f]{32}$/,
+    description:
+      'Backup Cloudflare account id for the Workers AI REST failover path (non-secret; ai-policy-v2.3/ADR-0069). Strictly format-validated when present; the value is operator configuration, never a code constant.',
+    phase: 6,
+  },
 ]);
 
 /** Validated Phase 6 flag state (values only; no secrets involved). */
@@ -105,6 +137,10 @@ export interface AiConfig {
    * default instead of the invalid value.
    */
   readonly GEMINI_API_BASE_URL: string;
+  /** Backup-account failover kill switch (default OFF). */
+  readonly AI_FAILOVER_ENABLED: boolean;
+  /** The backup account id when present and format-valid, else null. */
+  readonly BACKUP_CF_ACCOUNT_ID: string | null;
 }
 
 /**
@@ -122,6 +158,8 @@ export function parseAiConfig(env: Readonly<Record<string, unknown>>): {
       AI_GEMINI_ENABLED: result.config.AI_GEMINI_ENABLED === 'true',
       EVENT_RELATION_ENABLED: result.config.EVENT_RELATION_ENABLED === 'true',
       GEMINI_API_BASE_URL: result.config.GEMINI_API_BASE_URL ?? GEMINI_API_BASE_URL_DEFAULT,
+      AI_FAILOVER_ENABLED: result.config.AI_FAILOVER_ENABLED === 'true',
+      BACKUP_CF_ACCOUNT_ID: result.config.BACKUP_CF_ACCOUNT_ID ?? null,
     },
     result,
   };

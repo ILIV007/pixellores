@@ -313,3 +313,46 @@ data is NOT deleted from D1: the document's `sourceReport` stays stored for
 provenance (and its shape is still validated) — it is simply never rendered.
 No ADR: no architecture changed, only rendered content, by explicit owner
 order.
+
+---
+
+## OD-012 — The AI presence slice: booleans in the admin panel, never a config inventory — **RECORDED (implemented)**
+
+**Question.** The owner wants to see THROUGH THE BOT whether the AI secrets
+are populated (Workers AI binding, `GEMINI_API_KEY`, the `AI_GEMINI_ENABLED`
+gate). Where may that surface live, and how much may it reveal?
+
+**Decision recorded (the presence slice, v2.3):** a new VIEWING-only admin
+panel screen `/menu ai` (bilingual strings, `panel.show_ai` single-use
+user-bound tokens, a Back button — the slice-3 screen grammar extended by
+one screen). The three booleans are computed at the EXISTING wiring sites
+with the SAME expressions the AI services already use
+(`env.AI !== undefined`, `env.GEMINI_API_KEY !== undefined`, and the
+validated `AI_GEMINI_ENABLED` flag from `parseAiConfig`) — no new detection
+path, no third place that decides what "present" means. They are injected
+into the panel service as an optional `aiPresence` record; without it the
+screen answers honestly that presence is unavailable in this deployment.
+
+**Explicit boundaries (why this shape):**
+
+1. **Booleans ONLY** — the screen renders present/absent and ON/off.
+   Secret values, key material, and any derived fingerprint never enter
+   code, logs, tests, or the reply text (repo AGENTS.md §3).
+2. **The admin panel ONLY** — the operator's Telegram UI behind the
+   fail-closed `ADMIN_PANEL_ENABLED` flag and `dashboard.view`. `/health`
+   is untouched ON PURPOSE: health intentionally carries no config
+   inventory, and a public readiness surface must never become a
+   configuration oracle.
+3. **Additive and inert** — no draft/publish/budget/queue code is touched,
+   no new flag, no new store read on any other screen's path, no R2. The Gemini ADAPTER is wired as a direct fallback (PR #28, ADR-0067):
+   the presence boolean says a key EXISTS, never that Gemini is usable —
+   eligibility is partial_free_tier (a free tier exists per official docs;
+   the per-project quota stays unverified) and the flag stays OFF until a
+   live test flips it.
+
+**Not decided here (deliberately open):** whether the owner later wants a
+push notification when presence changes (needs a comparison surface and a
+trigger policy — a new decision), or per-account failover presence
+(`AI_FAILOVER_ENABLED` + the backup token) on the same screen once the
+failover round goes live. The screen's record is shaped so both can be
+added as more booleans without a redesign.

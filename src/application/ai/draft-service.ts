@@ -13,26 +13,44 @@
  * 2. The request is Zod-validated and byte-bounded (≤16 KiB evidence
  *    UTF-8) BEFORE anything else; violations ⇒ typed deferred
  *    `input_invalid`.
- * 3. BEFORE any authorization the persistent AI circuit breaker is
- *    consulted: while OPEN the service returns typed deferred
- *    `circuit_open` with ZERO provider calls and ZERO charges
- *    (retryable later — the caller maps it onto its bounded retry).
- *    EVERY provider attempt requires a SUCCESSFUL DURABLE authorization
- *    through the per-provider budget store BEFORE the call. Denied ⇒
- *    charged-as-denied attempt and the provider is skipped (a CF denial
- *    skips ALL remaining CF models — the same shared provider bucket);
- *    store failure ⇒ typed deferred `budget_store_error`, never mistaken
- *    for quota. Charge-on-success: an attempt that ends WITHOUT a
- *    provider completion (deadline, provider unavailable/transient, auth
+ * 3. BEFORE any authorization the PRIMARY account's persistent AI
+ *    circuit breaker is consulted: while OPEN the service returns typed
+ *    deferred `circuit_open` with ZERO provider calls and ZERO charges
+ *    (retryable later — the caller maps it onto its bounded retry), and
+ *    an open PRIMARY breaker is NEVER a failover trigger (a broken
+ *    provider PATH must not burn the backup account on the same defect;
+ *    ADR-0069). The BACKUP account's breaker is checked per candidate
+ *    and skips only the backup candidates. Breakers are PER ACCOUNT
+ *    (ai-policy-v2.3, `ai.circuit_breaker.{provider}`). EVERY provider
+ *    attempt requires a SUCCESSFUL DURABLE authorization through the
+ *    per-provider budget store BEFORE the call. Denied ⇒ charged-as-
+ *    denied attempt and the provider is skipped (a CF denial skips ALL
+ *    remaining CF models of the SAME account — the same shared provider
+ *    bucket — while the BACKUP account's own bucket stays reachable:
+ *    that skip-by-provider-key IS the failover routing); store failure
+ *    ⇒ typed deferred `budget_store_error`, never mistaken for quota.
+ *    Charge-on-success: an attempt that ends WITHOUT a provider
+ *    completion (deadline, provider unavailable/transient, auth
  *    failure, or a grant that arrives after the deadline) is REFUNDED
  *    best-effort, one unit, floored at 0 — a refund failure never fails
- *    the run. A provider answer (success or invalid output) keeps the
- *    charge; a denied authorization never charged.
- * 4. Provider order: CF primary → CF alternate (only for suitable
- *    model-specific unavailable/retired/transient failures) → Gemini ONLY
- *    if its independent eligibility/budget/key are valid. A provider
- *    content/safety refusal is a TERMINAL typed refusal — no model or
- *    provider hopping to bypass safety.
+ *    the run, and refunds NEVER cross provider keys (a failed backup
+ *    attempt refunds the backup row only). A provider answer (success
+ *    or invalid output) keeps the charge; a denied authorization never
+ *    charged.
+ * 3b. Budget pressure (ai-policy-v2.3): the autonomous chain authorizes
+ *    against the EFFECTIVE cap (hard cap − reserve). A denial inside
+ *    the reserve window is typed `budget_pressure` (retryable — the
+ *    chain degrades early instead of riding to the terminal denial); a
+ *    denial at the hard cap stays the terminal `budget_denied`. A
+ *    granted authorization crossing the warning threshold logs the
+ *    sanitized `ai.budget.pressure_warning` event (visibility only).
+ * 4. Provider order (ai-policy-v2.3): CF primary → CF alternate (only
+ *    for suitable model-specific unavailable/retired/transient failures)
+ *    → CF BACKUP primary → CF BACKUP alternate (the REST failover port;
+ *    reached ONLY when the operator kill switch is on AND the port is
+ *    wired) → Gemini ONLY if its independent eligibility/budget/key are
+ *    valid. A provider content/safety refusal is a TERMINAL typed
+ *    refusal — no model or provider hopping to bypass safety.
  * 5. Bounds: ≤3 provider calls, ≤2048 output tokens
  *    (AI_BOUNDS.maxOutputTokens, ai-policy-v2.2), and a TOTAL wall
  *    deadline (injected clock) bounding EVERY await in this service path
@@ -76,13 +94,18 @@ import {
   recordAiCircuitBreakerFailure,
   recordAiCircuitBreakerSuccess,
 } from './ai-circuit-breaker';
+import { buildAiCandidateLadder } from './ai-ladder';
+import {
+  classifyAiBudgetDenial,
+  effectiveAutonomousCap,
+  noteBudgetPressureWarning,
+} from './ai-budget-pressure';
 import {
   AI_BOUNDS,
   AI_DAILY_REQUEST_ATTEMPT_CAPS,
   AI_POLICY_VERSION,
   AI_PROMPT_VERSION,
   defaultProviderEligibility,
-  listModelsForProvider,
 } from '../../domain/ai/policy';
 import { buildNewsDraftSystemPrompt, buildNewsDraftUserPrompt } from '../../domain/ai/prompt';
 import { parseAiSemanticDraftJson } from '../../domain/ai/schema';
@@ -121,6 +144,14 @@ export interface AiDraftServiceConfig {
   readonly aiEnabled: boolean;
   /** Validated AI_GEMINI_ENABLED operator gate (parseAiConfig). */
   readonly geminiEnabled: boolean;
+  /**
+   * Validated AI_FAILOVER_ENABLED operator kill switch (parseAiConfig,
+   * ai-policy-v2.3). Backup candidates run only when this is on AND the
+   * backup REST port is wired — BOTH gates fail closed. Optional with a
+   * default OFF (the flag's own fail-closed default), so callers that
+   * predate failover keep today's behavior exactly.
+   */
+  readonly failoverEnabled?: boolean;
   /** Whether the native Workers AI binding is present in the runtime. */
   readonly workersAiBindingPresent: boolean;
   /** Whether a Gemini API key is configured (presence only — never the value). */
@@ -193,27 +224,6 @@ export function createAiDraftService(deps: AiDraftServiceDeps): AiDraftService {
     const startedAt = deps.clock.now();
     const deadlineAtMs = startedAt + AI_BOUNDS.totalWallDeadlineMs;
 
-    // ---- Gate 3: the persistent AI circuit breaker — consulted BEFORE
-    // any authorization, so an open breaker means ZERO provider calls
-    // and ZERO charges. A failed breaker READ fails open (closed): the
-    // provider path still has its own budget/deadline guards, and a
-    // settings outage must not block drafting by itself. The check is a
-    // single indexed settings read; it is NOT deadline-bounded (the
-    // handler's own pre-AI D1 reads are not either) — the wall deadline
-    // still bounds everything after it.
-    try {
-      const breaker = await checkAiCircuitBreaker(deps.executor, startedAt);
-      if (!breaker.allow) {
-        deps.logger.info('ai.draft.circuit_open', {
-          consecutiveFailures: breaker.snapshot.consecutiveFailures,
-          openedAtMs: breaker.snapshot.openedAtMs,
-        });
-        return { kind: 'deferred', reason: 'circuit_open', attempts: [] };
-      }
-    } catch {
-      deps.logger.warn('ai.draft.circuit_breaker_check_failed');
-    }
-
     /**
      * Best-effort refund of THIS attempt's charge (charge-on-success):
      * called only when the attempt ended WITHOUT a provider completion.
@@ -231,23 +241,25 @@ export function createAiDraftService(deps: AiDraftServiceDeps): AiDraftService {
       }
     };
     /**
-     * Best-effort breaker bookkeeping. Failures count ONLY provider
-     * failures (transient / model_unavailable / deadline_exceeded);
-     * quota denials, auth failures, refusals and invalid output never
-     * move the counter. A failed record never fails the run.
+     * Best-effort breaker bookkeeping on the CANDIDATE's OWN account
+     * breaker (`ai.circuit_breaker.{provider}` — per account,
+     * ai-policy-v2.3). Failures count ONLY provider failures (transient /
+     * model_unavailable / deadline_exceeded); quota denials, auth
+     * failures, refusals and invalid output never move the counter. A
+     * failed record never fails the run.
      */
-    const noteBreakerFailure = async (): Promise<void> => {
+    const noteBreakerFailure = async (provider: AiProvider): Promise<void> => {
       try {
-        await recordAiCircuitBreakerFailure(deps.executor, deps.clock.now());
+        await recordAiCircuitBreakerFailure(deps.executor, deps.clock.now(), provider);
       } catch {
-        deps.logger.warn('ai.draft.circuit_breaker_record_failed');
+        deps.logger.warn('ai.draft.circuit_breaker_record_failed', { provider });
       }
     };
-    const noteBreakerSuccess = async (): Promise<void> => {
+    const noteBreakerSuccess = async (provider: AiProvider): Promise<void> => {
       try {
-        await recordAiCircuitBreakerSuccess(deps.executor, deps.clock.now());
+        await recordAiCircuitBreakerSuccess(deps.executor, deps.clock.now(), provider);
       } catch {
-        deps.logger.warn('ai.draft.circuit_breaker_record_failed');
+        deps.logger.warn('ai.draft.circuit_breaker_record_failed', { provider });
       }
     };
 
@@ -258,6 +270,8 @@ export function createAiDraftService(deps: AiDraftServiceDeps): AiDraftService {
     let providerCalls = 0;
     let knownRetryAfterMs = 0;
     let geminiSkippedIneligible = false;
+    let sawHardQuotaDenial = false;
+    let sawReservePressure = false;
 
     const record = (
       candidate: Candidate,
@@ -281,38 +295,27 @@ export function createAiDraftService(deps: AiDraftServiceDeps): AiDraftService {
       });
     };
 
-    // ---- Candidate ladder (versioned allowlist order).
-    const candidates: Candidate[] = [];
-    for (const model of [
-      ...listModelsForProvider('workers-ai'),
-      ...listModelsForProvider('gemini'),
-    ]) {
-      if (skippedProviders.has(model.provider)) {
-        continue;
-      }
-      if (model.provider === 'workers-ai') {
-        if (!deps.config.workersAiBindingPresent || deps.ports['workers-ai'] === undefined) {
-          skippedProviders.add('workers-ai');
-          continue;
-        }
-      } else {
-        if (!deps.config.geminiEnabled) {
-          skippedProviders.add('gemini');
-          continue;
-        }
-        if (!deps.config.geminiApiKeyPresent || deps.ports.gemini === undefined) {
-          skippedProviders.add('gemini');
-          continue;
-        }
-        if (!eligibility.gemini) {
-          // Unknown eligibility => typed unavailability, zero network.
-          skippedProviders.add('gemini');
-          geminiSkippedIneligible = true;
-          continue;
-        }
-      }
-      candidates.push({ provider: model.provider, modelId: model.modelId });
-    }
+    // ---- Candidate ladder (the SHARED versioned-policy builder,
+    // ai-policy-v2.3): Workers AI primary → Workers AI alternate →
+    // Workers AI BACKUP primary → Workers AI BACKUP alternate →
+    // (conditional) Gemini. The backup candidates gate on BOTH the
+    // operator kill switch AND the wired REST port (fail-closed). Pure
+    // and synchronous — no D1, no clock, no network.
+    const ladder = buildAiCandidateLadder({
+      workersAiPrimaryPresent:
+        deps.config.workersAiBindingPresent && deps.ports['workers-ai'] !== undefined,
+      failoverEnabled: deps.config.failoverEnabled === true,
+      backupPortPresent: deps.ports['workers-ai-backup'] !== undefined,
+      geminiEnabled: deps.config.geminiEnabled,
+      geminiKeyPresent: deps.config.geminiApiKeyPresent,
+      geminiPortPresent: deps.ports.gemini !== undefined,
+      geminiEligible: eligibility.gemini,
+    });
+    const candidates: Candidate[] = ladder.candidates.map((candidate) => ({
+      provider: candidate.provider,
+      modelId: candidate.modelId,
+    }));
+    geminiSkippedIneligible = ladder.geminiSkippedIneligible;
 
     if (candidates.length === 0) {
       return {
@@ -320,6 +323,34 @@ export function createAiDraftService(deps: AiDraftServiceDeps): AiDraftService {
         reason: classifyZeroCandidates(deps.config, eligibility, geminiSkippedIneligible),
         attempts,
       };
+    }
+
+    // ---- Gate 3: the PRIMARY account's persistent AI circuit breaker —
+    // consulted BEFORE any authorization, so an open breaker means ZERO
+    // provider calls and ZERO charges. Checked only when the ladder
+    // contains primary candidates: a missing binding means the primary
+    // breaker's stale state must not mask the typed binding_missing or
+    // the backup path (ADR-0069 §6). An open PRIMARY breaker is NEVER a
+    // failover trigger — the outcome is typed `circuit_open` with zero
+    // failover and zero charges (a broken provider PATH must not burn
+    // the backup on the same defect). The BACKUP account's breaker is
+    // checked per candidate INSIDE the loop below. A failed breaker READ
+    // fails open (closed): the provider path still has its own
+    // budget/deadline guards, and a settings outage must not block
+    // drafting by itself.
+    if (candidates.some((candidate) => candidate.provider === 'workers-ai')) {
+      try {
+        const breaker = await checkAiCircuitBreaker(deps.executor, startedAt, 'workers-ai');
+        if (!breaker.allow) {
+          deps.logger.info('ai.draft.circuit_open', {
+            consecutiveFailures: breaker.snapshot.consecutiveFailures,
+            openedAtMs: breaker.snapshot.openedAtMs,
+          });
+          return { kind: 'deferred', reason: 'circuit_open', attempts: [] };
+        }
+      } catch {
+        deps.logger.warn('ai.draft.circuit_breaker_check_failed');
+      }
     }
 
     const portFor = (provider: AiProvider): AiProviderPort => {
@@ -357,6 +388,29 @@ export function createAiDraftService(deps: AiDraftServiceDeps): AiDraftService {
         record(candidate, 'skipped_provider_failed', 0);
         continue;
       }
+      // ---- Per-account breaker for the NON-primary providers
+      // (ai-policy-v2.3): the PRIMARY breaker was already consulted at
+      // gate 3 (an open primary breaker returned `circuit_open` above —
+      // breaker-open is NEVER a failover trigger). An open BACKUP (or
+      // Gemini) breaker skips only THAT provider's candidates and the
+      // ladder continues. A failed read fails open (closed).
+      if (candidate.provider !== 'workers-ai') {
+        try {
+          const breaker = await checkAiCircuitBreaker(
+            deps.executor,
+            deps.clock.now(),
+            candidate.provider,
+          );
+          if (!breaker.allow) {
+            record(candidate, 'skipped_circuit_open', 0);
+            continue;
+          }
+        } catch {
+          deps.logger.warn('ai.draft.circuit_breaker_check_failed', {
+            provider: candidate.provider,
+          });
+        }
+      }
 
       // ---- Durable authorization BEFORE the attempt (no grant, no call).
       // The authorization wait itself is bounded by the SAME wall deadline
@@ -372,7 +426,10 @@ export function createAiDraftService(deps: AiDraftServiceDeps): AiDraftService {
         const authorizationWait = await awaitWithDeadline(
           authorizeAiRequestAttempt(deps.executor, {
             provider: candidate.provider,
-            cap: AI_DAILY_REQUEST_ATTEMPT_CAPS[candidate.provider],
+            // ai-policy-v2.3: the autonomous chain authorizes against the
+            // EFFECTIVE cap (hard cap − reserve) so the reserved tail of
+            // each account's day stays unspent headroom.
+            cap: effectiveAutonomousCap(AI_DAILY_REQUEST_ATTEMPT_CAPS[candidate.provider]),
             nowMs: authWaitStartedAtMs,
           }),
           deadlineAtMs,
@@ -393,11 +450,32 @@ export function createAiDraftService(deps: AiDraftServiceDeps): AiDraftService {
           record(candidate, 'quota_denied', 0);
           // Same shared provider bucket: remaining same-provider candidates
           // are futile and are skipped (and LEDGERED) at the loop top.
+          // ai-policy-v2.3: the denial is then classified — a denial
+          // INSIDE the reserve window (the effective cap) is the early,
+          // retryable `budget_pressure`; a denial at the hard cap stays
+          // the terminal `budget_denied`. Ambiguity falls to HARD.
           sharedQuotaProviders.add(candidate.provider);
           skippedProviders.add(candidate.provider);
+          const denialKind = await classifyAiBudgetDenial(deps.executor, {
+            provider: candidate.provider,
+            hardCap: AI_DAILY_REQUEST_ATTEMPT_CAPS[candidate.provider],
+            nowMs: deps.clock.now(),
+          });
+          if (denialKind === 'hard') {
+            sawHardQuotaDenial = true;
+          } else {
+            sawReservePressure = true;
+          }
           continue;
         }
         bucketDate = authorization.bucketDate;
+        // ai-policy-v2.3: best-effort early pressure warning on the
+        // granted charge (visibility only — never changes the outcome,
+        // never fails the run).
+        await noteBudgetPressureWarning(deps.executor, deps.logger, {
+          provider: candidate.provider,
+          nowMs: deps.clock.now(),
+        });
       } catch {
         // Budget-store infrastructure failures are DISTINCT from quota
         // exhaustion: zero provider calls, typed deferred outcome.
@@ -449,9 +527,10 @@ export function createAiDraftService(deps: AiDraftServiceDeps): AiDraftService {
         if (callWait.kind === 'timed_out') {
           record(candidate, 'deadline_exceeded', deps.clock.now() - attemptStartedAt);
           // No provider completion within the deadline: refund the
-          // attempt and count the provider failure toward the breaker.
+          // attempt and count the provider failure toward THE CANDIDATE'S
+          // OWN account breaker.
           await refundAttempt(candidate);
-          await noteBreakerFailure();
+          await noteBreakerFailure(candidate.provider);
           deps.logger.info('ai.draft.result', {
             kind: 'deferred',
             reason: 'deadline_exceeded',
@@ -464,7 +543,7 @@ export function createAiDraftService(deps: AiDraftServiceDeps): AiDraftService {
         // refund the attempt, count the failure, try the next candidate.
         record(candidate, 'transient_failure', deps.clock.now() - attemptStartedAt);
         await refundAttempt(candidate);
-        await noteBreakerFailure();
+        await noteBreakerFailure(candidate.provider);
         continue;
       }
       const durationMs = deps.clock.now() - attemptStartedAt;
@@ -486,7 +565,7 @@ export function createAiDraftService(deps: AiDraftServiceDeps): AiDraftService {
         case 'deadline_exceeded': {
           record(candidate, 'deadline_exceeded', durationMs);
           await refundAttempt(candidate);
-          await noteBreakerFailure();
+          await noteBreakerFailure(candidate.provider);
           deps.logger.info('ai.draft.result', { kind: 'deferred', reason: 'deadline_exceeded' });
           return { kind: 'deferred', reason: 'deadline_exceeded', attempts };
         }
@@ -558,9 +637,9 @@ export function createAiDraftService(deps: AiDraftServiceDeps): AiDraftService {
             deps.logger.warn('ai.draft.usage_record_failed', { provider: candidate.provider });
           }
           record(candidate, 'succeeded', durationMs);
-          // The provider answered: reset the breaker counter (a half-open
-          // probe success closes the breaker) and keep the charge.
-          await noteBreakerSuccess();
+          // The provider answered: reset THAT account's breaker counter
+          // (a half-open probe success closes it) and keep the charge.
+          await noteBreakerSuccess(candidate.provider);
           deps.logger.info('ai.draft.result', {
             kind: 'draft',
             provider: candidate.provider,
@@ -577,7 +656,10 @@ export function createAiDraftService(deps: AiDraftServiceDeps): AiDraftService {
           record(candidate, 'quota_denied', durationMs);
           // The provider answered with its own quota verdict: no refund
           // (the provider did the work) and no breaker count — this is a
-          // quota condition, not a provider failure.
+          // quota condition, not a provider failure. It is a HARD quota
+          // condition (the provider's own pool), so it maps to the
+          // terminal budget classification when the ladder exhausts.
+          sawHardQuotaDenial = true;
           skippedProviders.add(candidate.provider);
           sharedQuotaProviders.add(candidate.provider);
           if (callOutcome.retryAfterMs !== undefined) {
@@ -603,9 +685,9 @@ export function createAiDraftService(deps: AiDraftServiceDeps): AiDraftService {
             durationMs,
           );
           // No provider completion: refund the attempt and count the
-          // provider failure toward the breaker.
+          // provider failure toward THE CANDIDATE'S OWN account breaker.
           await refundAttempt(candidate);
-          await noteBreakerFailure();
+          await noteBreakerFailure(candidate.provider);
           if (callOutcome.retryAfterMs !== undefined) {
             knownRetryAfterMs = Math.max(knownRetryAfterMs, callOutcome.retryAfterMs);
           }
@@ -619,7 +701,8 @@ export function createAiDraftService(deps: AiDraftServiceDeps): AiDraftService {
       authFailedProviders,
       geminiSkippedIneligible,
       sawProviderAttempt: attempts.some((attempt) => isProviderOutcome(attempt.outcome)),
-      sawQuotaDenial: attempts.some((attempt) => attempt.outcome === 'quota_denied'),
+      sawHardQuotaDenial,
+      sawReservePressure,
     });
     deps.logger.info('ai.draft.result', { kind: 'deferred', reason, attempts: attempts.length });
     return {
@@ -671,7 +754,10 @@ function classifyExhausted(
     readonly authFailedProviders: ReadonlySet<AiProvider>;
     readonly geminiSkippedIneligible: boolean;
     readonly sawProviderAttempt: boolean;
-    readonly sawQuotaDenial: boolean;
+    /** A HARD quota denial (app cap or the provider's own pool). */
+    readonly sawHardQuotaDenial: boolean;
+    /** Only the RESERVE window denied — the early, retryable pressure. */
+    readonly sawReservePressure: boolean;
   },
 ): AiDeferredReason {
   if (attempts.some((attempt) => attempt.outcome === 'skipped_deadline')) {
@@ -681,8 +767,14 @@ function classifyExhausted(
   if (state.authFailedProviders.size > 0) {
     return 'provider_auth_failed';
   }
-  if (state.sawQuotaDenial) {
+  if (state.sawHardQuotaDenial) {
     return 'budget_denied';
+  }
+  if (state.sawReservePressure) {
+    // ai-policy-v2.3: the autonomous chain backed off INSIDE the reserve
+    // window — retryable (refunds/midnight can reopen units), never the
+    // terminal hard denial.
+    return 'budget_pressure';
   }
   if (state.geminiSkippedIneligible && state.sawProviderAttempt) {
     // CF attempts failed AND the Gemini fallback stayed OFF for unverified

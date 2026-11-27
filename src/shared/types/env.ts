@@ -96,6 +96,17 @@ export interface PixelSecrets {
   readonly GITHUB_TOKEN?: string;
   /** Optional — only if authenticated Bluesky access becomes necessary. */
   readonly BLUESKY_APP_PASSWORD?: string;
+  /**
+   * CONDITIONAL (ai-policy-v2.3 / ADR-0069): the Workers-AI REST API
+   * token for the BACKUP Cloudflare account (Workers AI Write
+   * permission, created in the backup account's dashboard). Required
+   * only when the failover kill switch (AI_FAILOVER_ENABLED) is on.
+   * Values exist only via `wrangler secret put` on the PRIMARY worker or
+   * a git-ignored `.dev.vars` file; never logged, echoed, committed, or
+   * embedded anywhere. The backup token's blast radius is Workers AI
+   * inference on the backup account only.
+   */
+  readonly BACKUP_WORKERS_AI_API_TOKEN?: string;
 }
 
 /** Full production environment once all phases have landed. */
@@ -308,4 +319,20 @@ export interface WorkerEnv {
    * git-ignored `.dev.vars` file; never logged, echoed, or serialized.
    */
   readonly GEMINI_API_KEY?: string;
+  /**
+   * NON-SECRET (ai-policy-v2.3 / ADR-0069) — the BACKUP Cloudflare
+   * account id for the Workers AI REST failover path. Operator var
+   * (never a code constant); strictly format-validated by parseAiConfig
+   * when present. The backup API token is the SECRET sibling
+   * (BACKUP_WORKERS_AI_API_TOKEN) and never appears in vars.
+   */
+  readonly BACKUP_CF_ACCOUNT_ID?: string;
+  /**
+   * SECRET (ai-policy-v2.3 / ADR-0069) — the Workers AI REST API token
+   * for the BACKUP Cloudflare account, stored on the PRIMARY worker.
+   * Conditional: consumed only when the failover kill switch is on.
+   * Values exist only via `wrangler secret put` or a git-ignored
+   * `.dev.vars` file; never logged, echoed, or serialized.
+   */
+  readonly BACKUP_WORKERS_AI_API_TOKEN?: string;
 }

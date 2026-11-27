@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  AI_BUDGET_PRESSURE_RESERVE_UNITS,
+  AI_BUDGET_PRESSURE_WARNING_REQUESTS,
   AI_BOUNDS,
   AI_DAILY_REQUEST_ATTEMPT_CAPS,
   AI_MODEL_ALLOWLIST_V2,
@@ -22,9 +24,9 @@ import {
  * ADR-0041). These pin the fail-closed/free-only policy surface.
  */
 
-describe('AI model policy (ai-policy-v2.2.1)', () => {
-  it('ships a small immutable allowlist: CF primary + CF alternate + Gemini trio', () => {
-    expect(AI_MODEL_ALLOWLIST_V2).toHaveLength(5);
+describe('AI model policy (ai-policy-v2.3)', () => {
+  it('ships a small immutable allowlist: CF primary + CF alternate + CF BACKUP (same ids) + conditional Gemini', () => {
+    expect(AI_MODEL_ALLOWLIST_V2).toHaveLength(7);
     expect(listModelsForProvider('workers-ai').map((model) => model.role)).toEqual([
       'primary',
       'alternate',
@@ -34,6 +36,19 @@ describe('AI model policy (ai-policy-v2.2.1)', () => {
       'alternate',
       'fallback',
     ]);
+    // ai-policy-v2.3: the backup account carries the SAME two model ids —
+    // the ladder is the same ladder one account over (ADR-0069).
+    expect(listModelsForProvider('workers-ai-backup').map((model) => model.modelId)).toEqual([
+      '@cf/google/gemma-4-26b-a4b-it',
+      '@cf/qwen/qwen3.8-27b',
+    ]);
+    expect(listModelsForProvider('workers-ai-backup').map((model) => model.role)).toEqual([
+      'primary',
+      'alternate',
+    ]);
+    for (const model of listModelsForProvider('workers-ai-backup')) {
+      expect(model.requiresEligibility).toBe(false);
+    }
   });
 
   it('uses only explicit model ids — never the literal "auto"', () => {
@@ -56,10 +71,17 @@ describe('AI model policy (ai-policy-v2.2.1)', () => {
     }
     expect(AI_PROVIDER_ELIGIBILITY_V2.gemini).toBe('partial_free_tier');
     expect(AI_PROVIDER_ELIGIBILITY_V2['workers-ai']).toBe('binding_gated');
+    // ai-policy-v2.3: the backup REST path's access proof is the wired
+    // port itself (flag + secret + var) — the binding_gated family.
+    expect(AI_PROVIDER_ELIGIBILITY_V2['workers-ai-backup']).toBe('binding_gated');
   });
 
   it('derives the default eligibility from the versioned policy', () => {
-    expect(defaultProviderEligibility()).toEqual({ 'workers-ai': true, gemini: true });
+    expect(defaultProviderEligibility()).toEqual({
+      'workers-ai': true,
+      'workers-ai-backup': true,
+      gemini: true,
+    });
   });
 
   it('rejects unknown model ids for every provider', () => {
@@ -70,6 +92,9 @@ describe('AI model policy (ai-policy-v2.2.1)', () => {
     expect(isAllowedModel('gemini', 'gemini-3.5-flash-lite')).toBe(true);
     expect(isAllowedModel('gemini', 'gemini-3.1-flash-lite')).toBe(true);
     expect(isAllowedModel('gemini', 'gemini-3.8-flash')).toBe(true);
+    expect(isAllowedModel('workers-ai-backup', '@cf/google/gemma-4-26b-a4b-it')).toBe(true);
+    expect(isAllowedModel('workers-ai-backup', '@cf/qwen/qwen3.8-27b')).toBe(true);
+    expect(isAllowedModel('workers-ai-backup', 'auto')).toBe(false);
     expect(isAllowedModel('gemini', 'gemini-pro-unlisted')).toBe(false);
   });
 
@@ -103,8 +128,26 @@ describe('AI model policy (ai-policy-v2.2.1)', () => {
     // windows needs the headroom. Gemini stays 40 (fallback, PARTIAL
     // eligibility — ADR-0067).
     expect(AI_DAILY_REQUEST_ATTEMPT_CAPS['workers-ai']).toBe(120);
+    // ai-policy-v2.3: the backup account has the same free neuron
+    // allowance — the same 120, on its OWN per-account row.
+    expect(AI_DAILY_REQUEST_ATTEMPT_CAPS['workers-ai-backup']).toBe(120);
     expect(AI_DAILY_REQUEST_ATTEMPT_CAPS.gemini).toBe(40);
-    expect(AI_POLICY_VERSION).toBe('ai-policy-v2.2.1');
+    expect(AI_POLICY_VERSION).toBe('ai-policy-v2.3');
+  });
+
+  it('pins the budget-pressure thresholds BEFORE the 120 hard cap (ai-policy-v2.3)', () => {
+    // The WARNING fires at the 80% crossing; the RESERVE holds back the
+    // last units of each account's day so the autonomous chain backs off
+    // with typed budget_pressure instead of riding to the terminal
+    // budget_denied — headroom against accounting drift + operator probes.
+    expect(AI_BUDGET_PRESSURE_WARNING_REQUESTS).toBe(96);
+    expect(AI_BUDGET_PRESSURE_RESERVE_UNITS).toBe(6);
+    expect(AI_BUDGET_PRESSURE_WARNING_REQUESTS).toBeLessThan(
+      AI_DAILY_REQUEST_ATTEMPT_CAPS['workers-ai'] - AI_BUDGET_PRESSURE_RESERVE_UNITS,
+    );
+    expect(
+      AI_DAILY_REQUEST_ATTEMPT_CAPS['workers-ai'] - AI_BUDGET_PRESSURE_RESERVE_UNITS,
+    ).toBeGreaterThan(0);
   });
 });
 

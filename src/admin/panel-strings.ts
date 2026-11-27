@@ -14,7 +14,7 @@ import type { RetentionRule } from '../domain/publishing/post-management';
 export const MENU_COMMAND = 'menu' as const;
 
 /** Panel screens: one job per screen, max 3–4 buttons per screen. */
-export type PanelScreen = 'main' | 'mode' | 'cap' | 'event' | 'posts';
+export type PanelScreen = 'main' | 'mode' | 'cap' | 'event' | 'posts' | 'ai';
 
 export interface AdminPanelUiStrings {
   /** /help line advertising the admin panel (gated). */
@@ -23,6 +23,17 @@ export interface AdminPanelUiStrings {
   readonly permissionDenied: string;
   /** Usage/honest-invalid-argument text. */
   readonly invalidUsage: string;
+  /** AI presence screen (the presence slice — booleans ONLY, never values). */
+  readonly aiTitle: string;
+  readonly aiWorkersAiBindingLabel: string;
+  readonly aiGeminiKeyLabel: string;
+  readonly aiGeminiEnabledLabel: string;
+  readonly aiPresent: string;
+  readonly aiAbsent: string;
+  readonly aiFlagOn: string;
+  readonly aiFlagOff: string;
+  readonly aiHint: string;
+  readonly aiPresenceUnavailable: string;
   /** Main panel. */
   readonly mainTitle: string;
   readonly mainModeLabel: string;
@@ -121,10 +132,21 @@ export interface AdminPanelUiStrings {
 
 export const ADMIN_PANEL_STRINGS: Readonly<Record<AdminUiLanguage, AdminPanelUiStrings>> = {
   en: {
-    helpMenuLine: '/menu — Admin panel (mode, daily cap, event)',
+    helpMenuLine: '/menu — Admin panel (mode, daily cap, event, AI status)',
     permissionDenied:
       'Access denied: only the owner and chief editor can change publishing settings.',
-    invalidUsage: 'Invalid argument. Usage: /menu — /menu mode — /menu cap — /menu event.',
+    invalidUsage:
+      'Invalid argument. Usage: /menu — /menu mode — /menu cap — /menu event — /menu ai.',
+    aiTitle: 'AI provider presence',
+    aiWorkersAiBindingLabel: 'Workers AI binding:',
+    aiGeminiKeyLabel: 'GEMINI_API_KEY:',
+    aiGeminiEnabledLabel: 'AI_GEMINI_ENABLED:',
+    aiPresent: 'present',
+    aiAbsent: 'absent',
+    aiFlagOn: 'ON',
+    aiFlagOff: 'off',
+    aiHint: 'Presence only — never secret values. Send /menu for the main panel.',
+    aiPresenceUnavailable: 'AI presence is not available in this deployment.',
     mainTitle: 'Admin panel',
     mainModeLabel: 'Mode:',
     mainCapLabel: 'Daily cap:',
@@ -217,9 +239,20 @@ export const ADMIN_PANEL_STRINGS: Readonly<Record<AdminUiLanguage, AdminPanelUiS
     callbackRetentionOff: 'Retention OFF.',
   },
   fa: {
-    helpMenuLine: '/menu — پنل مدیریت (حالت، سقف روزانه، ایونت)',
+    helpMenuLine: '/menu — پنل مدیریت (حالت، سقف روزانه، ایونت، وضعیت هوش مصنوعی)',
     permissionDenied: 'دسترسی رد شد: فقط مالک و سردبیر ارشد می‌توانند تنظیمات انتشار را عوض کنند.',
-    invalidUsage: 'پارامتر نامعتبر است. کاربرد: /menu — /menu mode — /menu cap — /menu event.',
+    invalidUsage:
+      'پارامتر نامعتبر است. کاربرد: /menu — /menu mode — /menu cap — /menu event — /menu ai.',
+    aiTitle: 'وضعیت سرویس‌های هوش مصنوعی',
+    aiWorkersAiBindingLabel: 'اتصال Workers AI:',
+    aiGeminiKeyLabel: 'کلید GEMINI_API_KEY:',
+    aiGeminiEnabledLabel: 'گزینهٔ AI_GEMINI_ENABLED:',
+    aiPresent: 'موجود',
+    aiAbsent: 'ناموجود',
+    aiFlagOn: 'روشن',
+    aiFlagOff: 'خاموش',
+    aiHint: 'فقط حضور و غیاب — هرگز مقدار کلیدها. برای پنل اصلی /menu را بفرستید.',
+    aiPresenceUnavailable: 'وضعیت سرویس‌های هوش مصنوعی در این استقرار در دسترس نیست.',
     mainTitle: 'پنل مدیریت',
     mainModeLabel: 'حالت:',
     mainCapLabel: 'سقف روزانه:',

@@ -52,12 +52,17 @@ import {
   recordAiCircuitBreakerFailure,
   recordAiCircuitBreakerSuccess,
 } from '../ai/ai-circuit-breaker';
+import { buildAiCandidateLadder } from '../ai/ai-ladder';
+import {
+  classifyAiBudgetDenial,
+  effectiveAutonomousCap,
+  noteBudgetPressureWarning,
+} from '../ai/ai-budget-pressure';
 import {
   AI_BOUNDS,
   AI_DAILY_REQUEST_ATTEMPT_CAPS,
   AI_POLICY_VERSION,
   defaultProviderEligibility,
-  listModelsForProvider,
 } from '../../domain/ai/policy';
 import type {
   AiChatMessage,
@@ -91,6 +96,14 @@ export interface InboundRewriter {
 export interface AiInboundRewriterConfig {
   readonly aiEnabled: boolean;
   readonly geminiEnabled: boolean;
+  /**
+   * Validated AI_FAILOVER_ENABLED operator kill switch (parseAiConfig,
+   * ai-policy-v2.3). Backup candidates run only when this is on AND the
+   * backup REST port is wired — BOTH gates fail closed. Optional with a
+   * default OFF (the flag's own fail-closed default), so callers that
+   * predate failover keep today's behavior exactly.
+   */
+  readonly failoverEnabled?: boolean;
   readonly workersAiBindingPresent: boolean;
   readonly geminiApiKeyPresent: boolean;
 }
@@ -137,22 +150,15 @@ export function createAiInboundRewriter(deps: AiInboundRewriterDeps): InboundRew
 
       // ---- The persistent AI circuit breaker — consulted BEFORE any
       // authorization, so an open breaker means ZERO provider calls and
-      // ZERO charges. A failed breaker READ fails open (closed): the
+      // ZERO charges. Checked for the PRIMARY account (per-account
+      // breakers, ai-policy-v2.3) after the ladder construction below;
+      // an open PRIMARY breaker is typed `circuit_open` and is NEVER a
+      // failover trigger. A failed breaker READ fails open (closed): the
       // provider path still has its own budget/deadline guards.
-      try {
-        const breaker = await checkAiCircuitBreaker(deps.executor, deps.clock.now());
-        if (!breaker.allow) {
-          deps.logger.info('ai.inbound_rewrite.circuit_open', {
-            consecutiveFailures: breaker.snapshot.consecutiveFailures,
-            openedAtMs: breaker.snapshot.openedAtMs,
-          });
-          return { kind: 'deferred', reason: 'circuit_open', attempts: 0 };
-        }
-      } catch {
-        deps.logger.warn('ai.inbound_rewrite.circuit_breaker_check_failed');
-      }
 
-      /** Best-effort refund of THIS attempt's charge (charge-on-success). */
+      /** Best-effort refund of THIS attempt's charge (charge-on-success).
+       * Refunds are PER PROVIDER KEY (ai-policy-v2.3): a failed backup
+       * attempt refunds the backup row only, never the primary row. */
       const refundAttempt = async (provider: AiProvider): Promise<void> => {
         try {
           await refundAiRequestAttempt(deps.executor, {
@@ -163,19 +169,22 @@ export function createAiInboundRewriter(deps: AiInboundRewriterDeps): InboundRew
           deps.logger.warn('ai.inbound_rewrite.refund_failed', { provider });
         }
       };
-      /** Best-effort breaker bookkeeping (provider failures only). */
-      const noteBreakerFailure = async (): Promise<void> => {
+      /** Best-effort breaker bookkeeping on the CANDIDATE'S OWN account
+       * breaker (`ai.circuit_breaker.{provider}` — per account,
+       * ai-policy-v2.3). Provider failures only; a failed record never
+       * fails the run. */
+      const noteBreakerFailure = async (provider: AiProvider): Promise<void> => {
         try {
-          await recordAiCircuitBreakerFailure(deps.executor, deps.clock.now());
+          await recordAiCircuitBreakerFailure(deps.executor, deps.clock.now(), provider);
         } catch {
-          deps.logger.warn('ai.inbound_rewrite.circuit_breaker_record_failed');
+          deps.logger.warn('ai.inbound_rewrite.circuit_breaker_record_failed', { provider });
         }
       };
-      const noteBreakerSuccess = async (): Promise<void> => {
+      const noteBreakerSuccess = async (provider: AiProvider): Promise<void> => {
         try {
-          await recordAiCircuitBreakerSuccess(deps.executor, deps.clock.now());
+          await recordAiCircuitBreakerSuccess(deps.executor, deps.clock.now(), provider);
         } catch {
-          deps.logger.warn('ai.inbound_rewrite.circuit_breaker_record_failed');
+          deps.logger.warn('ai.inbound_rewrite.circuit_breaker_record_failed', { provider });
         }
       };
 
@@ -188,35 +197,30 @@ export function createAiInboundRewriter(deps: AiInboundRewriterDeps): InboundRew
       const authFailedProviders = new Set<AiProvider>();
       let geminiSkippedIneligible = false;
       let sawProviderAttempt = false;
-      let sawQuotaDenial = false;
+      let sawHardQuotaDenial = false;
+      let sawReservePressure = false;
 
-      const candidates: { readonly provider: AiProvider; readonly modelId: string }[] = [];
-      for (const model of [
-        ...listModelsForProvider('workers-ai'),
-        ...listModelsForProvider('gemini'),
-      ]) {
-        if (model.provider === 'workers-ai') {
-          if (!deps.config.workersAiBindingPresent || deps.ports['workers-ai'] === undefined) {
-            skippedProviders.add('workers-ai');
-            continue;
-          }
-        } else {
-          if (!deps.config.geminiEnabled) {
-            skippedProviders.add('gemini');
-            continue;
-          }
-          if (!deps.config.geminiApiKeyPresent || deps.ports.gemini === undefined) {
-            skippedProviders.add('gemini');
-            continue;
-          }
-          if (!eligibility.gemini) {
-            skippedProviders.add('gemini');
-            geminiSkippedIneligible = true;
-            continue;
-          }
-        }
-        candidates.push({ provider: model.provider, modelId: model.modelId });
-      }
+      // ---- Candidate ladder (the SHARED versioned-policy builder,
+      // ai-policy-v2.3): Workers AI primary → Workers AI alternate →
+      // Workers AI BACKUP primary → Workers AI BACKUP alternate →
+      // (conditional) Gemini. The backup candidates gate on BOTH the
+      // operator kill switch AND the wired REST port (fail-closed).
+      const ladder = buildAiCandidateLadder({
+        workersAiPrimaryPresent:
+          deps.config.workersAiBindingPresent && deps.ports['workers-ai'] !== undefined,
+        failoverEnabled: deps.config.failoverEnabled === true,
+        backupPortPresent: deps.ports['workers-ai-backup'] !== undefined,
+        geminiEnabled: deps.config.geminiEnabled,
+        geminiKeyPresent: deps.config.geminiApiKeyPresent,
+        geminiPortPresent: deps.ports.gemini !== undefined,
+        geminiEligible: eligibility.gemini,
+      });
+      const candidates = ladder.candidates.map((candidate) => ({
+        provider: candidate.provider,
+        modelId: candidate.modelId,
+      }));
+      geminiSkippedIneligible = ladder.geminiSkippedIneligible;
+
       if (candidates.length === 0) {
         const reason: AiDeferredReason = !deps.config.workersAiBindingPresent
           ? 'binding_missing'
@@ -224,6 +228,30 @@ export function createAiInboundRewriter(deps: AiInboundRewriterDeps): InboundRew
             ? 'eligibility_unverified'
             : 'no_free_path';
         return { kind: 'deferred', reason, attempts };
+      }
+
+      // ---- Gate 3: the PRIMARY account's breaker — only when the ladder
+      // contains primary candidates (a missing binding means the primary
+      // breaker's stale state must not mask the typed binding_missing or
+      // the backup path). An open PRIMARY breaker is NEVER a failover
+      // trigger; the BACKUP breaker is checked per candidate below.
+      if (candidates.some((candidate) => candidate.provider === 'workers-ai')) {
+        try {
+          const breaker = await checkAiCircuitBreaker(
+            deps.executor,
+            deps.clock.now(),
+            'workers-ai',
+          );
+          if (!breaker.allow) {
+            deps.logger.info('ai.inbound_rewrite.circuit_open', {
+              consecutiveFailures: breaker.snapshot.consecutiveFailures,
+              openedAtMs: breaker.snapshot.openedAtMs,
+            });
+            return { kind: 'deferred', reason: 'circuit_open', attempts: 0 };
+          }
+        } catch {
+          deps.logger.warn('ai.inbound_rewrite.circuit_breaker_check_failed');
+        }
       }
 
       for (const candidate of candidates) {
@@ -239,21 +267,63 @@ export function createAiInboundRewriter(deps: AiInboundRewriterDeps): InboundRew
         if (authFailedProviders.has(candidate.provider)) {
           continue;
         }
+        // ---- Per-account breaker for the NON-primary providers
+        // (ai-policy-v2.3): the PRIMARY breaker was already consulted at
+        // gate 3 (an open primary breaker returned `circuit_open` —
+        // breaker-open is NEVER a failover trigger). An open BACKUP (or
+        // Gemini) breaker skips only THAT provider's candidates and the
+        // ladder continues. A failed read fails open (closed).
+        if (candidate.provider !== 'workers-ai') {
+          try {
+            const breaker = await checkAiCircuitBreaker(
+              deps.executor,
+              deps.clock.now(),
+              candidate.provider,
+            );
+            if (!breaker.allow) {
+              continue;
+            }
+          } catch {
+            deps.logger.warn('ai.inbound_rewrite.circuit_breaker_check_failed', {
+              provider: candidate.provider,
+            });
+          }
+        }
 
         let bucketDate: string;
         try {
           const authorization = await authorizeAiRequestAttempt(deps.executor, {
             provider: candidate.provider,
-            cap: AI_DAILY_REQUEST_ATTEMPT_CAPS[candidate.provider],
+            // ai-policy-v2.3: the autonomous chain authorizes against the
+            // EFFECTIVE cap (hard cap − reserve) — the shared reserve.
+            cap: effectiveAutonomousCap(AI_DAILY_REQUEST_ATTEMPT_CAPS[candidate.provider]),
             nowMs: deps.clock.now(),
           });
           if (authorization.kind === 'denied') {
             sharedQuotaProviders.add(candidate.provider);
             skippedProviders.add(candidate.provider);
-            sawQuotaDenial = true;
+            // ai-policy-v2.3: classify the denial — INSIDE the reserve
+            // window is the early, retryable pressure; at the hard cap it
+            // stays terminal. Ambiguity falls to HARD.
+            const denialKind = await classifyAiBudgetDenial(deps.executor, {
+              provider: candidate.provider,
+              hardCap: AI_DAILY_REQUEST_ATTEMPT_CAPS[candidate.provider],
+              nowMs: deps.clock.now(),
+            });
+            if (denialKind === 'hard') {
+              sawHardQuotaDenial = true;
+            } else {
+              sawReservePressure = true;
+            }
             continue;
           }
           bucketDate = authorization.bucketDate;
+          // ai-policy-v2.3: best-effort early pressure warning on the
+          // granted charge (visibility only — never changes the outcome).
+          await noteBudgetPressureWarning(deps.executor, deps.logger, {
+            provider: candidate.provider,
+            nowMs: deps.clock.now(),
+          });
         } catch {
           deps.logger.warn('ai.inbound_rewrite.budget_store_failed', {
             provider: candidate.provider,
@@ -297,9 +367,9 @@ export function createAiInboundRewriter(deps: AiInboundRewriterDeps): InboundRew
             durationMs: deps.clock.now() - attemptStartedAt,
           });
           // No provider completion: refund the attempt and count the
-          // provider failure toward the breaker.
+          // provider failure toward THE CANDIDATE'S OWN account breaker.
           await refundAttempt(candidate.provider);
-          await noteBreakerFailure();
+          await noteBreakerFailure(candidate.provider);
           continue;
         }
         const durationMs = deps.clock.now() - attemptStartedAt;
@@ -317,14 +387,15 @@ export function createAiInboundRewriter(deps: AiInboundRewriterDeps): InboundRew
             return { kind: 'refused', reason: 'provider_safety_refusal', attempts };
           case 'deadline_exceeded':
             await refundAttempt(candidate.provider);
-            await noteBreakerFailure();
+            await noteBreakerFailure(candidate.provider);
             return { kind: 'deferred', reason: 'deadline_exceeded', attempts };
           case 'quota_denied':
             // The provider answered with its own quota verdict: no refund
-            // and no breaker count.
+            // and no breaker count. A HARD quota condition (the provider's
+            // own pool) — maps to the terminal classification.
+            sawHardQuotaDenial = true;
             sharedQuotaProviders.add(candidate.provider);
             skippedProviders.add(candidate.provider);
-            sawQuotaDenial = true;
             break;
           case 'auth_failed':
             // The provider answered with an auth/config failure: refund
@@ -336,7 +407,7 @@ export function createAiInboundRewriter(deps: AiInboundRewriterDeps): InboundRew
           case 'model_unavailable':
           case 'transient':
             await refundAttempt(candidate.provider);
-            await noteBreakerFailure();
+            await noteBreakerFailure(candidate.provider);
             break;
           case 'ok': {
             const rewritten = stripFence(callOutcome.rawText);
@@ -359,10 +430,9 @@ export function createAiInboundRewriter(deps: AiInboundRewriterDeps): InboundRew
                 provider: candidate.provider,
               });
             }
-            // The provider answered: reset the breaker counter (a
-            // half-open probe success closes the breaker) and keep the
-            // charge.
-            await noteBreakerSuccess();
+            // The provider answered: reset THAT account's breaker counter
+            // (a half-open probe success closes it) and keep the charge.
+            await noteBreakerSuccess(candidate.provider);
             return { kind: 'ok', text: rewritten, attempts };
           }
         }
@@ -371,13 +441,15 @@ export function createAiInboundRewriter(deps: AiInboundRewriterDeps): InboundRew
       const reason: AiDeferredReason =
         authFailedProviders.size > 0
           ? 'provider_auth_failed'
-          : sawQuotaDenial
+          : sawHardQuotaDenial
             ? 'budget_denied'
-            : geminiSkippedIneligible && sawProviderAttempt
-              ? 'eligibility_unverified'
-              : sawProviderAttempt
-                ? 'provider_unavailable'
-                : 'no_free_path';
+            : sawReservePressure
+              ? 'budget_pressure'
+              : geminiSkippedIneligible && sawProviderAttempt
+                ? 'eligibility_unverified'
+                : sawProviderAttempt
+                  ? 'provider_unavailable'
+                  : 'no_free_path';
       deps.logger.info('ai.inbound_rewrite.result', { kind: 'deferred', reason, attempts });
       return { kind: 'deferred', reason, attempts };
     },

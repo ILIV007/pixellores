@@ -3,7 +3,7 @@ import type { DbExecutor, DbQueryMeta, DbRows } from '../../src/adapters/db/db-e
 import {
   AI_CIRCUIT_BREAKER_COOLDOWN_MS,
   AI_CIRCUIT_BREAKER_FAILURE_THRESHOLD,
-  AI_CIRCUIT_BREAKER_SETTINGS_KEY,
+  aiCircuitBreakerSettingsKey,
   checkAiCircuitBreaker,
   readAiCircuitBreaker,
   recordAiCircuitBreakerFailure,
@@ -126,7 +126,7 @@ function createStatefulExecutor(): StatefulFake {
 }
 
 function readBreakerRow(executor: StatefulFake): unknown {
-  const raw = executor.settings.get(AI_CIRCUIT_BREAKER_SETTINGS_KEY);
+  const raw = executor.settings.get(aiCircuitBreakerSettingsKey('workers-ai'));
   return raw === undefined ? undefined : JSON.parse(raw);
 }
 
@@ -176,91 +176,103 @@ describe('AI circuit breaker — durable settings state', () => {
   });
 
   it('starts CLOSED when no row exists, and a failed read throws (callers fail open)', async () => {
-    expect(await readAiCircuitBreaker(executor, NOW)).toMatchObject({
+    expect(await readAiCircuitBreaker(executor, NOW, 'workers-ai')).toMatchObject({
       state: 'closed',
       consecutiveFailures: 0,
       openedAtMs: null,
     });
-    expect(await checkAiCircuitBreaker(executor, NOW)).toMatchObject({
+    expect(await checkAiCircuitBreaker(executor, NOW, 'workers-ai')).toMatchObject({
       allow: true,
       probe: false,
     });
     executor.failFirst = true;
-    await expect(readAiCircuitBreaker(executor, NOW)).rejects.toThrow();
+    await expect(readAiCircuitBreaker(executor, NOW, 'workers-ai')).rejects.toThrow();
   });
 
   it('opens exactly at the threshold of consecutive failures', async () => {
     for (let i = 0; i < AI_CIRCUIT_BREAKER_FAILURE_THRESHOLD - 1; i += 1) {
-      const snapshot = await recordAiCircuitBreakerFailure(executor, NOW);
+      const snapshot = await recordAiCircuitBreakerFailure(executor, NOW, 'workers-ai');
       expect(snapshot.state).toBe('closed');
     }
-    const opened = await recordAiCircuitBreakerFailure(executor, NOW);
+    const opened = await recordAiCircuitBreakerFailure(executor, NOW, 'workers-ai');
     expect(opened.state).toBe('open');
     expect(opened.openedAtMs).toBe(NOW);
-    expect(await checkAiCircuitBreaker(executor, NOW)).toMatchObject({ allow: false });
+    expect(await checkAiCircuitBreaker(executor, NOW, 'workers-ai')).toMatchObject({
+      allow: false,
+    });
     expect(readBreakerRow(executor)).toMatchObject({ state: 'open' });
   });
 
   it('a success resets the counter before the threshold', async () => {
-    await recordAiCircuitBreakerFailure(executor, NOW);
-    await recordAiCircuitBreakerFailure(executor, NOW);
-    const reset = await recordAiCircuitBreakerSuccess(executor, NOW);
+    await recordAiCircuitBreakerFailure(executor, NOW, 'workers-ai');
+    await recordAiCircuitBreakerFailure(executor, NOW, 'workers-ai');
+    const reset = await recordAiCircuitBreakerSuccess(executor, NOW, 'workers-ai');
     expect(reset).toMatchObject({ state: 'closed', consecutiveFailures: 0 });
-    expect(await checkAiCircuitBreaker(executor, NOW)).toMatchObject({ allow: true });
+    expect(await checkAiCircuitBreaker(executor, NOW, 'workers-ai')).toMatchObject({ allow: true });
   });
 
   it('a success on a clean closed breaker writes nothing', async () => {
-    await recordAiCircuitBreakerSuccess(executor, NOW);
-    expect(executor.settings.has(AI_CIRCUIT_BREAKER_SETTINGS_KEY)).toBe(false);
+    await recordAiCircuitBreakerSuccess(executor, NOW, 'workers-ai');
+    expect(executor.settings.has(aiCircuitBreakerSettingsKey('workers-ai'))).toBe(false);
   });
 
   it('stays OPEN inside the cooldown, then admits a half-open probe', async () => {
     for (let i = 0; i < AI_CIRCUIT_BREAKER_FAILURE_THRESHOLD; i += 1) {
-      await recordAiCircuitBreakerFailure(executor, NOW);
+      await recordAiCircuitBreakerFailure(executor, NOW, 'workers-ai');
     }
     expect(
-      await checkAiCircuitBreaker(executor, NOW + AI_CIRCUIT_BREAKER_COOLDOWN_MS - 1),
+      await checkAiCircuitBreaker(executor, NOW + AI_CIRCUIT_BREAKER_COOLDOWN_MS - 1, 'workers-ai'),
     ).toMatchObject({ allow: false });
-    const probe = await checkAiCircuitBreaker(executor, NOW + AI_CIRCUIT_BREAKER_COOLDOWN_MS);
+    const probe = await checkAiCircuitBreaker(
+      executor,
+      NOW + AI_CIRCUIT_BREAKER_COOLDOWN_MS,
+      'workers-ai',
+    );
     expect(probe).toMatchObject({ allow: true, probe: true });
     expect(readBreakerRow(executor)).toMatchObject({ state: 'half_open' });
   });
 
   it('a probe failure re-opens with a fresh cooldown; a probe success closes', async () => {
     for (let i = 0; i < AI_CIRCUIT_BREAKER_FAILURE_THRESHOLD; i += 1) {
-      await recordAiCircuitBreakerFailure(executor, NOW);
+      await recordAiCircuitBreakerFailure(executor, NOW, 'workers-ai');
     }
-    await checkAiCircuitBreaker(executor, NOW + AI_CIRCUIT_BREAKER_COOLDOWN_MS);
+    await checkAiCircuitBreaker(executor, NOW + AI_CIRCUIT_BREAKER_COOLDOWN_MS, 'workers-ai');
     const reopened = await recordAiCircuitBreakerFailure(
       executor,
       NOW + AI_CIRCUIT_BREAKER_COOLDOWN_MS + 1_000,
+      'workers-ai',
     );
     expect(reopened.state).toBe('open');
     expect(reopened.openedAtMs).toBe(NOW + AI_CIRCUIT_BREAKER_COOLDOWN_MS + 1_000);
     // Fresh cooldown from the re-open: still denied just before it ends.
     expect(
-      await checkAiCircuitBreaker(executor, NOW + 2 * AI_CIRCUIT_BREAKER_COOLDOWN_MS),
+      await checkAiCircuitBreaker(executor, NOW + 2 * AI_CIRCUIT_BREAKER_COOLDOWN_MS, 'workers-ai'),
     ).toMatchObject({ allow: false });
-    await checkAiCircuitBreaker(executor, NOW + 2 * AI_CIRCUIT_BREAKER_COOLDOWN_MS + 1);
+    await checkAiCircuitBreaker(
+      executor,
+      NOW + 2 * AI_CIRCUIT_BREAKER_COOLDOWN_MS + 1,
+      'workers-ai',
+    );
     const closed = await recordAiCircuitBreakerSuccess(
       executor,
       NOW + 2 * AI_CIRCUIT_BREAKER_COOLDOWN_MS + 1,
+      'workers-ai',
     );
     expect(closed).toMatchObject({ state: 'closed', consecutiveFailures: 0 });
   });
 
   it('a malformed row fails open to CLOSED', async () => {
-    executor.settings.set(AI_CIRCUIT_BREAKER_SETTINGS_KEY, '{not json');
-    expect(await checkAiCircuitBreaker(executor, NOW)).toMatchObject({
+    executor.settings.set(aiCircuitBreakerSettingsKey('workers-ai'), '{not json');
+    expect(await checkAiCircuitBreaker(executor, NOW, 'workers-ai')).toMatchObject({
       allow: true,
       probe: false,
     });
     executor.settings.set(
-      AI_CIRCUIT_BREAKER_SETTINGS_KEY,
+      aiCircuitBreakerSettingsKey('workers-ai'),
       JSON.stringify({ state: 'open', consecutive_failures: 5 }),
     );
     // OPEN without an opened_at is not a valid open state — fail open.
-    expect(await checkAiCircuitBreaker(executor, NOW)).toMatchObject({ allow: true });
+    expect(await checkAiCircuitBreaker(executor, NOW, 'workers-ai')).toMatchObject({ allow: true });
   });
 });
 

@@ -52,6 +52,7 @@ import { parseAdminPostConfig } from '../../../shared/config/phase10';
 import { parseAiConfig } from '../../../shared/config/phase6';
 import { createWorkersAiAdapter } from '../../../adapters/ai/workers-ai-adapter';
 import { createGeminiAdapter } from '../../../adapters/ai/gemini-adapter';
+import { createWorkersAiRestAdapter } from '../../../adapters/ai/workers-ai-rest-adapter';
 import type { AiProvider, AiProviderPort } from '../../../domain/ai/types';
 import { timingSafeEqualStrings } from '../../../shared/security/timing-safe';
 import {
@@ -308,6 +309,10 @@ export async function handleTelegramWebhook(
   // the operator flag + key + port + PARTIAL eligibility, and the AI flags
   // ship OFF on preview, so the rewriter defers and the pipeline runs on
   // the cleaned text until the operator flips the flag after the live test.
+  // ai-policy-v2.3 (ADR-0069): the BACKUP-account REST port is built ONLY
+  // when the operator kill switch is on AND the backup account id var AND
+  // the backup API token secret are ALL present — fail-closed: any
+  // missing piece means the ladder behaves exactly as v2.2.
   const aiFlags = parseAiConfig(env as Readonly<Record<string, unknown>>);
   const workersAiBindingPresent = env.AI !== undefined;
   const inboundPorts: Partial<Record<AiProvider, AiProviderPort>> = {};
@@ -321,6 +326,16 @@ export async function handleTelegramWebhook(
       aiFlags.config.GEMINI_API_BASE_URL,
     );
   }
+  if (
+    aiFlags.config.AI_FAILOVER_ENABLED &&
+    env.BACKUP_CF_ACCOUNT_ID !== undefined &&
+    env.BACKUP_WORKERS_AI_API_TOKEN !== undefined
+  ) {
+    inboundPorts['workers-ai-backup'] = createWorkersAiRestAdapter(
+      env.BACKUP_CF_ACCOUNT_ID,
+      env.BACKUP_WORKERS_AI_API_TOKEN,
+    );
+  }
   const inboundRewriter = createAiInboundRewriter({
     executor,
     ports: inboundPorts,
@@ -329,6 +344,7 @@ export async function handleTelegramWebhook(
     config: {
       aiEnabled: aiFlags.config.AI_ENABLED,
       geminiEnabled: aiFlags.config.AI_GEMINI_ENABLED,
+      failoverEnabled: aiFlags.config.AI_FAILOVER_ENABLED,
       workersAiBindingPresent,
       geminiApiKeyPresent: env.GEMINI_API_KEY !== undefined,
     },
@@ -490,12 +506,22 @@ export async function handleTelegramWebhook(
     // ON. Settings only — it never sends a post and never enables any
     // publish or scheduler path. The bootstrap owner id comes from the
     // parsed Phase 2 config (the protected identity).
+    // The presence slice: the per-provider AI presence BOOLEANS are
+    // computed with the SAME expressions the AI wiring already uses above
+    // (`env.AI !== undefined`, `env.GEMINI_API_KEY !== undefined`, and the
+    // validated AI_GEMINI_ENABLED flag) — booleans only, never secret
+    // values, never a new detection path, and /health untouched.
     adminPanel: panelEnabled
       ? createAdminPanelService({
           executor,
           clock: systemClock,
           ownerTelegramId: phase2.config.ownerTelegramId,
           postManagement,
+          aiPresence: {
+            workersAiBindingPresent: env.AI !== undefined,
+            geminiApiKeyPresent: env.GEMINI_API_KEY !== undefined,
+            geminiEnabled: aiFlags.config.AI_GEMINI_ENABLED,
+          },
         })
       : undefined,
     // Slice 6: the in-place edit capture is consumed by the ingress

@@ -794,3 +794,166 @@ describe('paused mode rejects inbound posts (not queued)', () => {
     expect(stillPaused.decision).toEqual({ allowed: false, reason: 'paused' });
   });
 });
+
+describe('the /menu argument grammar — the ai screen (presence slice)', () => {
+  it('parses /menu ai and still rejects unknown screens', () => {
+    expect(parseMenuArgument('ai')).toEqual({ kind: 'screen', screen: 'ai' });
+    expect(parseMenuArgument('bogus')).toEqual({ kind: 'invalid' });
+    expect(parseMenuArgument('ai cap')).toEqual({ kind: 'invalid' });
+    expect(parseMenuArgument('AI')).toEqual({ kind: 'invalid' });
+  });
+});
+
+describe('the AI presence screen (the presence slice — booleans ONLY)', () => {
+  function buildPanel(aiPresence?: {
+    workersAiBindingPresent: boolean;
+    geminiApiKeyPresent: boolean;
+    geminiEnabled: boolean;
+  }) {
+    const clock = fixedClock(NOW);
+    const harness = buildReviewHarness({ panelEnabled: true });
+    const panel = createAdminPanelService({
+      executor: harness.executor,
+      clock,
+      ownerTelegramId: OWNER_ID,
+      ...(aiPresence !== undefined ? { aiPresence } : {}),
+    });
+    return panel;
+  }
+
+  it('renders the three per-provider booleans — presence only, computed at the wiring', async () => {
+    const panel = buildPanel({
+      workersAiBindingPresent: true,
+      geminiApiKeyPresent: true,
+      geminiEnabled: false,
+    });
+    const screen = await panel.screen({
+      telegramUserId: OWNER_ID,
+      role: 'owner',
+      uiLanguage: 'en',
+      screen: 'ai',
+    });
+    expect(screen.kind).toBe('reply');
+    expect(screen.text).toContain('AI provider presence');
+    expect(screen.text).toContain('Workers AI binding: present');
+    expect(screen.text).toContain('GEMINI_API_KEY: present');
+    expect(screen.text).toContain('AI_GEMINI_ENABLED: off');
+    // A Back button riding a fresh single-use panel token.
+    expect(screen.buttons?.[0]?.[0]?.text).toBe('‹ Back');
+  });
+
+  it('absent pieces render absent/ON honestly, and the fa localization holds', async () => {
+    const panel = buildPanel({
+      workersAiBindingPresent: false,
+      geminiApiKeyPresent: false,
+      geminiEnabled: true,
+    });
+    const en = await panel.screen({
+      telegramUserId: OWNER_ID,
+      role: 'owner',
+      uiLanguage: 'en',
+      screen: 'ai',
+    });
+    expect(en.text).toContain('Workers AI binding: absent');
+    expect(en.text).toContain('GEMINI_API_KEY: absent');
+    expect(en.text).toContain('AI_GEMINI_ENABLED: ON');
+    const fa = await panel.screen({
+      telegramUserId: OWNER_ID,
+      role: 'owner',
+      uiLanguage: 'fa',
+      screen: 'ai',
+    });
+    expect(fa.text).toContain('وضعیت سرویس‌های هوش مصنوعی');
+    expect(fa.text).toContain('اتصال Workers AI: ناموجود');
+    expect(fa.text).toContain('گزینهٔ AI_GEMINI_ENABLED: روشن');
+  });
+
+  it('WITHOUT the injected presence the screen answers honestly — never guesses', async () => {
+    const panel = buildPanel(undefined);
+    const screen = await panel.screen({
+      telegramUserId: OWNER_ID,
+      role: 'owner',
+      uiLanguage: 'en',
+      screen: 'ai',
+    });
+    expect(screen.text).toContain('AI presence is not available in this deployment.');
+    expect(screen.text).not.toContain('present');
+    expect(screen.buttons).toBeUndefined();
+  });
+
+  it('BOOLEANS ONLY: no secret-shaped material can ride the reply', async () => {
+    const panel = buildPanel({
+      workersAiBindingPresent: true,
+      geminiApiKeyPresent: true,
+      geminiEnabled: true,
+    });
+    const screen = await panel.screen({
+      telegramUserId: OWNER_ID,
+      role: 'owner',
+      uiLanguage: 'en',
+      screen: 'ai',
+    });
+    const text = screen.text;
+    // The three stable boolean values and nothing else resembling state.
+    expect(text).toContain('present');
+    expect(text).toContain('ON');
+    // Key-material shapes are structurally absent: no assignment, no
+    // quoted value, no hex/base64 blob longer than the label itself.
+    expect(text).not.toMatch(/[:=]\s*["']?[A-Za-z0-9+/_-]{20,}/);
+    expect(text).toContain('never secret values');
+  });
+
+  it('the show_ai callback re-renders the screen through a fresh single-use token', async () => {
+    const panel = buildPanel({
+      workersAiBindingPresent: true,
+      geminiApiKeyPresent: false,
+      geminiEnabled: false,
+    });
+    const first = await panel.screen({
+      telegramUserId: OWNER_ID,
+      role: 'owner',
+      uiLanguage: 'en',
+      screen: 'ai',
+    });
+    const backToken = first.buttons?.[0]?.[0]?.callbackData.slice(2) ?? '';
+    const afterBack = await panel.handleCallback({
+      telegramUserId: OWNER_ID,
+      role: 'owner',
+      uiLanguage: 'en',
+      token: backToken,
+    });
+    // The Back button shows the MAIN panel (a fresh main-screen reply).
+    expect(afterBack.kind).toBe('reply');
+    if (afterBack.kind === 'reply') {
+      expect(afterBack.text).toContain('Admin panel');
+    }
+    // A used token cannot ride twice.
+    const replay = await panel.handleCallback({
+      telegramUserId: OWNER_ID,
+      role: 'owner',
+      uiLanguage: 'en',
+      token: backToken,
+    });
+    expect(replay).toEqual({
+      kind: 'answer',
+      callbackText: ADMIN_PANEL_STRINGS.en.callbackInvalidToken,
+    });
+  });
+
+  it('viewing stays open to every authorized admin role (dashboard.view)', async () => {
+    await seedAdmin(VIEWER_ID, 'viewer');
+    const panel = buildPanel({
+      workersAiBindingPresent: false,
+      geminiApiKeyPresent: true,
+      geminiEnabled: false,
+    });
+    const screen = await panel.screen({
+      telegramUserId: VIEWER_ID,
+      role: 'viewer',
+      uiLanguage: 'en',
+      screen: 'ai',
+    });
+    expect(screen.text).toContain('GEMINI_API_KEY: present');
+    expect(screen.text).toContain('Workers AI binding: absent');
+  });
+});

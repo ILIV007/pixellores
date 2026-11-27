@@ -90,6 +90,7 @@ export const ADMIN_PANEL_TOKEN_ACTIONS = {
   showCap: 'panel.show_cap',
   showEvent: 'panel.show_event',
   showPosts: 'panel.show_posts',
+  showAi: 'panel.show_ai',
   showPost: 'panel.show_post',
   setMode: 'panel.set_mode',
   setCap: 'panel.set_cap',
@@ -235,7 +236,8 @@ function parsePayload(payloadJson: string): AdminPanelPayload | null {
       screen === 'mode' ||
       screen === 'cap' ||
       screen === 'event' ||
-      screen === 'posts'
+      screen === 'posts' ||
+      screen === 'ai'
     ) {
       const filter = record['filter'];
       if (filter !== undefined && filter !== 'all' && filter !== 'expired') {
@@ -284,6 +286,24 @@ function parsePayload(payloadJson: string): AdminPanelPayload | null {
   return null;
 }
 
+/**
+ * The presence slice (ai-policy-v2.3-era): per-provider AI presence
+ * BOOLEANS surfaced in the admin panel ONLY. These are computed at the
+ * wiring site with the SAME expressions the AI services already use
+ * (`env.AI !== undefined`, `env.GEMINI_API_KEY !== undefined`, and the
+ * validated `AI_GEMINI_ENABLED` flag) — NO new detection, NO secret
+ * values, NO key material anywhere. Optional: without it the `ai` screen
+ * answers honestly that presence is unavailable in this deployment.
+ */
+export interface AdminPanelAiPresence {
+  /** The native Workers AI binding is present in the runtime. */
+  readonly workersAiBindingPresent: boolean;
+  /** A Gemini API key is configured (presence only — never the value). */
+  readonly geminiApiKeyPresent: boolean;
+  /** The validated AI_GEMINI_ENABLED operator flag. */
+  readonly geminiEnabled: boolean;
+}
+
 export function createAdminPanelService(deps: {
   readonly executor: DbExecutor;
   readonly clock: Clock;
@@ -295,8 +315,13 @@ export function createAdminPanelService(deps: {
    * honestly and the mode/cap/event screens keep working untouched.
    */
   readonly postManagement?: PostManagementService;
+  /**
+   * The presence slice — the per-provider AI presence booleans, computed
+   * at the wiring site. OPTIONAL: absent = the `ai` screen says so.
+   */
+  readonly aiPresence?: AdminPanelAiPresence;
 }): AdminPanelService {
-  const { executor, clock, ownerTelegramId, postManagement } = deps;
+  const { executor, clock, ownerTelegramId, postManagement, aiPresence } = deps;
 
   /**
    * Settle the event's lazy expiry BEFORE any read or callback: a
@@ -375,7 +400,9 @@ export function createAdminPanelService(deps: {
             ? ADMIN_PANEL_TOKEN_ACTIONS.showCap
             : input.screen === 'posts'
               ? ADMIN_PANEL_TOKEN_ACTIONS.showPosts
-              : ADMIN_PANEL_TOKEN_ACTIONS.showEvent;
+              : input.screen === 'ai'
+                ? ADMIN_PANEL_TOKEN_ACTIONS.showAi
+                : ADMIN_PANEL_TOKEN_ACTIONS.showEvent;
     return mintToken({
       telegramUserId: input.telegramUserId,
       action,
@@ -822,6 +849,52 @@ export function createAdminPanelService(deps: {
     };
   }
 
+  /**
+   * The AI presence screen (the presence slice): VIEWING only — three
+   * per-provider BOOLEANS with no writes and NO secret values anywhere.
+   * The screen renders the booleans computed at the wiring site; without
+   * the injected presence it answers honestly that it is unavailable.
+   */
+  async function renderAi(input: {
+    readonly telegramUserId: number;
+    readonly uiLanguage: AdminUiLanguage;
+    readonly nowMs: number;
+  }): Promise<AdminPanelReplyResult> {
+    const s = ADMIN_PANEL_STRINGS[input.uiLanguage];
+    if (aiPresence === undefined) {
+      return {
+        kind: 'reply',
+        text: composeTelegramHtml([
+          telegramBold(s.aiTitle),
+          escapeTelegramHtml(s.aiPresenceUnavailable),
+        ]),
+      };
+    }
+    const parts: TelegramSafeHtml[] = [
+      telegramBold(s.aiTitle),
+      escapeTelegramHtml(
+        `${s.aiWorkersAiBindingLabel} ${aiPresence.workersAiBindingPresent ? s.aiPresent : s.aiAbsent}`,
+      ),
+      escapeTelegramHtml(
+        `${s.aiGeminiKeyLabel} ${aiPresence.geminiApiKeyPresent ? s.aiPresent : s.aiAbsent}`,
+      ),
+      escapeTelegramHtml(
+        `${s.aiGeminiEnabledLabel} ${aiPresence.geminiEnabled ? s.aiFlagOn : s.aiFlagOff}`,
+      ),
+      escapeTelegramHtml(s.aiHint),
+    ];
+    const mainToken = await showButtons({
+      telegramUserId: input.telegramUserId,
+      screen: 'main',
+      nowMs: input.nowMs,
+    });
+    return {
+      kind: 'reply',
+      text: composeTelegramHtml(parts),
+      buttons: [[button(mainToken, s.backButton)]],
+    };
+  }
+
   async function renderScreen(input: {
     readonly telegramUserId: number;
     readonly role: AdminRole;
@@ -840,6 +913,14 @@ export function createAdminPanelService(deps: {
         return renderCap({ ...input, state });
       case 'event':
         return renderEvent({ ...input, state });
+      case 'ai':
+        // The presence screen needs NO publishing state — it renders the
+        // injected booleans only (no D1 reads of its own).
+        return renderAi({
+          telegramUserId: input.telegramUserId,
+          uiLanguage: input.uiLanguage,
+          nowMs: input.nowMs,
+        });
       case 'posts':
         return renderPosts({
           telegramUserId: input.telegramUserId,
