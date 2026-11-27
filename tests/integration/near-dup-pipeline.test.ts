@@ -322,8 +322,6 @@ function tracedDraftJson(userContent: string | undefined, claimText: string): st
     'missing-evidence-id';
   return JSON.stringify({
     headlineFa: 'تیتر زنجیرهٔ ۶',
-    categoryEmoji: '🔵',
-    trustLabel: '#گزارش‌شده',
     summaryFa: 'خلاصهٔ زنجیرهٔ ۶ بر اساس شواهد ارائه‌شده.',
     claims: [{ text: claimText, evidenceIds: [evidenceId] }],
   });

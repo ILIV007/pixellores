@@ -259,6 +259,7 @@ import { randomToken } from '../../domain/admin-post/fingerprint';
 import { buildCandidateAssessmentReport } from '../../domain/editorial/candidate-assessment';
 import { buildCandidateMatchingReport } from '../../domain/editorial/candidate-matching';
 import { buildCandidateAdjudicationReport } from '../../domain/editorial/candidate-adjudication';
+import { enqueueRewriteDraftForDraft } from './enqueue-rewrite-draft';
 import {
   buildEntityMentionPhrases,
   buildEntityMentionsReport,
@@ -353,6 +354,20 @@ export interface EditorialPrepareDraftHandlerOptions {
     readonly enabled: boolean;
   };
   readonly negativeCache?: {
+    readonly enabled: boolean;
+  };
+  /**
+   * ADR-0070 (Gemini Soul rewrite stage): the independent fail-closed
+   * gate for ENQUEUEING the `editorial.rewrite_draft` job at draft
+   * creation. Absent OR disabled ⇒ no rewrite job is ever enqueued and
+   * the handler keeps its exact prior behavior (the accepted path stays
+   * intact). Enabled ⇒ immediately after the fenced commit succeeds, a
+   * best-effort rewrite job is created for the new draft (see
+   * ./enqueue-rewrite-draft.ts — an enqueue failure never fails the
+   * prepare-draft job). The flag NEVER implies EDITORIAL_ENABLED or
+   * AI_ENABLED — it lives strictly inside the already-gated pipeline.
+   */
+  readonly rewrite?: {
     readonly enabled: boolean;
   };
   readonly nowMs: () => number;
@@ -2230,6 +2245,19 @@ export function createEditorialPrepareDraftHandler(
           resolvedPairs: entityMentionResolution.resolved.length,
           distinctEntities: distinctMentionedEntities,
           inserted: commit.entityMentionsInserted,
+        });
+      }
+      // ADR-0070 §5: the rewrite job is enqueued AT DRAFT CREATION —
+      // immediately after the fenced commit succeeds, while the rewrite
+      // flag is on. Best-effort (see ./enqueue-rewrite-draft.ts): an
+      // enqueue failure never fails this job — the draft is committed
+      // and the bridge defers it while the flag is on.
+      if (options.rewrite?.enabled === true) {
+        await enqueueRewriteDraftForDraft({
+          executor,
+          draftId,
+          nowMs: nowMs(),
+          logger,
         });
       }
       return { kind: 'success' };

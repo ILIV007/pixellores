@@ -96,8 +96,6 @@ function createHarness(options?: {
       kind: 'ok',
       rawText: JSON.stringify({
         headlineFa: 'به‌روزرسانی بزرگ بازی نمونه منتشر شد',
-        categoryEmoji: '🔵',
-        trustLabel: '#گزارش‌شده',
         summaryFa: 'خلاصهٔ آزمایشی خبر بر اساس شواهد ارائه‌شده.',
         claims: [
           { text: VERBATIM_CLAIM, evidenceIds: [evidenceId] },

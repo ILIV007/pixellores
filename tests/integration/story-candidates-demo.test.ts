@@ -201,8 +201,6 @@ describe('story candidates demo — offline runner (R1.15 exact-content reuse)',
           kind: 'ok',
           rawText: JSON.stringify({
             headlineFa: 'تیتر دموی مصنوعی',
-            categoryEmoji: '🔵',
-            trustLabel: '#گزارش‌شده',
             summaryFa: 'خلاصهٔ دموی مصنوعی؛ خروجی مدل یک فیکسچر آفلاین است.',
             claims: [
               { text: 'استودیوی آزمایشی از عرضهٔ نسخهٔ جدید خبر داد.', evidenceIds: [evidenceId] },

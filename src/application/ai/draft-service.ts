@@ -277,6 +277,9 @@ export function createAiDraftService(deps: AiDraftServiceDeps): AiDraftService {
       candidate: Candidate,
       outcome: AiAttemptRecord['outcome'],
       durationMs: number,
+      // ADR-0070 §8: the transport error's stable NAME only (e.g.
+      // 'TypeError') — carried on the log line when the adapter named it.
+      transportErrorName?: string,
     ): void => {
       attempts.push({
         provider: candidate.provider,
@@ -292,6 +295,7 @@ export function createAiDraftService(deps: AiDraftServiceDeps): AiDraftService {
         policyVersion: AI_POLICY_VERSION,
         outcome,
         durationMs,
+        ...(transportErrorName !== undefined ? { transportErrorName } : {}),
       });
     };
 
@@ -677,13 +681,22 @@ export function createAiDraftService(deps: AiDraftServiceDeps): AiDraftService {
           authFailedProviders.add(candidate.provider);
           break;
         }
-        case 'model_unavailable':
+        case 'model_unavailable': {
+          record(candidate, 'model_unavailable', durationMs);
+          // No provider completion: refund the attempt and count the
+          // provider failure toward the breaker.
+          await refundAttempt(candidate);
+          await noteBreakerFailure(candidate.provider);
+          if (callOutcome.retryAfterMs !== undefined) {
+            knownRetryAfterMs = Math.max(knownRetryAfterMs, callOutcome.retryAfterMs);
+          }
+          break;
+        }
         case 'transient': {
-          record(
-            candidate,
-            callOutcome.kind === 'model_unavailable' ? 'model_unavailable' : 'transient_failure',
-            durationMs,
-          );
+          // ADR-0070 §8: the adapter names the transport failure (stable
+          // error NAME only) — it rides the attempt log line so the next
+          // 0 ms failure is diagnosable instead of a bare 'transient'.
+          record(candidate, 'transient_failure', durationMs, callOutcome.transportErrorName);
           // No provider completion: refund the attempt and count the
           // provider failure toward THE CANDIDATE'S OWN account breaker.
           await refundAttempt(candidate);

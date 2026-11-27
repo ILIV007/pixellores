@@ -54,7 +54,11 @@ used (owner decision 2026-11-21).
    `AbortController` deadline race covering headers AND body, bounded body
    read, strict HTTPS to ONE fixed origin (the account id and model id are
    the only caller-controlled path segments, both strictly validated),
-   `redirect: 'error'`, and the stable outcome mapping (429 → `quota_denied`
+   `redirect: 'manual'` (corrected 2026-11-27 from `'error'`: workerd
+   rejects `'error'` with a synchronous TypeError — the same root cause
+   as the Gemini transport failure, ADR-0070 §1; the refusal intent is
+   preserved, the 3xx maps to `transient`, never followed), and the
+   stable outcome mapping (429 → `quota_denied`
    with Retry-After, 401/403 → `auth_failed`, 404 → `model_unavailable`,
    other non-200 → `transient`, 200 with `success: false` → `transient`).
 

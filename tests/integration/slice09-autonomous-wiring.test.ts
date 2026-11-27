@@ -167,8 +167,6 @@ async function createChain(claimByCallIndex: (callIndex: number) => string): Pro
         kind: 'ok',
         rawText: JSON.stringify({
           headlineFa: 'تیتر زنجیرهٔ سرتاسری ۰۹',
-          categoryEmoji: '🔵',
-          trustLabel: '#گزارش‌شده',
           summaryFa: 'خلاصهٔ زنجیرهٔ سرتاسری ۰۹ بر اساس شواهد ارائه‌شده.',
           claims: [{ text: claimByCallIndex(callIndex), evidenceIds: [evidenceId] }],
         }),
@@ -357,6 +355,8 @@ describe('slice 9 — the wired autonomous chain', () => {
       refused: 0,
       deferredGuideLane: 0,
       deferredCategoryCap: 0,
+      deferredRewrite: 0,
+      failedRewrite: 0,
       rejected: 0,
     });
     expect((await chain.listDrafts()).every((draft) => draft.status === 'auto_approved')).toBe(
@@ -501,6 +501,8 @@ describe('slice 9 — the wired autonomous chain', () => {
       refused: 0,
       deferredGuideLane: 0,
       deferredCategoryCap: 0,
+      deferredRewrite: 0,
+      failedRewrite: 0,
       rejected: 0,
     });
     expect((await chain.listDrafts()).every((draft) => draft.status === 'ready')).toBe(true);

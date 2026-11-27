@@ -233,6 +233,13 @@ export const EDITORIAL_DRAFT_WARNINGS = [
  * the Soul form in the render; the draft only carries the choice.
  * Present on every draft built under prompt v2; absent is the honest
  * historical (prompt-v1) shape — never backfilled, never invented.
+ *
+ * Prompt v3 (ADR-0070): the draft prompt NO LONGER produces the Soul
+ * form — Workers AI does raw extraction only. `soulForm` is now
+ * OPTIONAL and written ONLY when the semantic draft carries BOTH fields
+ * (a v2-shaped input); a v3 draft honestly has NO soulForm. The Gemini
+ * rewrite writes it later (see `applyRewriteToDocument` below). Old
+ * drafts are never backfilled.
  */
 export function buildDraftDocument(input: {
   readonly sourceItemId: string;
@@ -300,13 +307,30 @@ export function buildDraftDocument(input: {
     readonly candidateAdjudication?: CandidateAdjudicationReport;
     /** Present ONLY when the fact-guard gate is ON (never an empty key). */
     readonly factGuard?: FactGuardReport;
-    /** The model's Soul v1 form choice (prompt v2; validated enums).
-     * Present on every draft built under prompt v2; absent is the honest
-     * prompt-v1 historical shape. The render does not consume it yet. */
-    readonly soulForm: {
+    /**
+     * The Soul v1 form choice (prompt v2; validated enums) — OPTIONAL
+     * since ADR-0070: prompt-v3 raw drafts honestly carry NO soulForm
+     * (Workers AI never chooses it); the Gemini rewrite writes it later.
+     * Present on v2 drafts and on rewritten drafts; absent is the honest
+     * raw shape — never backfilled, never invented. The render does not
+     * consume it yet.
+     */
+    readonly soulForm?: {
       readonly categoryEmoji: string;
       readonly trustLabel: string;
     };
+    /**
+     * The Gemini rewrite block (ADR-0070) — OPTIONAL, additive, written
+     * ONLY by the rewrite commit. Absent = the draft was never rewritten
+     * (raw v3 shape). `status: 'rewritten'` is the bridge's proof the
+     * Soul voice is Gemini's; `'failed'` excludes the draft from
+     * auto-publish until a human reviews it.
+     */
+    readonly rewrite?: EditorialDraftRewriteBlock;
+    /** Raw texts preserved for audit when a rewrite replaces them
+     * (ADR-0070 §4) — additive, written ONLY by the rewrite commit. */
+    readonly rawHeadlineFa?: string;
+    readonly rawSummaryFa?: string;
   };
   readonly facts: readonly {
     readonly text: string;
@@ -353,10 +377,18 @@ export function buildDraftDocument(input: {
         ? { candidateAdjudication: input.candidateAdjudication }
         : {}),
       ...(input.factGuard !== undefined ? { factGuard: input.factGuard } : {}),
-      soulForm: {
-        categoryEmoji: input.semanticDraft.categoryEmoji,
-        trustLabel: input.semanticDraft.trustLabel,
-      },
+      // ADR-0070: prompt-v3 raw drafts carry NO Soul form — the fields
+      // are written ONLY when the semantic draft actually has both (a
+      // v2-shaped input). Absent is the honest raw shape.
+      ...(input.semanticDraft.categoryEmoji !== undefined &&
+      input.semanticDraft.trustLabel !== undefined
+        ? {
+            soulForm: {
+              categoryEmoji: input.semanticDraft.categoryEmoji,
+              trustLabel: input.semanticDraft.trustLabel,
+            },
+          }
+        : {}),
     },
     facts: modelClaims.map((claim) => ({
       text: claim.text,
@@ -370,3 +402,275 @@ export function buildDraftDocument(input: {
 
 /** Draft version this pipeline writes (re-exported for callers). */
 export const DRAFT_VERSION = EDITORIAL_DRAFT_VERSION;
+
+/**
+ * ADR-0070 — the Gemini rewrite block carried additively in
+ * `document_json`. `status: 'rewritten'` is the bridge's proof the Soul
+ * voice is Gemini's; `'failed'` excludes the draft from auto-publish
+ * until a human reviews it; `'pending'` (implementation addition: the
+ * ADR names only rewritten/failed) records a failed invocation that has
+ * NOT yet exhausted the 2-attempt budget, so the spent count survives
+ * across job generations. Absent = never rewritten (raw v3 shape). The
+ * bridge defers ANY status other than `'rewritten'`.
+ */
+export interface EditorialDraftRewriteBlock {
+  readonly status: 'rewritten' | 'failed' | 'pending';
+  /** Provider that authored the final text ('gemini' — never Workers AI). */
+  readonly model: string;
+  /** Rewrite prompt version (pixel-news-rewrite-v1). */
+  readonly promptVersion: string;
+  /** Soul version the rewrite prompt encodes (v1). */
+  readonly soulVersion: string;
+  /** Rewrite invocations spent on this draft (max 2 — ADR-0070 §5). */
+  readonly attempts: number;
+  /** Epoch ms of the successful rewrite (rewritten only). */
+  readonly rewrittenAtMs?: number;
+  /** Epoch ms the draft was marked failed (failed only). */
+  readonly failedAtMs?: number;
+  /** Stable failure reason code (failed only). */
+  readonly reason?: string;
+}
+
+/**
+ * Minimal structural shape of a STORED draft document for the rewrite
+ * path (ADR-0070). The index signature keeps every other additive report
+ * (evidenceGuard, candidateDiscovery, factGuard, …) riding along
+ * untouched through the rewrite's object spread — the rewrite replaces
+ * ONLY headlineFa/summaryFa/soulForm/rewrite/raw* and never drops a
+ * sibling field.
+ */
+export interface StoredDraftDocument {
+  readonly schemaVersion: 1;
+  readonly locale: 'fa';
+  readonly headlineFa: string;
+  readonly summaryFa: string;
+  readonly sourceReport: {
+    readonly sourceItemId: string;
+    readonly sourceName: string;
+    readonly stance: 'mentions';
+    readonly excerptText: string;
+    readonly truncated: boolean;
+  };
+  readonly modelClaims: readonly {
+    readonly text: string;
+    readonly evidenceIds: readonly string[];
+    readonly status: 'unverified';
+  }[];
+  readonly soulForm?: {
+    readonly categoryEmoji: string;
+    readonly trustLabel: string;
+  };
+  readonly rewrite?: EditorialDraftRewriteBlock;
+  readonly rawHeadlineFa?: string;
+  readonly rawSummaryFa?: string;
+  readonly [key: string]: unknown;
+}
+
+/** The validated input the rewrite service needs from a stored draft. */
+export interface RewriteDraftInput {
+  readonly document: StoredDraftDocument;
+  /** Raw headline + summary + claim texts — the rewrite's fact basis. */
+  readonly headlineFa: string;
+  readonly summaryFa: string;
+  readonly claimTexts: readonly string[];
+  readonly sourceName: string;
+  /** Rewrite invocations already spent on this draft (0 when absent). */
+  readonly attemptsSpent: number;
+  /** True when the document is already marked rewrite.failed. */
+  readonly alreadyFailed: boolean;
+  /** True when the document is already marked rewrite.rewritten. */
+  readonly alreadyRewritten: boolean;
+}
+
+/**
+ * Validate a stored `document_json` for the rewrite path. Returns null
+ * for ANY structural problem (not an object, missing/empty headline or
+ * summary, malformed claims/sourceReport) — the handler maps null to a
+ * typed permanent outcome, never a guessed rewrite input. A present but
+ * malformed `rewrite` block is also a rejection: a half-written block
+ * must never decide the draft's fate.
+ *
+ * SHAPE NOTE (found by the rewrite-draft integration test, 2026-11-27):
+ * the stored `document_json` is the BARE StoredDraftDocument — the
+ * prepare-draft handler stores `canonicalizeJson(document.document)`,
+ * not the `{title, document, facts, warnings}` build wrapper — and
+ * every other reader (the auto-gate, the exact-content basis) reads it
+ * bare. This parser reads the bare record directly; an earlier version
+ * unwrapped a `document` key that never exists in stored JSON, which
+ * would have rejected every real draft as invalid.
+ */
+export function parseDraftDocumentForRewrite(documentJson: string): RewriteDraftInput | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(documentJson);
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return null;
+  }
+  const doc = parsed as Record<string, unknown>;
+  const headlineFa = doc['headlineFa'];
+  const summaryFa = doc['summaryFa'];
+  if (typeof headlineFa !== 'string' || headlineFa.trim().length === 0) {
+    return null;
+  }
+  if (typeof summaryFa !== 'string' || summaryFa.trim().length === 0) {
+    return null;
+  }
+  const modelClaims = doc['modelClaims'];
+  if (!Array.isArray(modelClaims)) {
+    return null;
+  }
+  const claimTexts: string[] = [];
+  for (const claim of modelClaims) {
+    if (claim === null || typeof claim !== 'object' || Array.isArray(claim)) {
+      return null;
+    }
+    const text = (claim as Record<string, unknown>)['text'];
+    if (typeof text !== 'string' || text.length === 0) {
+      return null;
+    }
+    claimTexts.push(text);
+  }
+  const sourceReport = doc['sourceReport'];
+  if (sourceReport === null || typeof sourceReport !== 'object' || Array.isArray(sourceReport)) {
+    return null;
+  }
+  const sourceName = (sourceReport as Record<string, unknown>)['sourceName'];
+  if (typeof sourceName !== 'string' || sourceName.length === 0) {
+    return null;
+  }
+  const rewrite = doc['rewrite'];
+  let attemptsSpent = 0;
+  let alreadyFailed = false;
+  let alreadyRewritten = false;
+  if (rewrite !== undefined) {
+    if (rewrite === null || typeof rewrite !== 'object' || Array.isArray(rewrite)) {
+      return null;
+    }
+    const rewriteRecord = rewrite as Record<string, unknown>;
+    const status = rewriteRecord['status'];
+    if (status !== 'rewritten' && status !== 'failed' && status !== 'pending') {
+      return null;
+    }
+    const attempts = rewriteRecord['attempts'];
+    if (typeof attempts !== 'number' || !Number.isSafeInteger(attempts) || attempts < 0) {
+      return null;
+    }
+    attemptsSpent = attempts;
+    alreadyFailed = status === 'failed';
+    alreadyRewritten = status === 'rewritten';
+  }
+  return {
+    document: doc as unknown as StoredDraftDocument,
+    headlineFa,
+    summaryFa,
+    claimTexts,
+    sourceName,
+    attemptsSpent,
+    alreadyFailed,
+    alreadyRewritten,
+  };
+}
+
+/**
+ * Apply a successful Gemini rewrite IN PLACE (ADR-0070 §4): the
+ * rewritten headline/summary REPLACE the raw texts; the raw texts are
+ * preserved for audit as `rawHeadlineFa`/`rawSummaryFa` (an existing
+ * raw pair — a second rewrite — is kept, never overwritten with
+ * already-rewritten text); the Soul form rides as `soulForm`; the
+ * `rewrite` block records the proof. Claims and every sibling report
+ * are untouched (object spread, not a rebuild).
+ */
+export function applyRewriteToDocument(
+  document: StoredDraftDocument,
+  rewrite: {
+    readonly headlineFa: string;
+    readonly summaryFa: string;
+    readonly categoryEmoji: string;
+    readonly trustLabel: string;
+    readonly model: string;
+    readonly promptVersion: string;
+    readonly soulVersion: string;
+    readonly attempts: number;
+    readonly rewrittenAtMs: number;
+  },
+): StoredDraftDocument {
+  return {
+    ...document,
+    headlineFa: rewrite.headlineFa,
+    summaryFa: rewrite.summaryFa,
+    rawHeadlineFa: document.rawHeadlineFa ?? document.headlineFa,
+    rawSummaryFa: document.rawSummaryFa ?? document.summaryFa,
+    soulForm: {
+      categoryEmoji: rewrite.categoryEmoji,
+      trustLabel: rewrite.trustLabel,
+    },
+    rewrite: {
+      status: 'rewritten',
+      model: rewrite.model,
+      promptVersion: rewrite.promptVersion,
+      soulVersion: rewrite.soulVersion,
+      attempts: rewrite.attempts,
+      rewrittenAtMs: rewrite.rewrittenAtMs,
+    },
+  };
+}
+
+/**
+ * Record a FAILED rewrite invocation that has NOT yet exhausted the
+ * 2-attempt budget (ADR-0070 §5): the raw texts stay exactly as they
+ * are; only the `rewrite` block changes, to `pending` with the spent
+ * count — so the next job generation knows one attempt is already gone.
+ * The draft stays `ready` and the bridge keeps deferring it.
+ */
+export function markRewritePendingOnDocument(
+  document: StoredDraftDocument,
+  pending: {
+    readonly promptVersion: string;
+    readonly soulVersion: string;
+    readonly attempts: number;
+  },
+): StoredDraftDocument {
+  return {
+    ...document,
+    rewrite: {
+      status: 'pending',
+      model: 'gemini',
+      promptVersion: pending.promptVersion,
+      soulVersion: pending.soulVersion,
+      attempts: pending.attempts,
+    },
+  };
+}
+
+/**
+ * Mark a draft's rewrite FAILED (ADR-0070 §5): the raw texts stay
+ * exactly as they are (no rewritten text exists to apply); only the
+ * `rewrite` block changes. The draft stays `ready` in D1 — the BRIDGE
+ * excludes it from auto-publish, never the handler.
+ */
+export function markRewriteFailedOnDocument(
+  document: StoredDraftDocument,
+  failure: {
+    readonly reason: string;
+    readonly promptVersion: string;
+    readonly soulVersion: string;
+    readonly attempts: number;
+    readonly failedAtMs: number;
+  },
+): StoredDraftDocument {
+  return {
+    ...document,
+    rewrite: {
+      status: 'failed',
+      model: 'gemini',
+      promptVersion: failure.promptVersion,
+      soulVersion: failure.soulVersion,
+      attempts: failure.attempts,
+      failedAtMs: failure.failedAtMs,
+      reason: failure.reason,
+    },
+  };
+}

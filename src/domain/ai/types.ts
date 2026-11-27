@@ -30,9 +30,10 @@ export type AiProvider = 'workers-ai' | 'workers-ai-backup' | 'gemini';
  * (its request/contract/prompt are untouched); R1.17 (Phase 5E-1) adds the
  * SEPARATE `event_relation` adjudication task with its OWN immutable prompt
  * version and strict output schema — the draft contract is never reshaped
- * into adjudication.
+ * into adjudication. ADR-0070 adds `news_rewrite`: the Gemini-only Soul
+ * rewrite stage (its own prompt v1, own ai_runs namespace).
  */
-export type AiTaskType = 'news_draft' | 'event_relation';
+export type AiTaskType = 'news_draft' | 'event_relation' | 'news_rewrite';
 
 /** Output locale. Persian is the product requirement (blueprint §1). */
 export type AiLocale = 'fa';
@@ -62,13 +63,15 @@ export interface AiSemanticDraft {
   readonly headlineFa: string;
   readonly summaryFa: string;
   /**
-   * Soul v1 §3 form, prompt v2: exactly ONE category emoji and ONE trust
-   * label per draft, chosen by the model from the FIXED Soul lists below.
-   * The RENDER owns their display (a separate fix); the draft only
-   * carries the model's choice, validated by the output schema.
+   * Prompt-v2 legacy (ADR-0066): the Soul v1 §3 form choice, picked by
+   * the model from the FIXED Soul lists. Prompt v3 (ADR-0070) NEVER
+   * produces these fields — Workers AI does raw extraction only and the
+   * Soul form is chosen ONLY by the Gemini rewrite. Optional so
+   * historical v2 drafts and fixtures still type-check; the mapper
+   * writes `soulForm` ONLY when both are present, never backfilled.
    */
-  readonly categoryEmoji: SoulCategoryEmoji;
-  readonly trustLabel: SoulTrustLabel;
+  readonly categoryEmoji?: SoulCategoryEmoji;
+  readonly trustLabel?: SoulTrustLabel;
   readonly claims: readonly AiSemanticClaim[];
 }
 
@@ -125,7 +128,11 @@ export type AiDeferredReason =
   | 'provider_unavailable'
   | 'provider_auth_failed'
   | 'circuit_open'
-  | 'no_free_path';
+  | 'no_free_path'
+  /** ADR-0070: the Gemini rewrite stage's own flag is OFF — no rewrite
+   * work is attempted (distinct from `ai_disabled`: the master gate may
+   * be ON while the rewrite stage stays off). */
+  | 'rewrite_disabled';
 
 /** Sanitized attempt record — safe for logs and caller inspection. */
 export interface AiAttemptRecord {
@@ -188,7 +195,16 @@ export type AiCallOutcome =
   | { readonly kind: 'refused' }
   | { readonly kind: 'model_unavailable'; readonly retryAfterMs?: number }
   | { readonly kind: 'quota_denied'; readonly retryAfterMs?: number }
-  | { readonly kind: 'transient'; readonly retryAfterMs?: number }
+  /**
+   * ADR-0070 §8: the transport error's stable NAME only (e.g.
+   * 'TypeError') — present when the fetch itself threw, so the attempt
+   * log can name the failure. Never a message, URL, header, or body.
+   */
+  | {
+      readonly kind: 'transient';
+      readonly retryAfterMs?: number;
+      readonly transportErrorName?: string;
+    }
   | { readonly kind: 'auth_failed' }
   | { readonly kind: 'deadline_exceeded' };
 

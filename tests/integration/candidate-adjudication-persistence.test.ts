@@ -280,8 +280,6 @@ function createHarness(options?: {
             kind: 'ok',
             rawText: JSON.stringify({
               headlineFa: 'تیتر آزمایشی داوری نامزدها',
-              categoryEmoji: '🔵',
-              trustLabel: '#گزارش‌شده',
               summaryFa: 'خلاصهٔ آزمایشی؛ فیکسچر آفلاین مسیر واقعی.',
               claims: [{ text: 'ادعای آزمایشی مرتبط با شاهد.', evidenceIds: [evidenceId] }],
             }),

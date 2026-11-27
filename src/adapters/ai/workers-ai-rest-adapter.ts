@@ -27,8 +27,11 @@
  *   id and the model id are the only caller-controlled path segments,
  *   both strictly format-checked/percent-encoded. No arbitrary host may
  *   be supplied by callers or by model output.
- * - `redirect: 'error'` — a redirect is refused outright instead of
- *   being followed to an untrusted host.
+ * - `redirect: 'manual'` — a redirect is NEVER followed (the 3xx
+ *   arrives as a response and maps to `transient`; its Location is
+ *   never read). workerd does NOT implement `redirect: 'error'` — it
+ *   throws a synchronous TypeError before any network (the Gemini
+ *   transport failure, ADR-0070 §1; corrected 2026-11-27).
  * - The response body is read with the shared bounded reader (strict
  *   byte cap + early Content-Length rejection + strict UTF-8).
  * - The wall deadline covers HEADERS *AND* BODY: the timer stays armed
@@ -153,10 +156,21 @@ export class WorkersAiRestAdapter implements AiProviderPort {
           authorization: `Bearer ${this.apiToken}`,
         },
         body,
-        redirect: 'error',
+        // workerd implements ONLY 'follow' | 'manual' — 'error' throws a
+        // synchronous TypeError before any network (ADR-0070 §1).
+        // 'manual' returns 3xx as a response; the status branch below
+        // maps it to transient without ever following it.
+        redirect: 'manual',
         signal: abortController.signal,
       });
       if (response.status !== 200) {
+        // Redirects are NEVER followed (redirect: 'manual' above): a 3xx
+        // response arrives here as a response — never a followed hop, its
+        // Location never read — and maps to transient like any other
+        // non-200 status.
+        if (response.status >= 300 && response.status < 400) {
+          return { kind: 'transient' };
+        }
         const retryAfterMs = parseRetryAfterMs(response.headers.get('retry-after'));
         switch (response.status) {
           case 429:

@@ -50,8 +50,6 @@ function buildTracedDraftJson(userContent: string | undefined): string {
     'missing-evidence-id';
   return JSON.stringify({
     headlineFa: 'تیتر آزمایشی خبر',
-    categoryEmoji: '🔵',
-    trustLabel: '#گزارش‌شده',
     summaryFa: 'خلاصهٔ آزمایشی خبر بر اساس شواهد ارائه‌شده.',
     claims: [{ text: 'استودیوی آزمایشی از عرضهٔ نسخهٔ جدید خبر داد.', evidenceIds: [evidenceId] }],
   });
@@ -423,7 +421,7 @@ describe('scenario 1 — one news → story + source_report + evidence + ai_run 
       task: 'news_draft',
       provider: 'workers-ai',
       model: '@cf/google/gemma-4-26b-a4b-it',
-      prompt_version: 'pixel-news-draft-v2',
+      prompt_version: 'pixel-news-draft-v3',
       status: 'succeeded',
       input_tokens: 42,
       output_tokens: 17,
@@ -957,8 +955,6 @@ describe('scenario 7 — unusable AI output never becomes a fake success', () =>
       kind: 'ok',
       rawText: JSON.stringify({
         headlineFa: 'h',
-        categoryEmoji: '🔵',
-        trustLabel: '#گزارش‌شده',
         summaryFa: 's',
         claims: [{ text: 'c', evidenceIds: ['nonexistent-evidence'] }],
       }),
@@ -1508,8 +1504,6 @@ describe('R1.11.1 corrections (Posidon correctness review) — traced-claim guar
       kind: 'ok',
       rawText: JSON.stringify({
         headlineFa: 'تیتر بدون ادعا',
-        categoryEmoji: '🔵',
-        trustLabel: '#گزارش‌شده',
         summaryFa: 'خلاصه بدون ادعا.',
         claims: [],
       }),

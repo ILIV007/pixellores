@@ -59,6 +59,16 @@
  *   An over-cap draft stays `ready` (deferred, never rejected):
  *   the scheduler remains the enforcement backstop at send time,
  *   and an unclassifiable draft skips the cap check.
+ *
+ * ADR-0070 — REWRITE SEAM: when the caller threads `rewriteRequired`
+ * (the AI_GEMINI_REWRITE_ENABLED flag, resolved once per cron pass),
+ * a ready draft bridges ONLY after its Soul rewrite landed
+ * (`document.rewrite.status === 'rewritten'`). Anything else is
+ * DEFERRED — an un-rewritten draft stays `ready` for a later pass
+ * (`deferredRewrite`), and a `rewrite.status = 'failed'` draft is
+ * NEVER bridged (`failedRewrite`) until a human reviews it. When the
+ * flag is OFF the bridge behaves exactly as today (raw drafts
+ * publish) — the flag is the kill-switch.
  */
 import type { DbExecutor } from '../../adapters/db/db-executor';
 import {
@@ -124,9 +134,38 @@ export type AutoPublishBridgeReport =
       readonly deferredGuideLane: number;
       /** Drafts the category cap deferred this pass (left `ready`). */
       readonly deferredCategoryCap: number;
+      /** ADR-0070: drafts deferred because their Soul rewrite has not
+       * landed yet (left `ready` for a later pass). */
+      readonly deferredRewrite: number;
+      /** ADR-0070: drafts NEVER bridged — their rewrite failed and a
+       * human must review them first (left `ready`). */
+      readonly failedRewrite: number;
       /** Drafts that failed the transition or the enqueue. */
       readonly rejected: number;
     };
+
+/** The rewrite status a stored draft document carries (ADR-0070). */
+function readRewriteStatus(documentJson: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(documentJson);
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null;
+    }
+    // Stored document_json is the BARE StoredDraftDocument (see
+    // parseDraftDocumentForRewrite's shape note) — the rewrite block
+    // rides at the top level, never under a `document` key.
+    const rewrite = (parsed as Record<string, unknown>)['rewrite'];
+    if (rewrite === null || typeof rewrite !== 'object' || Array.isArray(rewrite)) {
+      return null;
+    }
+    const status = (rewrite as Record<string, unknown>)['status'];
+    return typeof status === 'string' ? status : null;
+  } catch {
+    // An unparsable document can never prove a rewrite landed — defer
+    // it (the gate below would refuse it anyway); never crash the pass.
+    return null;
+  }
+}
 
 export async function bridgeReadyDrafts(input: {
   readonly executor: DbExecutor;
@@ -134,6 +173,12 @@ export async function bridgeReadyDrafts(input: {
   readonly mode: PublishMode;
   readonly nowMs: number;
   readonly limit?: number;
+  /**
+   * ADR-0070: true while AI_GEMINI_REWRITE_ENABLED is on — a draft
+   * bridges only after its Soul rewrite landed. False/absent ⇒ the
+   * bridge behaves exactly as today (raw drafts publish).
+   */
+  readonly rewriteRequired?: boolean;
   readonly logger?: Logger;
 }): Promise<AutoPublishBridgeReport> {
   if (input.mode !== 'auto' && input.mode !== 'safe-auto') {
@@ -171,6 +216,8 @@ export async function bridgeReadyDrafts(input: {
   let refused = 0;
   let deferredGuideLane = 0;
   let deferredCategoryCap = 0;
+  let deferredRewrite = 0;
+  let failedRewrite = 0;
   let rejected = 0;
   let guidesApproved = 0;
   // The categories approved in THIS pass ride the rolling window with
@@ -178,6 +225,24 @@ export async function bridgeReadyDrafts(input: {
   const approvedCategories: MixCategory[] = [];
   const approvalMode = input.mode === 'safe-auto' ? 'safe_auto' : 'auto';
   for (const draft of drafts) {
+    // ADR-0070 — the rewrite seam runs FIRST: a draft whose Soul
+    // rewrite has not landed cannot bridge this pass, whatever the
+    // gate would say. Failed rewrites are never bridged; anything else
+    // un-rewritten is deferred (left `ready`) for a later pass.
+    if (input.rewriteRequired === true) {
+      const rewriteStatus = readRewriteStatus(draft.document_json);
+      if (rewriteStatus === 'failed') {
+        failedRewrite += 1;
+        input.logger?.warn('publishing.bridge.rewrite_failed_skipped', {
+          draftId: draft.id,
+        });
+        continue;
+      }
+      if (rewriteStatus !== 'rewritten') {
+        deferredRewrite += 1;
+        continue;
+      }
+    }
     const verdict = evaluateAutoPublishGate(draft.document_json);
     if (verdict.kind === 'requires_review') {
       requiresReview += 1;
@@ -282,6 +347,8 @@ export async function bridgeReadyDrafts(input: {
     refused,
     deferredGuideLane,
     deferredCategoryCap,
+    deferredRewrite,
+    failedRewrite,
     rejected,
   };
 }

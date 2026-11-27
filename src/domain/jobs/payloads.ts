@@ -65,6 +65,21 @@ export const EditorialPrepareDraftPayloadSchema = z
 export type EditorialPrepareDraftPayload = z.infer<typeof EditorialPrepareDraftPayloadSchema>;
 
 /**
+ * `editorial.rewrite_draft` payload (ADR-0070 §5): a REFERENCE to an
+ * existing durable `drafts` row ONLY — the handler reads all state from
+ * D1. NO news text, NO raw draft, NO secret ever enters the durable
+ * envelope (blueprint §7). `draftId` is the deterministic draft id the
+ * prepare-draft commit wrote.
+ */
+export const EditorialRewriteDraftPayloadSchema = z
+  .object({
+    draftId: z.string().regex(/^[A-Za-z0-9_]{1,64}$/),
+  })
+  .strict();
+
+export type EditorialRewriteDraftPayload = z.infer<typeof EditorialRewriteDraftPayloadSchema>;
+
+/**
  * Per-type payload schemas. Only REGISTERED (implemented) job types appear
  * here; the engine refuses to create or execute a type without a schema
  * (fail-safe — ADR-0036 §7). The Phase 4 poll type is created ONLY by the
@@ -80,6 +95,7 @@ export const PAYLOAD_SCHEMAS: ReadonlyMap<string, z.ZodType> = new Map<string, z
   ['jobs.maintenance_heartbeat', MaintenanceHeartbeatPayloadSchema],
   ['sources.fetch_poll', SourcesPollPayloadSchema],
   ['editorial.prepare_draft', EditorialPrepareDraftPayloadSchema],
+  ['editorial.rewrite_draft', EditorialRewriteDraftPayloadSchema],
 ]);
 
 /** Create-time input validation (type is bounded syntax, NOT yet registered). */

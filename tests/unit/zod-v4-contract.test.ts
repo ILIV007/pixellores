@@ -194,8 +194,6 @@ describe('zod v4 migration: the durable job payload contract is preserved', () =
 describe('zod v4 migration: the AI provider-output contract is preserved', () => {
   const validDraft = JSON.stringify({
     headlineFa: 'تیتر',
-    categoryEmoji: '🔵',
-    trustLabel: '#گزارش‌شده',
     summaryFa: 'خلاصه',
     claims: [{ text: 'ادعا', evidenceIds: ['e1'] }],
   });
@@ -213,7 +211,11 @@ describe('zod v4 migration: the AI provider-output contract is preserved', () =>
     const mismatch = parseAiSemanticDraftJson(
       '{"headlineFa":"h","summaryFa":"s","categoryEmoji":"🔵","trustLabel":"#گزارش‌شده","claims":[]}',
     );
-    expect(mismatch.ok).toBe(true); // zero claims is a SHAPE match; emptiness is a service rule
+    // ADR-0070: a v2-shaped output is a schema mismatch under prompt v3
+    // (raw extraction only) — the Soul fields are rejected outright.
+    expect(mismatch.ok).toBe(false);
+    if (mismatch.ok) return;
+    expect(mismatch.code).toBe('schema_mismatch');
     const wrongShape = parseAiSemanticDraftJson(
       JSON.stringify({ headlineFa: 'h', summaryFa: 's', claims: [{ text: 't' }] }),
     );

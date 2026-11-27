@@ -254,6 +254,22 @@ export async function findDraftForStory(
 }
 
 /**
+ * ADR-0070 — the rewrite handler's draft lookup: one draft by its
+ * durable id (the rewrite job carries ONLY the draft id — all state is
+ * read from D1, never from the payload).
+ */
+export async function findDraftById(
+  executor: DbExecutor,
+  draftId: string,
+): Promise<EditorialDraftRow | null> {
+  return executor.first<EditorialDraftRow>({
+    sql: `SELECT id, story_id, status, version, document_json
+            FROM drafts WHERE id = ?`,
+    params: [draftId],
+  });
+}
+
+/**
  * The STABLE-RESULT lookup: the (story, ready draft) pair that proves the
  * pipeline's durable effect already exists for this snapshot — the pre-AI
  * idempotency check (retry after a successful commit must NOT call the
@@ -861,6 +877,120 @@ export async function recordEditorialAiRun(
     ],
   });
   return meta.changes > 0;
+}
+
+/**
+ * ADR-0070 — the fenced rewrite commit: replace ONE ready draft's
+ * `document_json` (rewritten / pending / failed) AND its `title` (the
+ * rewritten headline — unchanged for pending/failed) in the SAME atomic
+ * D1 batch as the REAL rewrite ai_runs row (task 'news_rewrite').
+ *
+ * Rowcount is the authority, following the `commitEditorialResult`
+ * pattern:
+ * - the UPDATE carries the job-ownership fence AND the
+ *   `status = 'ready'` predicate AND the exact document bytes the
+ *   handler read: a draft whose document changed underneath (a
+ *   concurrent rewrite) or whose status moved is NEVER overwritten —
+ *   zero rows update, `documentUpdated: false`, and the ai_runs row is
+ *   withheld with it (the batch is atomic — a lost fence writes NO
+ *   run and NO document).
+ * - the ai_runs INSERT carries the same fence plus its own-row guard.
+ * - `aiRun: null` (no provider attempt happened — the defensive
+ *   attempts-exhausted correction) writes the document ONLY, never a
+ *   fabricated run: a provider that never ran is never recorded.
+ */
+export interface RewriteCommitInput {
+  /** Ownership fence: the durable job id. */
+  readonly jobId: string;
+  /** Ownership fence: the claimed generation (jobs.attempts). */
+  readonly generation: number;
+  /** Ownership fence: the "now" the lease freshness is judged against. */
+  readonly fenceNowMs: number;
+  readonly draftId: string;
+  /** The NEW document_json (already rewritten / pending / failed). */
+  readonly documentJson: string;
+  /** The NEW title (the rewritten headline) — or null to leave the
+   * stored title untouched (pending/failed commits). */
+  readonly title: string | null;
+  /** The REAL rewrite ai_runs row (task 'news_rewrite'), or null when no
+   * provider attempt happened in this invocation. */
+  readonly aiRun: EditorialCommitInput['aiRun'] | null;
+  /** The document_json the handler READ — the batch refuses to overwrite
+   * a draft whose document changed underneath. */
+  readonly expectedDocumentJson: string;
+}
+
+export interface RewriteCommitResult {
+  /** The draft row's document was replaced by THIS generation. */
+  readonly documentUpdated: boolean;
+  /** The rewrite ai_runs row was inserted by THIS generation. */
+  readonly aiRunInserted: boolean;
+  /** Zero fenced effects: the caller lost ownership (stale generation). */
+  readonly fenceLost: boolean;
+}
+
+export async function commitRewriteResult(
+  executor: DbExecutor,
+  input: RewriteCommitInput,
+): Promise<RewriteCommitResult> {
+  const fenceParams = [input.jobId, input.generation, input.fenceNowMs];
+  const run = input.aiRun;
+  const statements: { sql: string; params: readonly unknown[] }[] = [
+    {
+      sql: `UPDATE drafts SET document_json = ?, title = COALESCE(?, title), updated_at = ?
+             WHERE id = ? AND status = 'ready' AND document_json = ?
+               AND ${FENCE_PREDICATE}`,
+      params: [
+        input.documentJson,
+        input.title,
+        input.fenceNowMs,
+        input.draftId,
+        input.expectedDocumentJson,
+        ...fenceParams,
+      ],
+    },
+  ];
+  if (run !== null) {
+    statements.push({
+      sql: `INSERT INTO ai_runs (id, task, provider, model, prompt_version, input_hash, status,
+                                  latency_ms, input_tokens, output_tokens, error_code,
+                                  error_message, created_at, completed_at)
+            SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+             WHERE NOT EXISTS (SELECT 1 FROM ai_runs WHERE id = ?)
+               AND ${FENCE_PREDICATE}`,
+      params: [
+        run.id,
+        run.task,
+        run.provider,
+        run.model,
+        run.promptVersion,
+        run.inputHash,
+        run.status,
+        run.latencyMs,
+        run.inputTokens,
+        run.outputTokens,
+        run.errorCode,
+        run.errorMessage,
+        run.createdAt,
+        run.completedAt,
+        run.id,
+        ...fenceParams,
+      ],
+    });
+  }
+  const metas = await executor.batch(statements);
+  const documentUpdated = (metas[0]?.changes ?? 0) > 0;
+  const aiRunInserted = run === null ? false : (metas[1]?.changes ?? 0) > 0;
+  // The fence is the ONLY predicate shared by every statement: zero
+  // document effects with a present aiRun means ownership is gone (a
+  // changed document or a moved status would ALSO zero the update — the
+  // caller classifies that by re-reading the draft; both are retried
+  // honestly by the engine's bounded retry, never overwritten).
+  return {
+    documentUpdated,
+    aiRunInserted,
+    fenceLost: !documentUpdated && run !== null && (metas[1]?.changes ?? 0) === 0,
+  };
 }
 
 /**

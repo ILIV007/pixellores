@@ -13,10 +13,27 @@ describe('parseAiConfig — Phase 6 flags and Gemini origin', () => {
     expect(result.ok).toBe(true);
     expect(config.AI_ENABLED).toBe(false);
     expect(config.AI_GEMINI_ENABLED).toBe(false);
+    // ADR-0070: the rewrite stage has its OWN flag, default OFF — the
+    // ladder flag alone never opens it.
+    expect(config.AI_GEMINI_REWRITE_ENABLED).toBe(false);
     expect(config.EVENT_RELATION_ENABLED).toBe(false);
     expect(config.GEMINI_API_BASE_URL).toBe('https://generativelanguage.googleapis.com');
     expect(config.GEMINI_API_BASE_URL).toBe(GEMINI_API_DEFAULT_ORIGIN);
     expect(GEMINI_API_BASE_URL_DEFAULT).toBe(GEMINI_API_DEFAULT_ORIGIN);
+  });
+
+  it('ADR-0070: parses AI_GEMINI_REWRITE_ENABLED independently of the ladder flag', () => {
+    const { config, result } = parseAiConfig({
+      AI_ENABLED: 'true',
+      AI_GEMINI_ENABLED: 'false',
+      AI_GEMINI_REWRITE_ENABLED: 'true',
+    });
+    expect(result.ok).toBe(true);
+    expect(config.AI_GEMINI_REWRITE_ENABLED).toBe(true);
+    expect(config.AI_GEMINI_ENABLED).toBe(false);
+    const off = parseAiConfig({ AI_GEMINI_REWRITE_ENABLED: 'false' });
+    expect(off.result.ok).toBe(true);
+    expect(off.config.AI_GEMINI_REWRITE_ENABLED).toBe(false);
   });
 
   it('accepts a valid operator relay origin', () => {

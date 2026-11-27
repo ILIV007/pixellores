@@ -68,6 +68,7 @@ export const JOB_TYPES = [
   'jobs.maintenance_heartbeat',
   'sources.fetch_poll',
   'editorial.prepare_draft',
+  'editorial.rewrite_draft',
 ] as const;
 
 export type JobType = (typeof JOB_TYPES)[number];
@@ -151,6 +152,13 @@ export const JOB_ERROR_CODES = [
   // charges, zero writes, zero fake success. The anchor is never taken over
   // or deleted; a later re-enqueue after the owner heals decides again.
   'editorial_exact_content_blocked',
+  // ADR-0070 (Gemini Soul rewrite stage): the rewrite job's draft row is
+  // gone (missing) or its stored document is structurally unusable for a
+  // rewrite (unparsable / missing headline, summary, claims, or source
+  // report). Both are terminal: a retry would re-read the same row and
+  // land on the same verdict, never a hot loop, never a provider call.
+  'editorial_rewrite_draft_missing',
+  'editorial_rewrite_document_invalid',
 ] as const;
 
 export type JobErrorCode = (typeof JOB_ERROR_CODES)[number];

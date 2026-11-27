@@ -65,6 +65,10 @@ export interface JobEnablementEntry {
 export const JOB_ENABLEMENT_POLICY: ReadonlyMap<string, JobEnablementEntry> = new Map([
   ['sources.fetch_poll', { gate: 'ingestion_gate' }],
   ['editorial.prepare_draft', { gate: 'editorial_gate' }],
+  // ADR-0070: the rewrite job is part of the editorial pipeline — held
+  // by the same editorial gate (lossless pause when off). The rewrite
+  // flag itself decides whether such jobs are CREATED at all.
+  ['editorial.rewrite_draft', { gate: 'editorial_gate' }],
 ]);
 
 /** True iff the named gate is OFF under the snapshot (absent = ON). */

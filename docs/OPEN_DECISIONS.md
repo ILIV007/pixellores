@@ -5,19 +5,25 @@ Phase-0 review / correction pass on 2026-10-02**. Entries are preserved below
 for history; each records the original context, the decision, and the closing
 ADR. New unresolved decisions would be added here with status Open.
 
-| ID     | Title                                              | Status   | Decided    | ADR      |
-| ------ | -------------------------------------------------- | -------- | ---------- | -------- |
-| OD-001 | TARGET_CHANNEL: secret or config?                  | Closed   | 2026-10-02 | ADR-0009 |
-| OD-002 | Zod adoption timing                                | Closed   | 2026-10-02 | ADR-0010 |
-| OD-003 | Queue handler ack-all semantics                    | Closed   | 2026-10-02 | ADR-0011 |
-| OD-004 | `/version` endpoint timing                         | Closed   | 2026-10-02 | ADR-0012 |
-| OD-005 | `nodejs_compat` flag                               | Closed   | 2026-10-02 | ADR-0013 |
-| OD-006 | Per-secret fail-closed readiness phasing           | Closed   | 2026-10-02 | ADR-0014 |
-| OD-007 | `degraded` readiness semantics                     | Closed   | 2026-10-02 | ADR-0015 |
-| OD-008 | Worker name and environment resources              | Closed   | 2026-10-02 | ADR-0016 |
-| OD-009 | Source-data retention enforcement (`storeRawDays`) | **Open** | —          | —        |
-| OD-010 | The media rights-EVIDENCE model                    | **Open** | —          | —        |
-| OD-011 | House footer + no source line in channel posts     | Closed   | 2026-11-22 | —        |
+| ID     | Title                                                                             | Status   | Decided    | ADR      |
+| ------ | --------------------------------------------------------------------------------- | -------- | ---------- | -------- |
+| OD-001 | TARGET_CHANNEL: secret or config?                                                 | Closed   | 2026-10-02 | ADR-0009 |
+| OD-002 | Zod adoption timing                                                               | Closed   | 2026-10-02 | ADR-0010 |
+| OD-003 | Queue handler ack-all semantics                                                   | Closed   | 2026-10-02 | ADR-0011 |
+| OD-004 | `/version` endpoint timing                                                        | Closed   | 2026-10-02 | ADR-0012 |
+| OD-005 | `nodejs_compat` flag                                                              | Closed   | 2026-10-02 | ADR-0013 |
+| OD-006 | Per-secret fail-closed readiness phasing                                          | Closed   | 2026-10-02 | ADR-0014 |
+| OD-007 | `degraded` readiness semantics                                                    | Closed   | 2026-10-02 | ADR-0015 |
+| OD-008 | Worker name and environment resources                                             | Closed   | 2026-10-02 | ADR-0016 |
+| OD-009 | Source-data retention enforcement (`storeRawDays`)                                | **Open** | —          | —        |
+| OD-010 | The media rights-EVIDENCE model                                                   | **Open** | —          | —        |
+| OD-011 | House footer + no source line in channel posts                                    | Closed   | 2026-11-22 | —        |
+| OD-012 | The AI presence slice: booleans in the admin panel, never a config inventory      | Closed   | 2026-11-27 | —        |
+| OD-013 | Rewrite block `pending` status (ADR-0070)                                         | Closed   | 2026-11-27 | ADR-0070 |
+| OD-014 | Rewrite flag OFF at handler execution                                             | Closed   | 2026-11-27 | ADR-0070 |
+| OD-015 | Backfill: drafts created while the rewrite flag was OFF                           | **Open** | —          | ADR-0070 |
+| OD-016 | `quota_denied` consumes no rewrite attempt                                        | Closed   | 2026-11-27 | ADR-0070 |
+| OD-017 | Rewrite input excludes the source-report excerpt; `soulVersion` is prompt-encoded | Closed   | 2026-11-27 | ADR-0070 |
 
 ---
 
@@ -356,3 +362,88 @@ trigger policy — a new decision), or per-account failover presence
 (`AI_FAILOVER_ENABLED` + the backup token) on the same screen once the
 failover round goes live. The screen's record is shaped so both can be
 added as more booleans without a redesign.
+=## OD-013 — Rewrite block `pending` status (ADR-0070) — **CLOSED**
+
+**Context:** ADR-0070 names only `rewritten`/`failed` for the rewrite
+block. A failed invocation that has NOT yet exhausted the 2-attempt
+budget needs its spent count to survive across job generations, or the
+next generation would re-spend attempt #1 forever.
+
+**Decision (implementation, 2026-11-27):** the block gains a third
+status, `'pending'`, written by `markRewritePendingOnDocument` with the
+spent count. The bridge defers ANY status other than `'rewritten'`, so
+`pending` behaves exactly like "not yet rewritten" downstream. No ADR
+change needed beyond the §4 note.
+
+---
+
+## OD-014 — Rewrite flag OFF at handler execution — **CLOSED**
+
+**Context:** ADR-0070 does not specify what a `rewrite_draft` job does
+if `AI_GEMINI_REWRITE_ENABLED` flips OFF between enqueue and
+execution.
+
+**Decision (implementation, 2026-11-27):** the job completes with zero
+work (success, no engine-retry burn, no provider call). The draft
+stays raw and bridgeable while the flag is off. A missed rewrite is
+re-enqueued only by a fresh draft creation — the handler never
+re-enqueues on its own. The flag is the kill-switch; waiting on it
+inside a bounded retry would burn the engine's attempts for nothing.
+
+---
+
+## OD-015 — Backfill: drafts created while the rewrite flag was OFF — **OPEN**
+
+**Context:** drafts created while the flag is OFF (including the 20
+held v2 drafts) never get a `rewrite_draft` job — the job is enqueued
+only at draft creation, when the flag is on. With the flag ON, the
+bridge defers those drafts forever (`deferredRewrite`): they can never
+auto-publish, and no code path rewrites them.
+
+**Decision:** none yet — **Open**. The implementation deliberately does
+NOT invent a bridge-side enqueue (the bridge must never create jobs —
+that would mix the read path with the write path). Options for the
+owner: (a) a one-off backfill job that enqueues `rewrite_draft` for
+ready drafts with no rewrite block; (b) leave old drafts for the human
+path and only new drafts flow through the rewrite; (c) accept that the
+20 held drafts stay raw and bridge them with the flag off. Needs the
+owner's call before the flag is ever flipped on.
+
+---
+
+## OD-016 — `quota_denied` consumes no rewrite attempt — **CLOSED**
+
+**Context:** ADR-0070 §5 says a quota denial defers "WITHOUT consuming
+a retry attempt" but does not pin the mechanism.
+
+**Decision (implementation, 2026-11-27):** the denial consumes no
+_service-level_ attempt (no document write, the spent count does not
+move). The handler returns a recoverable retry with `retryAfterMs =
+msUntilNextTehranMidnight` (the engine's deferral primitive), and the
+job's `maxAttempts: 10` still bounds executions across days (2 service
+attempts + quota-deferral retries, at most ~1/day). The denial IS
+observed in `ai_runs` (one failed `news_rewrite` row).
+
+**Amendment (v2.3 rebase, 2026-11-27):** the same treatment covers
+`budget_pressure` (the reserve-window denial, ai-policy-v2.3): the
+handler defers it to the next Tehran midnight exactly like
+`budget_denied`. Refunds could reopen units sooner, but the engine's
+only deferral primitive is the retry delay, and midnight is the safe
+boundary for both. The `ai_runs` row records the reason distinctly
+(`budget_pressure`, not `budget_denied`).
+
+---
+
+## OD-017 — Rewrite input excludes the source-report excerpt; `soulVersion` is prompt-encoded — **CLOSED**
+
+**Context:** ADR-0070 §3 says the rewrite user message carries the raw
+draft; it does not say whether the source-report excerpt rides along,
+and §4 stamps a `soulVersion` without saying which version source wins.
+
+**Decision (implementation, 2026-11-27):** the source-report excerpt is
+deliberately NOT re-sent — the claims are the rewrite's fact basis, and
+re-sending the excerpt would only grow the input past the bound without
+adding a fact the rewrite may use. The rewrite block's `soulVersion`
+is the version the PROMPT encodes (`v1`), not D1's
+`soul.current_version` — a Soul v2 requires a prompt v2 bump, so the
+stamp can never claim a Soul the prompt does not carry.
