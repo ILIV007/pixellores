@@ -10,6 +10,7 @@ import migration0009 from '../../migrations/0009_post_management_near_dup.sql?ra
 import migration0010 from '../../migrations/0010_soul_versioning.sql?raw';
 import migration0011 from '../../migrations/0011_autonomous_soul_stamp.sql?raw';
 import migration0012 from '../../migrations/0012_ai_image_provenance.sql?raw';
+import migration0013 from '../../migrations/0013_bridge_gate_progress.sql?raw';
 import migration0002Synthetic from '../fixtures/migration-0002-synthetic.sql?raw';
 
 /**
@@ -92,9 +93,13 @@ export interface MigrationDescriptor {
  *   -> 0012_ai_image_provenance (v12, the ADR-0072 AI image generation:
  *      `media_assets.ai_provider` / `ai_model` / `ai_prompt` /
  *      `ai_seed`, ON TOP of the autonomous Soul stamp)
+ *   -> 0013_bridge_gate_progress (v13, the ADR-0074 bridge livelock fix:
+ *      `draft_gate_evaluations` — per-draft gate-evaluation progress so
+ *      deterministically-failing oldest drafts can never head-block the
+ *      bridge scan again, ON TOP of the AI image provenance)
  * The order here is exactly the order real Wrangler applies the files
  * (lexical filename order, one atomic batch per file), so a database that
- * walked the whole chain reports schema 12 with ALL capabilities present.
+ * walked the whole chain reports schema 13 with ALL capabilities present.
  * All candidates remain LOCAL-ONLY until the owner separately authorizes
  * remote application.
  *
@@ -115,6 +120,7 @@ export const MIGRATIONS: readonly MigrationDescriptor[] = [
   { id: '0010_soul_versioning', version: 10, sql: migration0010 },
   { id: '0011_autonomous_soul_stamp', version: 11, sql: migration0011 },
   { id: '0012_ai_image_provenance', version: 12, sql: migration0012 },
+  { id: '0013_bridge_gate_progress', version: 13, sql: migration0013 },
 ];
 
 /**

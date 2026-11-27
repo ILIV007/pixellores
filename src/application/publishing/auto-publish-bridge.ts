@@ -69,13 +69,28 @@
  * NEVER bridged (`failedRewrite`) until a human reviews it. When the
  * flag is OFF the bridge behaves exactly as today (raw drafts
  * publish) — the flag is the kill-switch.
+ *
+ * ADR-0074 — RE-EVALUATION + PROGRESS: the gate reads STORED reports
+ * only, and a stored pre-ADR-0066 report keeps its false numbers
+ * findings forever. When the gate fails a draft on a numbers finding,
+ * the bridge re-runs the fact-guard over the draft's own stored claims
+ * + the stored source item (the CURRENT folded lens) and replaces the
+ * stored report when the rebuild validates — then the gate decides on
+ * the REBUILT bytes. A re-evaluation that cannot validate leaves the
+ * stored report untouched. And the scan itself is progress-ordered
+ * (migration 0013: `draft_gate_evaluations`): each pass records every
+ * gate verdict and orders by consecutive failures, so
+ * deterministically-failing drafts sink below unevaluated ones instead
+ * of head-blocking the queue forever.
  */
 import type { DbExecutor } from '../../adapters/db/db-executor';
 import {
   findStoryContentType,
   findStoryReferenceItems,
-  listReadyDrafts,
+  listReadyDraftsForBridge,
+  recordGateEvaluation,
 } from '../../adapters/db/editorial-store';
+import { reevaluateDraftFactGuard } from '../editorial/fact-guard-reevaluation';
 import { approveDraftForAutoPublication } from '../../adapters/db/auto-approval-store';
 import {
   enqueuePublication,
@@ -130,6 +145,13 @@ export type AutoPublishBridgeReport =
       readonly requiresReview: number;
       /** Drafts the gate refused for lack of a measurable basis. */
       readonly refused: number;
+      /** ADR-0074: stored fact-guard reports rebuilt with the current
+       * folded lens this pass (their stored findings cleared or moved). */
+      readonly reevaluated: number;
+      /** ADR-0074: re-evaluation attempts that could not validate and
+       * left the stored report untouched (fail-closed skips, concurrent
+       * changes, or evaluation-write failures). */
+      readonly reevaluationSkipped: number;
       /** Drafts the guide lane deferred this pass (left `ready`). */
       readonly deferredGuideLane: number;
       /** Drafts the category cap deferred this pass (left `ready`). */
@@ -167,6 +189,36 @@ function readRewriteStatus(documentJson: string): string | null {
   }
 }
 
+/**
+ * ADR-0074 — record one gate verdict in the progress table. The write
+ * is best-effort progress, never a gate: a recording failure is logged
+ * and the pass continues — the verdicts stand either way, and the next
+ * pass simply re-orders from the last durable state.
+ */
+async function recordGateEvaluationQuietly(
+  input: {
+    readonly executor: DbExecutor;
+    readonly nowMs: number;
+    readonly logger?: Logger;
+  },
+  draftId: string,
+  outcome: 'eligible_auto' | 'requires_review' | 'refused',
+  failureReason: string | null,
+): Promise<void> {
+  try {
+    await recordGateEvaluation(input.executor, {
+      draftId,
+      outcome,
+      failureReason,
+      nowMs: input.nowMs,
+    });
+  } catch {
+    input.logger?.warn('publishing.bridge.gate_evaluation_unrecorded', {
+      draftId,
+    });
+  }
+}
+
 export async function bridgeReadyDrafts(input: {
   readonly executor: DbExecutor;
   readonly destination: string;
@@ -189,7 +241,10 @@ export async function bridgeReadyDrafts(input: {
     input.logger?.warn('publishing.bridge.soul_version_unknown');
     return { kind: 'skipped', reason: 'soul_version_unknown' };
   }
-  const drafts = await listReadyDrafts(input.executor, {
+  // ADR-0074 — the progress-ordered scan (migration 0013): each pass
+  // reaches unevaluated drafts first; deterministically-failing drafts
+  // sink below fresh ones instead of head-blocking the queue.
+  const drafts = await listReadyDraftsForBridge(input.executor, {
     limit: input.limit ?? AUTO_PUBLISH_BRIDGE_LIMIT,
   });
   // ADR-0068 — the category cap's history: the published trail mapped
@@ -214,6 +269,8 @@ export async function bridgeReadyDrafts(input: {
   let duplicates = 0;
   let requiresReview = 0;
   let refused = 0;
+  let reevaluated = 0;
+  let reevaluationSkipped = 0;
   let deferredGuideLane = 0;
   let deferredCategoryCap = 0;
   let deferredRewrite = 0;
@@ -243,15 +300,78 @@ export async function bridgeReadyDrafts(input: {
         continue;
       }
     }
-    const verdict = evaluateAutoPublishGate(draft.document_json);
+    // ADR-0074 — the gate verdict, on the CURRENT bytes. A
+    // requires_review verdict on a numbers finding is the stale-report
+    // family: re-run the fact-guard with the current folded lens and
+    // decide on the REBUILT bytes when the rebuild validates. Every
+    // other verdict stands as evaluated.
+    let documentJson = draft.document_json;
+    let verdict = evaluateAutoPublishGate(documentJson);
+    if (
+      verdict.kind === 'requires_review' &&
+      verdict.reason === 'fact_guard_findings' &&
+      verdict.claims.some((claim) => claim.findings.includes('number_not_observed_in_evidence'))
+    ) {
+      try {
+        const rebuilt = await reevaluateDraftFactGuard({
+          executor: input.executor,
+          draftId: draft.id,
+          documentJson,
+          nowMs: input.nowMs,
+          logger: input.logger,
+        });
+        if (rebuilt.kind === 'updated') {
+          reevaluated += 1;
+          documentJson = rebuilt.documentJson;
+          verdict = evaluateAutoPublishGate(documentJson);
+        } else if (rebuilt.kind === 'skipped') {
+          reevaluationSkipped += 1;
+          input.logger?.warn('publishing.bridge.fact_guard_reevaluation_skipped', {
+            draftId: draft.id,
+            reason: rebuilt.reason,
+          });
+        } else if (rebuilt.kind === 'concurrent_change') {
+          // The document moved underneath us — the verdict we hold is
+          // for stale bytes. Skip this draft this pass; the next pass
+          // re-reads the new bytes.
+          reevaluationSkipped += 1;
+          input.logger?.warn('publishing.bridge.fact_guard_reevaluation_concurrent_change', {
+            draftId: draft.id,
+          });
+          await recordGateEvaluationQuietly(
+            input,
+            draft.id,
+            'requires_review',
+            'fact_guard_findings',
+          );
+          requiresReview += 1;
+          continue;
+        }
+        // 'unchanged' / 'not_applicable': the stored report is current
+        // (or has no numbers findings) — the verdict stands.
+      } catch {
+        // A re-evaluation failure never kills the pass: the draft stays
+        // `ready` for human review and the next draft is still scanned.
+        reevaluationSkipped += 1;
+        input.logger?.warn('publishing.bridge.fact_guard_reevaluation_failed', {
+          draftId: draft.id,
+        });
+      }
+    }
     if (verdict.kind === 'requires_review') {
       requiresReview += 1;
+      await recordGateEvaluationQuietly(input, draft.id, 'requires_review', 'fact_guard_findings');
       continue;
     }
     if (verdict.kind === 'refused') {
       refused += 1;
+      await recordGateEvaluationQuietly(input, draft.id, 'refused', verdict.reason);
       continue;
     }
+    // The gate passed — record the eligible verdict (resetting the
+    // consecutive-failure count) BEFORE the lane/cap deferrals: the
+    // verdict is final whatever the lane and cap decide.
+    await recordGateEvaluationQuietly(input, draft.id, 'eligible_auto', null);
     // ADR-0068 — lane + cap (both leave the draft `ready` on defer).
     // A lane/cap read failure rejects the draft for this pass —
     // never an approval on an unevaluated cap.
@@ -345,6 +465,8 @@ export async function bridgeReadyDrafts(input: {
     duplicates,
     requiresReview,
     refused,
+    reevaluated,
+    reevaluationSkipped,
     deferredGuideLane,
     deferredCategoryCap,
     deferredRewrite,

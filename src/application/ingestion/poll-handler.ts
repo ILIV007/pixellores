@@ -224,6 +224,8 @@ export function createSourcePollHandler(
       // the capability lists lagged behind schema-health (v9/v10 were
       // never added here); the documented contract is that every newer
       // linear state takes the ownership path exactly like v4.
+      // ADR-0074: version 13 (0013) likewise — the gate-evaluation
+      // progress table changes nothing about poll ownership.
       const capability = await resolveSchemaCapability(options.executor);
       if (capability.kind === 'unresolved') {
         options.logger?.warn('ingestion.poll.capability_unresolved', {
@@ -240,7 +242,8 @@ export function createSourcePollHandler(
         capability.kind === 'known_v9_post_management' ||
         capability.kind === 'known_v10_soul' ||
         capability.kind === 'known_v11_autonomous_soul' ||
-        capability.kind === 'known_v12_ai_image';
+        capability.kind === 'known_v12_ai_image' ||
+        capability.kind === 'known_v13_bridge_gate_progress';
       let ownedHoldUntilMs: number | null = null;
       if (ownershipEnabled) {
         const acquisition = await acquirePollOwnership(options.executor, {

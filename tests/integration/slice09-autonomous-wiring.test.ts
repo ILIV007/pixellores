@@ -353,6 +353,8 @@ describe('slice 9 — the wired autonomous chain', () => {
       duplicates: 0,
       requiresReview: 0,
       refused: 0,
+      reevaluated: 0,
+      reevaluationSkipped: 0,
       deferredGuideLane: 0,
       deferredCategoryCap: 0,
       deferredRewrite: 0,
@@ -502,6 +504,13 @@ describe('slice 9 — the wired autonomous chain', () => {
       duplicates: 0,
       requiresReview: 2,
       refused: 0,
+      // ADR-0074: both drafts ARE re-evaluated (their stored reports
+      // carry number_not_observed_in_evidence for ۱۲۰) — and the rebuild
+      // still fails, because 120 appears in NO script in the excerpt.
+      // Re-evaluation is honest, not laundering: the drafts stay out of
+      // the outbox.
+      reevaluated: 2,
+      reevaluationSkipped: 0,
       deferredGuideLane: 0,
       deferredCategoryCap: 0,
       deferredRewrite: 0,

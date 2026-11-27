@@ -229,6 +229,13 @@ export const SCHEMA_AUTONOMOUS_SOUL_STAMP_MIGRATION_ID = '0011_autonomous_soul_s
  */
 export const AI_IMAGE_SCHEMA_VERSION = 12;
 export const SCHEMA_AI_IMAGE_MIGRATION_ID = '0012_ai_image_provenance';
+/**
+ * ADR-0074 — identifies the version-13 linear shape (the bridge
+ * gate-evaluation progress: `draft_gate_evaluations` on top of the AI
+ * image provenance).
+ */
+export const BRIDGE_GATE_PROGRESS_SCHEMA_VERSION = 13;
+export const SCHEMA_BRIDGE_GATE_PROGRESS_MIGRATION_ID = '0013_bridge_gate_progress';
 
 /** The distinct, typed capability states (R19-01 — no boolean merge). */
 export type SchemaCapability =
@@ -341,6 +348,16 @@ export type SchemaCapability =
       readonly appliedSchemaVersion: 12;
     }
   | {
+      /**
+       * ADR-0074: the LINEAR final candidate state — 0013 applied on top
+       * of 0012. ALL capabilities are present, plus the bridge
+       * gate-evaluation progress table (0013). Every ingestion path
+       * treats this state exactly like the ownership mode.
+       */
+      readonly kind: 'known_v13_bridge_gate_progress';
+      readonly appliedSchemaVersion: 13;
+    }
+  | {
       readonly kind: 'unresolved';
       readonly reason: SchemaCapabilityUnresolvedReason;
     };
@@ -379,7 +396,8 @@ export async function resolveSchemaCapability(executor: DbExecutor): Promise<Sch
     parsed === 9 ||
     parsed === 10 ||
     parsed === 11 ||
-    parsed === 12
+    parsed === 12 ||
+    parsed === 13
   ) {
     // The migration_id distinguishes the shapes a version number alone can
     // never prove: at version 4 the ownership column exists ONLY under the
@@ -393,7 +411,9 @@ export async function resolveSchemaCapability(executor: DbExecutor): Promise<Sch
     // linear chain requires the 0010 id (and implies 0004..0009's
     // changes); at version 11 the linear chain requires the 0011 id (and
     // implies 0004..0010's changes); at version 12 the linear chain
-    // requires the 0012 id (and implies 0004..0011's changes).
+    // requires the 0012 id (and implies 0004..0011's changes); at version
+    // 13 the linear chain requires the 0013 id (and implies 0004..0012's
+    // changes).
     // Anything else is UNRESOLVED — no invented valid shapes.
     let idRow: { value: string } | null;
     try {
@@ -445,6 +465,9 @@ export async function resolveSchemaCapability(executor: DbExecutor): Promise<Sch
     }
     if (parsed === 12 && idRow.value === SCHEMA_AI_IMAGE_MIGRATION_ID) {
       return { kind: 'known_v12_ai_image', appliedSchemaVersion: 12 };
+    }
+    if (parsed === 13 && idRow.value === SCHEMA_BRIDGE_GATE_PROGRESS_MIGRATION_ID) {
+      return { kind: 'known_v13_bridge_gate_progress', appliedSchemaVersion: 13 };
     }
     return { kind: 'unresolved', reason: 'schema_capability_migration_id_unknown' };
   }
