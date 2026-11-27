@@ -282,7 +282,7 @@ describe('createEventRelationService — the bounded step', () => {
       clock: fixedClock,
       logger: silentLogger,
       config: { ...enabledConfig, geminiEnabled: true, geminiApiKeyPresent: true },
-      eligibility: { 'workers-ai': true, gemini: true },
+      eligibility: { 'workers-ai': true, 'workers-ai-backup': true, gemini: true },
     });
     const outcome = await service.evaluateEventRelations({
       pairs: [pairRequest('erp-1', 'edst_a'), pairRequest('erp-2', 'edst_b')],
@@ -319,7 +319,7 @@ describe('createEventRelationService — the bounded step', () => {
       // the port, and eligibility are all present (ADR-0067 gate parity
       // with the draft service and the rewriter).
       config: { ...enabledConfig, geminiApiKeyPresent: true },
-      eligibility: { 'workers-ai': true, gemini: true },
+      eligibility: { 'workers-ai': true, 'workers-ai-backup': true, gemini: true },
     });
     const outcome = await service.evaluateEventRelations({
       pairs: [pairRequest('erp-1', 'edst_a')],

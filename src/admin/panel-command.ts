@@ -22,7 +22,7 @@ export type MenuArgumentParse =
   | { readonly kind: 'screen'; readonly screen: Exclude<PanelScreen, 'main'> }
   | { readonly kind: 'invalid' };
 
-const MENU_SCREENS: readonly string[] = ['mode', 'cap', 'event', 'posts'];
+const MENU_SCREENS: readonly string[] = ['mode', 'cap', 'event', 'posts', 'ai'];
 
 function isMenuScreen(value: string): value is Exclude<PanelScreen, 'main'> {
   return (MENU_SCREENS as readonly string[]).includes(value);

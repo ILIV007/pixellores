@@ -31,7 +31,7 @@ model decides to publish — publishing stays deterministic.
   therefore legacy-gated.
 - The owner also ordered a relay/proxy route for Gemini if the direct call
   is geo-blocked (TradeAgent precedent: Gemini direct is intermittent).
-- The planned failover release is v2.3 (its ADR is ADR-0066, still to be
+- The planned failover release is v2.3 (its ADR is ADR-0069, still to be
   written after the lost z.ai implementation is re-run). This change must
   NOT take that version number and must NOT rename that release.
 
@@ -78,9 +78,7 @@ model decides to publish — publishing stays deterministic.
    records; keeping `v2.2` would mis-stamp new-model attempts). A patch
    bump keeps v2.3 free for the failover release — no rename, no
    collision. The failover release then bumps `v2.2.1` → `v2.3`.
-6. **ADR-0066 stays free** for the planned failover ADR (v2.3). This ADR
-   takes 0067 so nothing in the lost z.ai v2.3 delivery (which claimed
-   ADR-0066) collides with it.
+6. **The failover ADR is ADR-0069** (the lost z.ai v2.3 delivery claimed ADR-0066, but 0066 was taken by the digit-folding fix, PR #27, before this ADR landed). This ADR takes 0067 so nothing in that delivery collides with it.
 
 ## Consequences
 

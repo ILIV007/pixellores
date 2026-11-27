@@ -477,15 +477,16 @@ export type TelegramAction =
     }
   | {
       /**
-       * Slice 3 — one admin panel screen (`/menu mode|cap|event`). Same
-       * gating as `panel_main`; the service owns ALL reads.
+       * Slice 3 — one admin panel screen (`/menu mode|cap|event|posts|ai`).
+       * Same gating as `panel_main`; the service owns ALL reads. The `ai`
+       * screen (the presence slice) is VIEWING only — booleans, no writes.
        */
       readonly type: 'panel_screen';
       readonly chatId: number;
       readonly telegramUserId: number;
       readonly role: AdminRole;
       readonly uiLanguage: AdminUiLanguage;
-      readonly screen: 'mode' | 'cap' | 'event' | 'posts';
+      readonly screen: 'mode' | 'cap' | 'event' | 'posts' | 'ai';
     };
 
 export interface CommandRouteContext {

@@ -79,6 +79,7 @@ import { createAiDraftService } from '../ai/draft-service';
 import { createEventRelationService } from '../ai/event-relation-service';
 import { createWorkersAiAdapter } from '../../adapters/ai/workers-ai-adapter';
 import { createGeminiAdapter } from '../../adapters/ai/gemini-adapter';
+import { createWorkersAiRestAdapter } from '../../adapters/ai/workers-ai-rest-adapter';
 import type { AiProvider, AiProviderPort } from '../../domain/ai/types';
 import { createConnectorRegistry } from '../../connectors/registry';
 
@@ -213,6 +214,10 @@ export function resolveJobsEngine(env: WorkerEnv, logger?: Logger): EngineResolu
     // gates it on the operator flag + key + port + PARTIAL eligibility,
     // and the shipped flag is false, so no live network is reached
     // through this wiring until the operator flips it after the live test.
+    // ai-policy-v2.3 (ADR-0069): the BACKUP-account REST port is built
+    // ONLY when the operator kill switch is on AND the backup account id
+    // var AND the backup API token secret are ALL present — fail-closed:
+    // any missing piece means the ladder behaves exactly as v2.2.
     const workersAiBindingPresent = env.AI !== undefined;
     const ports: Partial<Record<AiProvider, AiProviderPort>> = {};
     if (workersAiBindingPresent) {
@@ -225,6 +230,16 @@ export function resolveJobsEngine(env: WorkerEnv, logger?: Logger): EngineResolu
         ai.config.GEMINI_API_BASE_URL,
       );
     }
+    if (
+      ai.config.AI_FAILOVER_ENABLED &&
+      env.BACKUP_CF_ACCOUNT_ID !== undefined &&
+      env.BACKUP_WORKERS_AI_API_TOKEN !== undefined
+    ) {
+      ports['workers-ai-backup'] = createWorkersAiRestAdapter(
+        env.BACKUP_CF_ACCOUNT_ID,
+        env.BACKUP_WORKERS_AI_API_TOKEN,
+      );
+    }
     const aiService = createAiDraftService({
       executor,
       ports,
@@ -233,6 +248,7 @@ export function resolveJobsEngine(env: WorkerEnv, logger?: Logger): EngineResolu
       config: {
         aiEnabled: ai.config.AI_ENABLED,
         geminiEnabled: ai.config.AI_GEMINI_ENABLED,
+        failoverEnabled: ai.config.AI_FAILOVER_ENABLED,
         workersAiBindingPresent,
         geminiApiKeyPresent: env.GEMINI_API_KEY !== undefined,
       },
@@ -252,6 +268,7 @@ export function resolveJobsEngine(env: WorkerEnv, logger?: Logger): EngineResolu
         eventRelationEnabled: ai.config.EVENT_RELATION_ENABLED,
         aiEnabled: ai.config.AI_ENABLED,
         geminiEnabled: ai.config.AI_GEMINI_ENABLED,
+        failoverEnabled: ai.config.AI_FAILOVER_ENABLED,
         workersAiBindingPresent,
         geminiApiKeyPresent: env.GEMINI_API_KEY !== undefined,
       },

@@ -45,12 +45,23 @@ import type { Clock } from '../../shared/time/clock';
 import { awaitWithDeadline, type DeadlineTimeoutScheduler } from '../../shared/time/deadline-wait';
 import type { Logger } from '../../observability/logger';
 import type { DbExecutor } from '../../adapters/db/db-executor';
-import { authorizeAiRequestAttempt, recordAiUsage } from '../../adapters/db/ai-budget-store';
 import {
-  AI_DAILY_REQUEST_ATTEMPT_CAPS,
-  defaultProviderEligibility,
-  listModelsForProvider,
-} from '../../domain/ai/policy';
+  authorizeAiRequestAttempt,
+  recordAiUsage,
+  refundAiRequestAttempt,
+} from '../../adapters/db/ai-budget-store';
+import {
+  checkAiCircuitBreaker,
+  recordAiCircuitBreakerFailure,
+  recordAiCircuitBreakerSuccess,
+} from './ai-circuit-breaker';
+import { buildAiCandidateLadder } from './ai-ladder';
+import {
+  classifyAiBudgetDenial,
+  effectiveAutonomousCap,
+  noteBudgetPressureWarning,
+} from './ai-budget-pressure';
+import { AI_DAILY_REQUEST_ATTEMPT_CAPS, defaultProviderEligibility } from '../../domain/ai/policy';
 import {
   EVENT_RELATION_BOUNDS,
   EVENT_RELATION_PROMPT_VERSION,
@@ -112,6 +123,14 @@ export interface EventRelationServiceConfig {
    * relation service gains the same gate so it cannot reach Gemini
    * through the shared ports object on eligibility alone. */
   readonly geminiEnabled: boolean;
+  /**
+   * Validated AI_FAILOVER_ENABLED operator kill switch (parseAiConfig,
+   * ai-policy-v2.3). Backup candidates run only when this is on AND the
+   * backup REST port is wired — BOTH gates fail closed. Optional with a
+   * default OFF (the flag's own fail-closed default), so callers that
+   * predate failover keep today's behavior exactly.
+   */
+  readonly failoverEnabled?: boolean;
   /** Whether the native Workers AI binding is present in the runtime. */
   readonly workersAiBindingPresent: boolean;
   /** Whether a Gemini API key is configured (presence only). */
@@ -170,6 +189,46 @@ export function createEventRelationService(deps: EventRelationServiceDeps): Even
   const encoder = new TextEncoder();
   const systemPrompt = buildEventRelationSystemPrompt();
 
+  /**
+   * Best-effort refund of THIS attempt's charge (charge-on-success,
+   * ai-policy-v2.3 — the SAME hook the draft service has). Called only
+   * when the attempt ended WITHOUT a provider completion; refunds are
+   * PER PROVIDER KEY (a failed backup attempt refunds the backup row
+   * only). A failed refund never fails the run.
+   */
+  const refundAttempt = async (candidate: Candidate): Promise<void> => {
+    try {
+      await refundAiRequestAttempt(deps.executor, {
+        provider: candidate.provider,
+        nowMs: deps.clock.now(),
+      });
+    } catch {
+      deps.logger.warn('ai.event_relation.refund_failed', { provider: candidate.provider });
+    }
+  };
+  /**
+   * Best-effort breaker bookkeeping on the CANDIDATE'S OWN account
+   * breaker (`ai.circuit_breaker.{provider}` — per account,
+   * ai-policy-v2.3 — the SAME hook the draft service has). Failures
+   * count ONLY provider failures; quota denials, auth failures,
+   * refusals and invalid output never move the counter. A failed record
+   * never fails the run.
+   */
+  const noteBreakerFailure = async (provider: AiProvider): Promise<void> => {
+    try {
+      await recordAiCircuitBreakerFailure(deps.executor, deps.clock.now(), provider);
+    } catch {
+      deps.logger.warn('ai.event_relation.circuit_breaker_record_failed', { provider });
+    }
+  };
+  const noteBreakerSuccess = async (provider: AiProvider): Promise<void> => {
+    try {
+      await recordAiCircuitBreakerSuccess(deps.executor, deps.clock.now(), provider);
+    } catch {
+      deps.logger.warn('ai.event_relation.circuit_breaker_record_failed', { provider });
+    }
+  };
+
   async function evaluateEventRelations(
     request: unknown,
     options?: EventRelationEvaluationOptions,
@@ -199,29 +258,30 @@ export function createEventRelationService(deps: EventRelationServiceDeps): Even
       return { kind: 'decisions', pairs: [] };
     }
 
-    // ---- Candidate ladder (the versioned allowlist; eligibility gates).
-    const candidates: Candidate[] = [];
-    for (const model of [
-      ...listModelsForProvider('workers-ai'),
-      ...listModelsForProvider('gemini'),
-    ]) {
-      if (model.provider === 'workers-ai') {
-        if (!deps.config.workersAiBindingPresent || deps.ports['workers-ai'] === undefined) {
-          continue;
-        }
-      } else {
-        if (!deps.config.geminiEnabled) {
-          continue;
-        }
-        if (!eligibility.gemini || deps.ports.gemini === undefined) {
-          continue;
-        }
-        if (!deps.config.geminiApiKeyPresent) {
-          continue;
-        }
-      }
-      candidates.push({ provider: model.provider, modelId: model.modelId });
-    }
+    // ---- Candidate ladder (the SHARED versioned-policy builder,
+    // ai-policy-v2.3): Workers AI primary → Workers AI alternate →
+    // Workers AI BACKUP primary → Workers AI BACKUP alternate →
+    // (conditional) Gemini. The backup candidates gate on BOTH the
+    // operator kill switch AND the wired REST port (fail-closed).
+    // NOTE: R1.17's Gemini candidacy was eligibility + port + key; PR
+    // #28 added the AI_GEMINI_ENABLED operator gate to this service,
+    // so the builder receives the validated flag — Gemini stays
+    // unreachable through the versioned eligibility gate (false by
+    // default) until the operator flips it after the live test.
+    const ladder = buildAiCandidateLadder({
+      workersAiPrimaryPresent:
+        deps.config.workersAiBindingPresent && deps.ports['workers-ai'] !== undefined,
+      failoverEnabled: deps.config.failoverEnabled === true,
+      backupPortPresent: deps.ports['workers-ai-backup'] !== undefined,
+      geminiEnabled: deps.config.geminiEnabled,
+      geminiKeyPresent: deps.config.geminiApiKeyPresent,
+      geminiPortPresent: deps.ports.gemini !== undefined,
+      geminiEligible: eligibility.gemini,
+    });
+    const candidates: Candidate[] = ladder.candidates.map((candidate) => ({
+      provider: candidate.provider,
+      modelId: candidate.modelId,
+    }));
 
     const startedAt = deps.clock.now();
     const localDeadlineAtMs = startedAt + EVENT_RELATION_BOUNDS.stepWallDeadlineMs;
@@ -357,6 +417,37 @@ export function createEventRelationService(deps: EventRelationServiceDeps): Even
         // candidates are futile and are skipped (ledger-only, no run row).
       }
 
+      // ---- Per-account circuit breaker BEFORE the authorization
+      // (ai-policy-v2.3 — the SAME hook the draft service has, scaled to
+      // the pair loop). An open PRIMARY breaker is typed `circuit_open`
+      // and is NEVER a failover trigger (a broken provider PATH must not
+      // burn the backup on the same defect); an open BACKUP/Gemini
+      // breaker skips only THAT provider's candidates and the ladder
+      // continues. A failed breaker READ fails open (closed). Breaker
+      // skips are ledger-only (no fabricated attempt record — only REAL
+      // provider attempts are recorded here).
+      try {
+        const breaker = await checkAiCircuitBreaker(
+          deps.executor,
+          deps.clock.now(),
+          candidate.provider,
+        );
+        if (!breaker.allow) {
+          if (candidate.provider === 'workers-ai') {
+            deps.logger.info('ai.event_relation.circuit_open', {
+              consecutiveFailures: breaker.snapshot.consecutiveFailures,
+              openedAtMs: breaker.snapshot.openedAtMs,
+            });
+            return deferred('circuit_open');
+          }
+          continue;
+        }
+      } catch {
+        deps.logger.warn('ai.event_relation.circuit_breaker_check_failed', {
+          provider: candidate.provider,
+        });
+      }
+
       // ---- Durable authorization BEFORE the attempt (no grant, no call).
       let bucketDate: string;
       try {
@@ -364,7 +455,9 @@ export function createEventRelationService(deps: EventRelationServiceDeps): Even
         const authorizationWait = await awaitWithDeadline(
           authorizeAiRequestAttempt(deps.executor, {
             provider: candidate.provider,
-            cap: AI_DAILY_REQUEST_ATTEMPT_CAPS[candidate.provider],
+            // ai-policy-v2.3: the autonomous chain authorizes against the
+            // EFFECTIVE cap (hard cap − reserve) — the shared reserve.
+            cap: effectiveAutonomousCap(AI_DAILY_REQUEST_ATTEMPT_CAPS[candidate.provider]),
             nowMs: authWaitStartedAtMs,
           }),
           context.deadlineAtMs,
@@ -378,17 +471,33 @@ export function createEventRelationService(deps: EventRelationServiceDeps): Even
         if (authorization.kind === 'denied') {
           // Shared provider bucket: skip the remaining same-provider
           // candidates; the pair is typed `budget_denied` — NEVER the
-          // model's semantic `insufficient_evidence`.
+          // model's semantic `insufficient_evidence`. ai-policy-v2.3: a
+          // denial INSIDE the reserve window is the early, retryable
+          // `budget_pressure` instead (ambiguity falls to HARD).
           context.skippedProviders.add(candidate.provider);
-          return deferred('budget_denied');
+          const denialKind = await classifyAiBudgetDenial(deps.executor, {
+            provider: candidate.provider,
+            hardCap: AI_DAILY_REQUEST_ATTEMPT_CAPS[candidate.provider],
+            nowMs: deps.clock.now(),
+          });
+          return deferred(denialKind === 'hard' ? 'budget_denied' : 'budget_pressure');
         }
         bucketDate = authorization.bucketDate;
+        // ai-policy-v2.3: best-effort early pressure warning on the
+        // granted charge (visibility only — never changes the outcome).
+        await noteBudgetPressureWarning(deps.executor, deps.logger, {
+          provider: candidate.provider,
+          nowMs: deps.clock.now(),
+        });
       } catch {
         return deferred('budget_store_error');
       }
 
-      // ---- Post-authorization deadline guard (the granted charge stays).
+      // ---- Post-authorization deadline guard (the granted charge is
+      // REFUNDED best-effort — no provider call started, so no provider
+      // work was consumed; charge-on-success, ai-policy-v2.3).
       if (deps.clock.now() >= context.deadlineAtMs) {
+        await refundAttempt(candidate);
         return deferred('step_deadline');
       }
 
@@ -413,11 +522,17 @@ export function createEventRelationService(deps: EventRelationServiceDeps): Even
         );
         if (callWait.kind === 'timed_out') {
           record(candidate, 'failed', 'deadline_exceeded', deps.clock.now() - attemptStartedAt);
+          // No provider completion: refund the charge and count the
+          // provider failure on THIS account's breaker (ai-policy-v2.3).
+          await refundAttempt(candidate);
+          await noteBreakerFailure(candidate.provider);
           return deferred('step_deadline');
         }
         callOutcome = callWait.value;
       } catch {
         record(candidate, 'failed', 'transient_failure', deps.clock.now() - attemptStartedAt);
+        await refundAttempt(candidate);
+        await noteBreakerFailure(candidate.provider);
         continue;
       }
       const durationMs = deps.clock.now() - attemptStartedAt;
@@ -434,6 +549,10 @@ export function createEventRelationService(deps: EventRelationServiceDeps): Even
         }
         case 'deadline_exceeded': {
           record(candidate, 'failed', 'deadline_exceeded', durationMs);
+          // No provider completion: refund the charge and count the
+          // provider failure on THIS account's breaker (ai-policy-v2.3).
+          await refundAttempt(candidate);
+          await noteBreakerFailure(candidate.provider);
           return deferred('step_deadline');
         }
         case 'ok': {
@@ -476,6 +595,9 @@ export function createEventRelationService(deps: EventRelationServiceDeps): Even
             inputTokens: callOutcome.usage?.inputTokens,
             outputTokens: callOutcome.usage?.outputTokens,
           });
+          // The provider answered: reset THAT account's breaker counter
+          // (a half-open probe success closes it) — ai-policy-v2.3.
+          await noteBreakerSuccess(candidate.provider);
           deps.logger.info('ai.event_relation.result', {
             kind: 'evaluated',
             provider: candidate.provider,
@@ -509,6 +631,9 @@ export function createEventRelationService(deps: EventRelationServiceDeps): Even
         }
         case 'auth_failed': {
           record(candidate, 'failed', 'auth_failed', durationMs);
+          // The provider answered with an auth/config failure: refund the
+          // charge (no completion), never a breaker count (ai-policy-v2.3).
+          await refundAttempt(candidate);
           context.skippedProviders.add(candidate.provider);
           return deferred('provider_auth_failed');
         }
@@ -520,6 +645,10 @@ export function createEventRelationService(deps: EventRelationServiceDeps): Even
             callOutcome.kind === 'model_unavailable' ? 'model_unavailable' : 'transient',
             durationMs,
           );
+          // No provider completion: refund the charge and count the
+          // provider failure on THIS account's breaker (ai-policy-v2.3).
+          await refundAttempt(candidate);
+          await noteBreakerFailure(candidate.provider);
           continue;
         }
       }

@@ -34,6 +34,15 @@
 # AI_GEMINI_ENABLED also requires verified Free-tier eligibility.
 # AI_ENABLED=false
 # AI_GEMINI_ENABLED=false
+# ai-policy-v2.3 (ADR-0069) backup-account failover kill switch (non-secret).
+# Enabling ALSO requires the BACKUP_CF_ACCOUNT_ID var (non-secret, below) and
+# the BACKUP_WORKERS_AI_API_TOKEN secret (below); flipping it off kills
+# failover without a redeploy. NEVER implies AI_ENABLED.
+# AI_FAILOVER_ENABLED=false
+# Backup Cloudflare account id — NON-SECRET operator var, strictly
+# format-validated (32 lowercase hex) when present. Set it in the dashboard /
+# wrangler vars for deploys; here only for local `wrangler dev`.
+# BACKUP_CF_ACCOUNT_ID=
 # R1.17 event-relation task gate (non-secret; ADR-0045). INDEPENDENT
 # fail-closed flag: with false the relation step performs zero retrieval,
 # zero adjudication, zero writes; never implies AI/EDITORIAL gates.
@@ -69,6 +78,10 @@
 # WEBHOOK_SECRET=
 # OWNER_TELEGRAM_ID=
 # GEMINI_API_KEY=
+# ai-policy-v2.3 (ADR-0069): the BACKUP account's Workers AI REST token
+# (Workers AI Write permission, created in the backup account's dashboard).
+# Stored as a SECRET on the PRIMARY worker; blast radius = backup inference.
+# BACKUP_WORKERS_AI_API_TOKEN=
 # GROQ_API_KEY=
 # YOUTUBE_API_KEY=
 # REDDIT_CLIENT_ID=

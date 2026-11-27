@@ -294,7 +294,7 @@ describe('AI draft service — ladder, budget, and outcomes', () => {
     geminiPort.setOutcomes([{ kind: 'ok', rawText: VALID_DRAFT_JSON }]);
     const outcome = await buildService(
       { geminiEnabled: true, geminiApiKeyPresent: true },
-      { 'workers-ai': true, gemini: true },
+      { 'workers-ai': true, 'workers-ai-backup': true, gemini: true },
     ).generateNewsDraft(VALID_REQUEST);
     expect(outcome.kind).toBe('draft');
     expect(geminiPort.calls).toHaveLength(1);
@@ -317,7 +317,7 @@ describe('AI draft service — ladder, budget, and outcomes', () => {
       },
       // Explicitly ineligible: the default is PARTIAL (ADR-0067), so the
       // ineligible case must be injected, not assumed.
-      { 'workers-ai': true, gemini: false },
+      { 'workers-ai': true, 'workers-ai-backup': true, gemini: false },
     ).generateNewsDraft(VALID_REQUEST);
     // Explicitly-ineligible Gemini stays OFF.
     expect(geminiPort.calls).toHaveLength(0);
@@ -343,7 +343,7 @@ describe('AI draft service — ladder, budget, and outcomes', () => {
     geminiPort.setOutcomes([{ kind: 'ok', rawText: VALID_DRAFT_JSON }]);
     const outcome = await buildService(
       { geminiEnabled: true, geminiApiKeyPresent: true },
-      { 'workers-ai': true, gemini: true },
+      { 'workers-ai': true, 'workers-ai-backup': true, gemini: true },
     ).generateNewsDraft(VALID_REQUEST);
     expect(outcome.kind).toBe('refusal');
     if (outcome.kind === 'refusal') {
@@ -417,7 +417,7 @@ describe('AI draft service — ladder, budget, and outcomes', () => {
     geminiPort.setOutcomes([{ kind: 'transient' }]);
     const outcome = await buildService(
       { geminiEnabled: true, geminiApiKeyPresent: true },
-      { 'workers-ai': true, gemini: true },
+      { 'workers-ai': true, 'workers-ai-backup': true, gemini: true },
     ).generateNewsDraft(VALID_REQUEST);
     expect(outcome.kind).toBe('deferred');
     if (outcome.kind === 'deferred') {
@@ -430,7 +430,7 @@ describe('AI draft service — ladder, budget, and outcomes', () => {
     geminiPort.setOutcomes([{ kind: 'auth_failed' }]);
     const outcome = await buildService(
       { workersAiBindingPresent: false, geminiEnabled: true, geminiApiKeyPresent: true },
-      { 'workers-ai': false, gemini: true },
+      { 'workers-ai': false, 'workers-ai-backup': false, gemini: true },
     ).generateNewsDraft(VALID_REQUEST);
     expect(outcome).toMatchObject({ kind: 'deferred', reason: 'provider_auth_failed' });
     expect(geminiPort.calls).toHaveLength(1);

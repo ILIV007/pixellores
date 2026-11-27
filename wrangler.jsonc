@@ -77,6 +77,15 @@
     // NEVER implies AI_ENABLED or EDITORIAL_ENABLED; no live model call
     // is possible while the shipped flags stay "false".
     "EVENT_RELATION_ENABLED": "false",
+    // ai-policy-v2.3 (ADR-0066) backup-account failover KILL SWITCH
+    // (non-secret). FAIL-CLOSED default OFF: with "false" the backup REST
+    // port is never built and every AI ladder behaves exactly as v2.2.
+    // Enabling ALSO requires the operator to set the
+    // BACKUP_WORKERS_AI_API_TOKEN secret and the BACKUP_CF_ACCOUNT_ID var
+    // on this worker (dashboard/wrangler — never in this file). Flipping
+    // it back to "false" kills failover WITHOUT a redeploy. It NEVER
+    // implies AI_ENABLED.
+    "AI_FAILOVER_ENABLED": "false",
     // R1.18 (Phase 9A slice) read-only admin review gate (non-secret;
     // ADR-0046). INDEPENDENT fail-closed flag for the /drafts read-only
     // Telegram surface and its help advertisement — with "false" the
@@ -259,6 +268,13 @@
         // AI_ENABLED or EDITORIAL_ENABLED; zero relation work happens
         // while it stays "false".
         "EVENT_RELATION_ENABLED": "false",
+        // ai-policy-v2.3 (ADR-0066) backup-account failover kill switch
+        // ships DISABLED on preview: the backup REST port is built only
+        // when this is "true" AND the BACKUP_WORKERS_AI_API_TOKEN secret
+        // and BACKUP_CF_ACCOUNT_ID var are present on the worker. The
+        // backup account id is operator configuration and is deliberately
+        // NOT declared here.
+        "AI_FAILOVER_ENABLED": "false",
       },
       "d1_databases": [
         {

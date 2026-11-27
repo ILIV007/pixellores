@@ -17,9 +17,13 @@
  */
 
 /**
- * Supported AI providers (Workers AI primary; Gemini secondary).
+ * Supported AI providers (Workers AI primary; Workers AI REST backup;
+ * Gemini secondary). 'workers-ai-backup' (ai-policy-v2.3) is the SAME
+ * Workers AI product reached over the official REST API on the BACKUP
+ * Cloudflare account — a distinct provider key so per-account budget rows,
+ * per-account circuit breakers, and per-account refunds never mix.
  */
-export type AiProvider = 'workers-ai' | 'gemini';
+export type AiProvider = 'workers-ai' | 'workers-ai-backup' | 'gemini';
 
 /**
  * Versioned task types. `news_draft` is the original Phase-6 draft task
@@ -115,6 +119,7 @@ export type AiDeferredReason =
   | 'key_missing'
   | 'eligibility_unverified'
   | 'budget_denied'
+  | 'budget_pressure'
   | 'budget_store_error'
   | 'deadline_exceeded'
   | 'provider_unavailable'
@@ -138,6 +143,7 @@ export interface AiAttemptRecord {
     | 'skipped_shared_quota'
     | 'skipped_provider_failed'
     | 'skipped_ineligible'
+    | 'skipped_circuit_open'
     | 'skipped_deadline'
     | 'invalid_output';
   readonly durationMs: number;

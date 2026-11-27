@@ -14,6 +14,10 @@ import {
   interpretRunResult,
   WorkersAiAdapter,
 } from '../../src/adapters/ai/workers-ai-adapter';
+import {
+  buildWorkersAiRestUrl,
+  createWorkersAiRestAdapter,
+} from '../../src/adapters/ai/workers-ai-rest-adapter';
 
 /**
  * Adapter-boundary tests (Phase 6, ADR-0041) over injected fakes — the
@@ -565,5 +569,170 @@ describe('Gemini adapter — wall deadline covers headers AND body (round 1.10.6
     await new Promise((resolve) => setTimeout(resolve, 60));
     expect(seenSignals).toHaveLength(1);
     expect(seenSignals[0]?.aborted).toBe(true);
+  });
+});
+
+describe('Workers AI REST adapter — backup-account port (ai-policy-v2.3, ADR-0069)', () => {
+  // A syntactically valid, obviously-fake 32-hex account id. The REAL
+  // backup account id is operator configuration and never belongs in tests.
+  const TEST_ACCOUNT = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6';
+  const TEST_TOKEN = 'test-only-not-a-real-token';
+
+  function chatCompletionEnvelope(rawText: string): unknown {
+    return {
+      result: {
+        choices: [{ message: { role: 'assistant', content: rawText }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 11, completion_tokens: 22 },
+      },
+      success: true,
+      errors: [],
+      messages: [],
+    };
+  }
+
+  it('builds the strict official REST endpoint with the account/model slots and rejects a malformed account id', () => {
+    expect(buildWorkersAiRestUrl(TEST_ACCOUNT, '@cf/google/gemma-4-26b-a4b-it')).toBe(
+      `https://api.cloudflare.com/client/v4/accounts/${TEST_ACCOUNT}/ai/run/%40cf%2Fgoogle%2Fgemma-4-26b-a4b-it`,
+    );
+    expect(() => buildWorkersAiRestUrl('not-hex', '@cf/qwen/qwen3.8-27b')).toThrow();
+    expect(() => buildWorkersAiRestUrl(TEST_ACCOUNT.toUpperCase(), 'x')).toThrow();
+    expect(() => createWorkersAiRestAdapter('short', TEST_TOKEN)).toThrow();
+  });
+
+  it('sends the token ONLY in the authorization header — never in the URL — with the binding-shaped inputs', async () => {
+    const seen: { url: string; init: RequestInit }[] = [];
+    const transport: AiHttpTransport = async (url, init) => {
+      seen.push({ url, init });
+      return jsonRes(200, chatCompletionEnvelope('پاسخ'));
+    };
+    const adapter = createWorkersAiRestAdapter(TEST_ACCOUNT, TEST_TOKEN, transport);
+    const outcome = await adapter.complete({
+      modelId: '@cf/google/gemma-4-26b-a4b-it',
+      messages: [
+        { role: 'system', content: 'system text' },
+        { role: 'user', content: 'user text' },
+      ],
+      maxOutputTokens: 2048,
+      deadlineAtMs: OK_DEADLINE,
+    });
+    expect(outcome).toEqual({
+      kind: 'ok',
+      rawText: 'پاسخ',
+      usage: { inputTokens: 11, outputTokens: 22 },
+    });
+    expect(seen).toHaveLength(1);
+    const request = seen[0];
+    expect(request?.url.startsWith('https://api.cloudflare.com/client/v4/accounts/')).toBe(true);
+    expect(request?.url.includes(TEST_ACCOUNT)).toBe(true);
+    expect(request?.url.includes(TEST_TOKEN)).toBe(false);
+    expect(request?.url.includes('token')).toBe(false);
+    expect(request?.init.method).toBe('POST');
+    expect(request?.init.redirect).toBe('error');
+    const headers = request?.init.headers as Record<string, string>;
+    expect(headers['authorization']).toBe(`Bearer ${TEST_TOKEN}`);
+    expect(headers['content-type']).toBe('application/json');
+    const body = JSON.parse(request?.init.body as string) as {
+      messages: { role: string; content: string }[];
+      max_tokens: number;
+    };
+    expect(body.messages).toEqual([
+      { role: 'system', content: 'system text' },
+      { role: 'user', content: 'user text' },
+    ]);
+    expect(body.max_tokens).toBe(2048);
+  });
+
+  it('unwraps the REST envelope and reuses the binding chat.completion interpretation', async () => {
+    const transport: AiHttpTransport = async () => jsonRes(200, chatCompletionEnvelope('پیش‌نویس'));
+    const adapter = createWorkersAiRestAdapter(TEST_ACCOUNT, TEST_TOKEN, transport);
+    const outcome = await adapter.complete({
+      modelId: '@cf/qwen/qwen3.8-27b',
+      messages: [{ role: 'user', content: 'x' }],
+      maxOutputTokens: 2048,
+      deadlineAtMs: OK_DEADLINE,
+    });
+    expect(outcome.kind).toBe('ok');
+    if (outcome.kind === 'ok') {
+      expect(outcome.rawText).toBe('پیش‌نویس');
+    }
+  });
+
+  it('maps a success:false envelope to transient and never surfaces envelope error strings', async () => {
+    const transport: AiHttpTransport = async () =>
+      jsonRes(200, { result: null, success: false, errors: [{ code: 7_001, message: 'boom' }] });
+    const adapter = createWorkersAiRestAdapter(TEST_ACCOUNT, TEST_TOKEN, transport);
+    const outcome = await adapter.complete({
+      modelId: '@cf/qwen/qwen3.8-27b',
+      messages: [{ role: 'user', content: 'x' }],
+      maxOutputTokens: 2048,
+      deadlineAtMs: OK_DEADLINE,
+    });
+    expect(outcome.kind).toBe('transient');
+    expect(JSON.stringify(outcome)).not.toContain('boom');
+    const emptyEnvelope = await createWorkersAiRestAdapter(TEST_ACCOUNT, TEST_TOKEN, async () =>
+      jsonRes(200, { success: true }),
+    ).complete({
+      modelId: '@cf/qwen/qwen3.8-27b',
+      messages: [{ role: 'user', content: 'x' }],
+      maxOutputTokens: 2048,
+      deadlineAtMs: OK_DEADLINE,
+    });
+    expect(emptyEnvelope.kind).toBe('transient');
+  });
+
+  it('maps REST status codes to the stable kinds with Retry-After parsing', async () => {
+    const cases: readonly { status: number; expected: string; headers?: Record<string, string> }[] =
+      [
+        { status: 429, expected: 'quota_denied', headers: { 'retry-after': '30' } },
+        { status: 401, expected: 'auth_failed' },
+        { status: 403, expected: 'auth_failed' },
+        { status: 404, expected: 'model_unavailable' },
+        { status: 500, expected: 'transient' },
+        { status: 503, expected: 'transient' },
+      ];
+    for (const testCase of cases) {
+      const transport: AiHttpTransport = async () =>
+        jsonRes(testCase.status, { errors: [] }, testCase.headers);
+      const adapter = createWorkersAiRestAdapter(TEST_ACCOUNT, TEST_TOKEN, transport);
+      const outcome = await adapter.complete({
+        modelId: '@cf/qwen/qwen3.8-27b',
+        messages: [{ role: 'user', content: 'x' }],
+        maxOutputTokens: 2048,
+        deadlineAtMs: OK_DEADLINE,
+      });
+      expect(outcome.kind).toBe(testCase.expected);
+      if (testCase.expected === 'quota_denied' && outcome.kind === 'quota_denied') {
+        expect(outcome.retryAfterMs).toBe(30_000);
+      }
+    }
+  });
+
+  it('maps transport rejection to transient and an already-passed deadline to deadline_exceeded', async () => {
+    const transport: AiHttpTransport = async () => {
+      throw new Error('network down');
+    };
+    const adapter = createWorkersAiRestAdapter(TEST_ACCOUNT, TEST_TOKEN, transport);
+    const outcome = await adapter.complete({
+      modelId: '@cf/qwen/qwen3.8-27b',
+      messages: [{ role: 'user', content: 'x' }],
+      maxOutputTokens: 2048,
+      deadlineAtMs: OK_DEADLINE,
+    });
+    expect(outcome.kind).toBe('transient');
+    const past = await createWorkersAiRestAdapter(TEST_ACCOUNT, TEST_TOKEN, async () =>
+      jsonRes(200, {}),
+    ).complete({
+      modelId: '@cf/qwen/qwen3.8-27b',
+      messages: [{ role: 'user', content: 'x' }],
+      maxOutputTokens: 2048,
+      deadlineAtMs: Date.now() - 1,
+    });
+    expect(past).toEqual({ kind: 'deadline_exceeded' });
+  });
+
+  it('the factory returns the backup provider id', () => {
+    expect(
+      createWorkersAiRestAdapter(TEST_ACCOUNT, TEST_TOKEN, async () => jsonRes(200, {})).provider,
+    ).toBe('workers-ai-backup');
   });
 });

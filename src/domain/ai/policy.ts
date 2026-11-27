@@ -77,12 +77,38 @@
  * then bumps v2.2.1 → v2.3. The version string changes because it is
  * stamped on attempt records — keeping v2.2 would mis-stamp
  * new-model attempts.
+ * ai-policy-v2.3 (2026-11-22) — backup-account failover + budget
+ * pressure governance, models unchanged. Adds the DISTINCT provider key
+ * `workers-ai-backup`: the SAME two Workers AI model ids reached over
+ * the official Workers AI REST API on the BACKUP Cloudflare account
+ * (`POST /client/v4/accounts/{BACKUP_CF_ACCOUNT_ID}/ai/run/{model}`)
+ * from the ONE primary worker — no second worker, no second D1, no
+ * AI Gateway, no R2 (ADR-0069). The key exists so per-account budget
+ * rows, per-account circuit breakers, and per-account refunds can never
+ * mix: a denial on `workers-ai` skips only `workers-ai` candidates and
+ * the ladder falls through to the backup account's own 120/day
+ * allowance. Cap 120 mirrors the primary (both accounts share the same
+ * free neuron allowance). Failover triggers ONLY on authorization
+ * denial (or a provider quota_denied) — NEVER on an open circuit
+ * breaker (a broken provider PATH must not burn the backup on the same
+ * defect). Switch-back is automatic at the Tehran day change: every
+ * invocation walks the static ladder from the top and the primary cap
+ * replenishes at midnight — there is no switch state. The operator
+ * kill switch `AI_FAILOVER_ENABLED` defaults OFF, and the backup port
+ * is built ONLY when the flag is on AND the backup secret/var are
+ * present (fail-closed: absent pieces = today's behavior exactly).
+ * Budget pressure governance (before the 120 hard cap): a WARNING at
+ * 96 charged attempts (80%) and a RESERVE of the last 6 units of each
+ * account's cap — the autonomous chain stops at the effective cap
+ * (cap − reserve) and defers typed `budget_pressure` (retryable)
+ * instead of riding to the terminal hard denial, leaving bounded
+ * headroom against accounting drift and one-shot operator probes.
  */
 
 import type { AiProvider } from './types';
 
 /** Version marker for the shipped allowlist/eligibility set. */
-export const AI_POLICY_VERSION = 'ai-policy-v2.2.1';
+export const AI_POLICY_VERSION = 'ai-policy-v2.3';
 
 /** Version marker for the shipped prompt contract (see ./prompt.ts).
  * v2 (ADR-0066): the Soul v1 voice rules + the category-emoji/trust-label
@@ -123,7 +149,16 @@ export interface AiModelRecord {
 
 /**
  * The ONLY models this policy version may call, in ladder order:
- * Workers AI primary → Workers AI alternate → (conditional) Gemini.
+ * Workers AI primary → Workers AI alternate → Workers AI BACKUP primary
+ * → Workers AI BACKUP alternate → (conditional) Gemini.
+ *
+ * The backup entries (ai-policy-v2.3) carry the SAME model ids as the
+ * primary account: the backup account's ladder is the same ladder one
+ * account over. They gate on the REST port being WIRED (the
+ * `AI_FAILOVER_ENABLED` flag + the backup secret/var present at the
+ * wiring sites) — the `requiresEligibility` gate stays false because
+ * the backup path's proof is the port itself, exactly like the binding
+ * path's proof is the binding.
  */
 export const AI_MODEL_ALLOWLIST_V2: readonly AiModelRecord[] = [
   {
@@ -135,6 +170,18 @@ export const AI_MODEL_ALLOWLIST_V2: readonly AiModelRecord[] = [
   {
     modelId: '@cf/qwen/qwen3.8-27b',
     provider: 'workers-ai',
+    role: 'alternate',
+    requiresEligibility: false,
+  },
+  {
+    modelId: '@cf/google/gemma-4-26b-a4b-it',
+    provider: 'workers-ai-backup',
+    role: 'primary',
+    requiresEligibility: false,
+  },
+  {
+    modelId: '@cf/qwen/qwen3.8-27b',
+    provider: 'workers-ai-backup',
     role: 'alternate',
     requiresEligibility: false,
   },
@@ -179,6 +226,10 @@ export const AI_PROVIDER_ELIGIBILITY_V2: Readonly<
   Record<AiProvider, 'binding_gated' | 'unverified_free_tier' | 'partial_free_tier'>
 > = {
   'workers-ai': 'binding_gated',
+  // ai-policy-v2.3: the backup REST path's access proof is the wired
+  // port itself (flag + secret + account id at the wiring sites) — the
+  // same 'binding_gated' family as the primary binding path.
+  'workers-ai-backup': 'binding_gated',
   gemini: 'partial_free_tier',
 };
 
@@ -191,6 +242,7 @@ export const AI_PROVIDER_ELIGIBILITY_V2: Readonly<
 export function defaultProviderEligibility(): Record<AiProvider, boolean> {
   return {
     'workers-ai': AI_PROVIDER_ELIGIBILITY_V2['workers-ai'] === 'binding_gated',
+    'workers-ai-backup': AI_PROVIDER_ELIGIBILITY_V2['workers-ai-backup'] === 'binding_gated',
     gemini: AI_PROVIDER_ELIGIBILITY_V2.gemini === 'partial_free_tier',
   };
 }
@@ -206,8 +258,32 @@ export function defaultProviderEligibility(): Record<AiProvider, boolean> {
  */
 export const AI_DAILY_REQUEST_ATTEMPT_CAPS: Readonly<Record<AiProvider, number>> = {
   'workers-ai': 120,
+  // ai-policy-v2.3: the backup account has the same free neuron
+  // allowance as the primary, so the same 120 attempts/day. The cap is
+  // per ACCOUNT because the provider key is per account.
+  'workers-ai-backup': 120,
   gemini: 40,
 };
+
+/**
+ * Budget pressure governance (ai-policy-v2.3) — the EARLY thresholds
+ * that act BEFORE the 120 hard cap, per account:
+ * - WARNING: when a Tehran day's charged-attempt count crosses this
+ *   threshold for a provider, the authorizing services log a sanitized
+ *   pressure warning (stable event, counts only) — visibility, not
+ *   enforcement; the outcome never changes.
+ * - RESERVE: the last N units of a provider's daily cap are held back
+ *   from the AUTONOMOUS chain (drafting, event-relation, inbound
+ *   rewrite authorize against cap − reserve). When the counter reaches
+ *   the effective cap the authorization denies and the services defer
+ *   typed `budget_pressure` (retryable) instead of the terminal hard
+ *   `budget_denied` — the chain degrades EARLY and GRACEFULLY, and the
+ *   reserved headroom absorbs accounting drift (the ~3-unit remainder
+ *   observed on 2026-11-21) plus one-shot operator probes. The hard cap
+ *   itself is unchanged: a non-reserving caller can still spend to 120.
+ */
+export const AI_BUDGET_PRESSURE_WARNING_REQUESTS = 96;
+export const AI_BUDGET_PRESSURE_RESERVE_UNITS = 6;
 
 /** All allowlist entries for one provider, in ladder order. */
 export function listModelsForProvider(provider: AiProvider): readonly AiModelRecord[] {
