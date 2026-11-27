@@ -297,7 +297,6 @@ describe('Gemini adapter — status and body classification', () => {
     expect(outcome).toEqual({ kind: 'transient', transportErrorName: 'TypeError' });
     const nonError = new GeminiAdapter(
       transportWith(async () => {
-        // eslint-disable-next-line @typescript-eslint/only-throw-error
         throw 'string failure';
       }),
       'k',

@@ -203,7 +203,7 @@ function createFakeGeminiPort(outcomes: readonly AiCallOutcome[]): AiProviderPor
   const queue = [...outcomes];
   return {
     provider: 'gemini',
-    async complete(input) {
+    async complete(_input) {
       const next = queue.shift();
       if (next === undefined) {
         throw new Error('fake port exhausted its scripted outcomes');

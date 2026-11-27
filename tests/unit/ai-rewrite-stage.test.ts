@@ -43,8 +43,6 @@ import {
 import { msUntilNextTehranMidnight } from '../../src/shared/time/tehran-day';
 import { createLogger } from '../../src/observability/logger';
 
-const silentLogger = createLogger({ level: 'error', sink: () => undefined });
-
 /**
  * ADR-0070 — the Gemini-only Soul rewrite stage: prompt v1 byte-pin,
  * output schema, claim-preservation guard, Gemini-only service, mapper
