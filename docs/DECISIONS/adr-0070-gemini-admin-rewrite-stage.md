@@ -1,6 +1,6 @@
 # ADR-0070 — Gemini as ADMIN: the Soul rewrite stage (Workers AI raw extraction only)
 
-- **Status:** Accepted — implemented in PR #TBD (flag default OFF; NO merge/deploy without owner go-ahead; go-live still requires a proven live rewrite, §10).
+- **Status:** Accepted — implemented in PR #31 (flag default OFF; NO merge/deploy without owner go-ahead; go-live still requires a proven live rewrite, §10).
 - **Date:** 2026-11-22.
 - **Owner orders:** 2026-11-22 ~11:49 — «جمنای تست بکن دیگه! و نباید فقط بک اپ باشه! جمنای باید ادمین باشه!»; 2026-11-22 ~11:52 — the Soul and personality belong ONLY to Gemini from now on; Workers AI (gemma/qwen) are sub-agents doing RAW extraction only (ingest sources, extract raw facts/claims/headlines — NO Soul voice, NO rewrite); Gemini fixes them up, organizes, and REWRITES them in the Soul voice, producing the final post; the deterministic pipeline then sends that final post to the channel (gates/caps/fact-guard unchanged; the model does not decide publication).
 - **Supersedes:** the review/score/veto reading of the admin stage (the 2026-11-21 verdict). The admin stage is a REWRITE stage: Gemini is the SOLE author of the final post. It also corrects the placement PR #27 made (ADR-0066 put Soul v1 into the Workers AI draft prompt — that placement is now wrong for Workers AI).
