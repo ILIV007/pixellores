@@ -188,7 +188,16 @@ export type AiCallOutcome =
   | { readonly kind: 'refused' }
   | { readonly kind: 'model_unavailable'; readonly retryAfterMs?: number }
   | { readonly kind: 'quota_denied'; readonly retryAfterMs?: number }
-  | { readonly kind: 'transient'; readonly retryAfterMs?: number }
+  /**
+   * ADR-0070 §8: the transport error's stable NAME only (e.g.
+   * 'TypeError') — present when the fetch itself threw, so the attempt
+   * log can name the failure. Never a message, URL, header, or body.
+   */
+  | {
+      readonly kind: 'transient';
+      readonly retryAfterMs?: number;
+      readonly transportErrorName?: string;
+    }
   | { readonly kind: 'auth_failed' }
   | { readonly kind: 'deadline_exceeded' };
 

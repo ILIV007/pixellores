@@ -11,8 +11,12 @@
  *   (ADR-0067). The origin is validated at construction (https only, no
  *   credentials/query/fragment) and is NEVER caller- or model-controlled.
  *   No arbitrary host may be supplied by callers or by model output.
- * - `redirect: 'error'` — a redirect is refused outright instead of being
- *   followed to an untrusted host.
+ * - `redirect: 'manual'` — a redirect is NEVER followed to an untrusted
+ *   host: workerd does NOT implement `redirect: 'error'` (it throws a
+ *   synchronous TypeError — the live 2026-11-22 Gemini failure: every
+ *   call failed in 0 ms with no HTTP response, ADR-0070 §1). With
+ *   'manual' a 3xx response is returned as a response and the adapter
+ *   maps it to `transient` itself, never reading its Location.
  * - The response body is read with the shared bounded reader (strict byte
  *   cap + early Content-Length rejection + strict UTF-8), so a hostile or
  *   broken peer cannot force unbounded allocation.
@@ -120,10 +124,21 @@ export class GeminiAdapter implements AiProviderPort {
           'x-goog-api-key': this.apiKey,
         },
         body,
-        redirect: 'error',
+        // workerd implements ONLY 'follow' | 'manual' — 'error' throws a
+        // synchronous TypeError before any network (ADR-0070 §1). 'manual'
+        // returns 3xx as a response; the status branch above maps it to
+        // transient without ever following it.
+        redirect: 'manual',
         signal: abortController.signal,
       });
       if (response.status !== 200) {
+        // Redirects are NEVER followed (redirect: 'manual' above): a 3xx
+        // response arrives here as a response — never a followed hop, its
+        // Location never read — and maps to transient like any other
+        // non-200 status.
+        if (response.status >= 300 && response.status < 400) {
+          return { kind: 'transient' };
+        }
         const retryAfterMs = parseRetryAfterMs(response.headers.get('retry-after'));
         switch (response.status) {
           case 404:
@@ -153,10 +168,16 @@ export class GeminiAdapter implements AiProviderPort {
     } catch (error) {
       // AbortError => the wall deadline fired (real cancellation);
       // anything else is a transport failure. Neither leaks URL/headers.
+      // ADR-0070 §8: the transport error's stable NAME only (e.g.
+      // 'TypeError') rides the transient outcome so the attempt log can
+      // name the failure next time — no message, no URL, no headers.
       if (error instanceof Error && error.name === 'AbortError') {
         return { kind: 'deadline_exceeded' };
       }
-      return { kind: 'transient' };
+      return {
+        kind: 'transient',
+        transportErrorName: error instanceof Error ? error.name : 'UnknownError',
+      };
     } finally {
       if (timerId !== undefined) {
         clearTimeout(timerId);

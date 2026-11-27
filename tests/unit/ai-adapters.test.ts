@@ -132,7 +132,7 @@ describe('Gemini adapter — endpoint and secret hygiene', () => {
     expect(request?.url.includes('key=')).toBe(false);
     const headers = request?.init.headers as Record<string, string>;
     expect(headers['x-goog-api-key']).toBe('test-only-not-a-real-key');
-    expect(request?.init.redirect).toBe('error');
+    expect(request?.init.redirect).toBe('manual');
     const body = JSON.parse(request?.init.body as string) as {
       systemInstruction?: { parts: { text: string }[] };
       contents: { role: string; parts: { text: string }[] }[];
@@ -248,6 +248,20 @@ describe('Gemini adapter — status and body classification', () => {
     expect((await oversized.complete(BASE)).kind).toBe('transient');
   });
 
+  it('maps a 3xx response to transient — redirects are never followed', async () => {
+    // ADR-0070 §1: workerd does NOT implement redirect: 'error' — the
+    // adapter sends 'manual' and a 3xx arrives as a response, which must
+    // never be followed (its Location is never read) and maps to
+    // transient like any other non-200 status.
+    for (const status of [301, 302, 307]) {
+      const adapter = new GeminiAdapter(
+        transportWith(async () => jsonRes(status, {}, { location: 'https://evil.example.com/' })),
+        'k',
+      );
+      expect((await adapter.complete(BASE)).kind).toBe('transient');
+    }
+  });
+
   it('maps transport rejection and aborts to transient/deadline outcomes', async () => {
     const networkError = new GeminiAdapter(
       transportWith(async () => {
@@ -266,6 +280,32 @@ describe('Gemini adapter — status and body classification', () => {
       'k',
     );
     expect((await aborted.complete(BASE)).kind).toBe('deadline_exceeded');
+  });
+
+  it('names the transport error on a transient outcome (ADR-0070 §8)', async () => {
+    // The 2026-11-22 live failure was a bare `transient` in 0 ms — the
+    // adapter had swallowed the TypeError from redirect: 'error'. The
+    // stable error NAME only (no message, URL, or headers) now rides the
+    // outcome so the attempt log can name the failure.
+    const throwing = new GeminiAdapter(
+      transportWith(async () => {
+        throw new TypeError('Invalid redirect value');
+      }),
+      'k',
+    );
+    const outcome = await throwing.complete(BASE);
+    expect(outcome).toEqual({ kind: 'transient', transportErrorName: 'TypeError' });
+    const nonError = new GeminiAdapter(
+      transportWith(async () => {
+        // eslint-disable-next-line @typescript-eslint/only-throw-error
+        throw 'string failure';
+      }),
+      'k',
+    );
+    expect(await nonError.complete(BASE)).toEqual({
+      kind: 'transient',
+      transportErrorName: 'UnknownError',
+    });
   });
 
   it('skips all transport work when the wall deadline is already passed', async () => {
