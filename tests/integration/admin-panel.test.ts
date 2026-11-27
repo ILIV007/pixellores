@@ -354,8 +354,10 @@ describe('the /menu screens over the real ingress', () => {
     expect(main.text).toContain('auto');
     expect(main.text).toContain('0 of 15');
     expect(main.text).toContain('off');
-    // Slice 6 added the Posts button to the main panel (4 buttons now).
-    expect(main.keyboardTokens).toHaveLength(4);
+    // The combined panel (ADR-0075) has 12 buttons for the owner: mode +
+    // schedule/drafts/posts + ai/settings/stats + manual/refresh/help +
+    // the Approval toggle + Admins.
+    expect(main.keyboardTokens).toHaveLength(12);
   });
 
   it('opens the mode screen with four modes and the current one marked', async () => {
@@ -804,12 +806,24 @@ describe('the /menu argument grammar — the ai screen (presence slice)', () => 
   });
 });
 
-describe('the AI presence screen (the presence slice — booleans ONLY)', () => {
-  function buildPanel(aiPresence?: {
-    workersAiBindingPresent: boolean;
-    geminiApiKeyPresent: boolean;
-    geminiEnabled: boolean;
-  }) {
+describe('the AI & Soul screen (presence + Soul — booleans ONLY)', () => {
+  function buildPanel(
+    aiPresence?: {
+      workersAiBindingPresent: boolean;
+      geminiApiKeyPresent: boolean;
+      geminiEnabled: boolean;
+    },
+    featureFlags?: {
+      adminPanelEnabled: boolean;
+      aiFailoverEnabled: boolean;
+      aiImageEnabled: boolean;
+      aiGeminiRewriteEnabled: boolean;
+      eventRelationEnabled: boolean;
+      backupTokenConfigured: boolean;
+      adminManageEnabled: boolean;
+      inboundEnabled: boolean;
+    },
+  ) {
     const clock = fixedClock(NOW);
     const harness = buildReviewHarness({ panelEnabled: true });
     const panel = createAdminPanelService({
@@ -817,11 +831,12 @@ describe('the AI presence screen (the presence slice — booleans ONLY)', () => 
       clock,
       ownerTelegramId: OWNER_ID,
       ...(aiPresence !== undefined ? { aiPresence } : {}),
+      ...(featureFlags !== undefined ? { featureFlags } : {}),
     });
     return panel;
   }
 
-  it('renders the three per-provider booleans — presence only, computed at the wiring', async () => {
+  it('renders the provider presence + Soul — presence only, computed at the wiring', async () => {
     const panel = buildPanel({
       workersAiBindingPresent: true,
       geminiApiKeyPresent: true,
@@ -834,15 +849,20 @@ describe('the AI presence screen (the presence slice — booleans ONLY)', () => 
       screen: 'ai',
     });
     expect(screen.kind).toBe('reply');
-    expect(screen.text).toContain('AI provider presence');
-    expect(screen.text).toContain('Workers AI binding: present');
-    expect(screen.text).toContain('GEMINI_API_KEY: present');
-    expect(screen.text).toContain('AI_GEMINI_ENABLED: off');
-    // A Back button riding a fresh single-use panel token.
-    expect(screen.buttons?.[0]?.[0]?.text).toBe('‹ Back');
+    // The bold title HTML-escapes the ampersand on the wire.
+    expect(screen.text).toContain('AI &amp; Soul');
+    expect(screen.text).toContain('Workers AI (extraction): present');
+    // The Gemini key-presence line is gone by design (ADR-0075 §8): the
+    // screen shows the rewrite FLAG instead — and without injected flags
+    // it answers "unavailable", never guesses.
+    expect(screen.text).toContain('Gemini (rewrite): unavailable');
+    expect(screen.text).toContain('Soul is not available in this deployment.');
+    // Test AI first, Back second — both ride fresh single-use tokens.
+    expect(screen.buttons?.[0]?.[0]?.text).toBe('🧪 Test AI');
+    expect(screen.buttons?.[1]?.[0]?.text).toBe('‹ Back');
   });
 
-  it('absent pieces render absent/ON honestly, and the fa localization holds', async () => {
+  it('absent pieces render absent/unavailable honestly, and the fa localization holds', async () => {
     const panel = buildPanel({
       workersAiBindingPresent: false,
       geminiApiKeyPresent: false,
@@ -854,18 +874,17 @@ describe('the AI presence screen (the presence slice — booleans ONLY)', () => 
       uiLanguage: 'en',
       screen: 'ai',
     });
-    expect(en.text).toContain('Workers AI binding: absent');
-    expect(en.text).toContain('GEMINI_API_KEY: absent');
-    expect(en.text).toContain('AI_GEMINI_ENABLED: ON');
+    expect(en.text).toContain('Workers AI (extraction): absent');
+    expect(en.text).toContain('Gemini (rewrite): unavailable');
     const fa = await panel.screen({
       telegramUserId: OWNER_ID,
       role: 'owner',
       uiLanguage: 'fa',
       screen: 'ai',
     });
-    expect(fa.text).toContain('وضعیت سرویس‌های هوش مصنوعی');
-    expect(fa.text).toContain('اتصال Workers AI: ناموجود');
-    expect(fa.text).toContain('گزینهٔ AI_GEMINI_ENABLED: روشن');
+    expect(fa.text).toContain('هوش مصنوعی و سول');
+    expect(fa.text).toContain('Workers AI (استخراج): ناموجود');
+    expect(fa.text).toContain('جمینای (بازنویسی): در دسترس نیست');
   });
 
   it('WITHOUT the injected presence the screen answers honestly — never guesses', async () => {
@@ -876,17 +895,33 @@ describe('the AI presence screen (the presence slice — booleans ONLY)', () => 
       uiLanguage: 'en',
       screen: 'ai',
     });
-    expect(screen.text).toContain('AI presence is not available in this deployment.');
+    expect(screen.text).toContain('Workers AI (extraction): unavailable');
+    expect(screen.text).toContain('Soul is not available in this deployment.');
     expect(screen.text).not.toContain('present');
-    expect(screen.buttons).toBeUndefined();
+    // The honest answer is in the lines — the screen still offers Test AI
+    // + Back (the buttons are navigation, never a pretend value).
+    expect(screen.buttons?.[0]?.[0]?.text).toBe('🧪 Test AI');
+    expect(screen.buttons?.[1]?.[0]?.text).toBe('‹ Back');
   });
 
   it('BOOLEANS ONLY: no secret-shaped material can ride the reply', async () => {
-    const panel = buildPanel({
-      workersAiBindingPresent: true,
-      geminiApiKeyPresent: true,
-      geminiEnabled: true,
-    });
+    const panel = buildPanel(
+      {
+        workersAiBindingPresent: true,
+        geminiApiKeyPresent: true,
+        geminiEnabled: true,
+      },
+      {
+        adminPanelEnabled: true,
+        aiFailoverEnabled: true,
+        aiImageEnabled: true,
+        aiGeminiRewriteEnabled: true,
+        eventRelationEnabled: false,
+        backupTokenConfigured: true,
+        adminManageEnabled: false,
+        inboundEnabled: true,
+      },
+    );
     const screen = await panel.screen({
       telegramUserId: OWNER_ID,
       role: 'owner',
@@ -894,7 +929,7 @@ describe('the AI presence screen (the presence slice — booleans ONLY)', () => 
       screen: 'ai',
     });
     const text = screen.text;
-    // The three stable boolean values and nothing else resembling state.
+    // The stable boolean values and nothing else resembling state.
     expect(text).toContain('present');
     expect(text).toContain('ON');
     // Key-material shapes are structurally absent: no assignment, no
@@ -903,7 +938,7 @@ describe('the AI presence screen (the presence slice — booleans ONLY)', () => 
     expect(text).toContain('never secret values');
   });
 
-  it('the show_ai callback re-renders the screen through a fresh single-use token', async () => {
+  it('the back callback re-renders the main screen through a fresh single-use token', async () => {
     const panel = buildPanel({
       workersAiBindingPresent: true,
       geminiApiKeyPresent: false,
@@ -915,7 +950,7 @@ describe('the AI presence screen (the presence slice — booleans ONLY)', () => 
       uiLanguage: 'en',
       screen: 'ai',
     });
-    const backToken = first.buttons?.[0]?.[0]?.callbackData.slice(2) ?? '';
+    const backToken = first.buttons?.[1]?.[0]?.callbackData.slice(2) ?? '';
     const afterBack = await panel.handleCallback({
       telegramUserId: OWNER_ID,
       role: 'owner',
@@ -925,7 +960,7 @@ describe('the AI presence screen (the presence slice — booleans ONLY)', () => 
     // The Back button shows the MAIN panel (a fresh main-screen reply).
     expect(afterBack.kind).toBe('reply');
     if (afterBack.kind === 'reply') {
-      expect(afterBack.text).toContain('Admin panel');
+      expect(afterBack.text).toContain('Pixel — Dashboard');
     }
     // A used token cannot ride twice.
     const replay = await panel.handleCallback({
@@ -953,7 +988,7 @@ describe('the AI presence screen (the presence slice — booleans ONLY)', () => 
       uiLanguage: 'en',
       screen: 'ai',
     });
-    expect(screen.text).toContain('GEMINI_API_KEY: present');
-    expect(screen.text).toContain('Workers AI binding: absent');
+    expect(screen.text).toContain('Workers AI (extraction): absent');
+    expect(screen.text).toContain('Soul is not available in this deployment.');
   });
 });

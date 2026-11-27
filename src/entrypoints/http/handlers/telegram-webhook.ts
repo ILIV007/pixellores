@@ -45,6 +45,7 @@
  */
 import { AppError, type AppErrorCode } from '../../../shared/errors/app-error';
 import { parseWorkerConfig } from '../../../shared/config/phase0';
+import { parseDataFoundationConfig } from '../../../shared/config/phase1a';
 import { parseTelegramPhase2Config } from '../../../shared/config/phase2';
 import { parseAdminReviewConfig } from '../../../shared/config/phase9';
 import { createAdminQueueDispositionService } from '../../../application/publishing/queue-disposition-service';
@@ -407,6 +408,44 @@ export async function handleTelegramWebhook(
     rewriter: inboundRewriter,
   });
 
+  // The editorial review service is built ONCE and shared by the ingress
+  // (the /drafts read commands) and the admin panel (the Drafts screen
+  // preview) — one instance, one review path, never two.
+  const editorialReview = reviewEnabled ? createEditorialReviewService({ executor }) : undefined;
+
+  // The combined admin panel (ADR-0075) reads the SAME build metadata
+  // /version serves (worker config + data-foundation config) — no new
+  // detection path, no secret values. When the metadata is invalid the
+  // panel shows "unavailable" for those lines instead of failing the
+  // webhook (the /version route still fails closed on its own).
+  const workerConfig = parseWorkerConfig(env as Readonly<Record<string, unknown>>);
+  const dataFoundation = parseDataFoundationConfig(
+    env as Readonly<Record<string, unknown>>,
+    workerConfig.config.ENVIRONMENT,
+  );
+  const workerInfo =
+    workerConfig.result.ok && dataFoundation.config !== null
+      ? {
+          applicationVersion: workerConfig.config.APP_VERSION,
+          commit: dataFoundation.config.APP_COMMIT,
+          schemaVersion: dataFoundation.config.schemaVersion,
+        }
+      : undefined;
+  // The panel's feature flags are the SAME validated Phase 6 flags the AI
+  // wiring already parses above, plus the two fail-closed gates the panel
+  // reads (admin-manage, admin-post) and the backup-token presence
+  // (boolean only — the token value never leaves env).
+  const panelFeatureFlags = {
+    adminPanelEnabled: panelEnabled,
+    aiFailoverEnabled: aiFlags.config.AI_FAILOVER_ENABLED,
+    aiImageEnabled: aiFlags.config.AI_IMAGE_ENABLED,
+    aiGeminiRewriteEnabled: aiFlags.config.AI_GEMINI_REWRITE_ENABLED,
+    eventRelationEnabled: aiFlags.config.EVENT_RELATION_ENABLED,
+    backupTokenConfigured: env.BACKUP_WORKERS_AI_API_TOKEN !== undefined,
+    adminManageEnabled,
+    inboundEnabled: adminPostEnabled,
+  };
+
   const ingress = createTelegramIngress({
     executor,
     authorization: createAuthorizationService({
@@ -438,14 +477,19 @@ export async function handleTelegramWebhook(
       // false) — gates ONLY the admin management commands and their
       // single-use confirm/cancel callbacks.
       adminManageEnabled,
-      // Slice 3: the /menu admin panel gate (fail-closed, default false)
-      // — gates ONLY the main/mode/cap/event screens and their single-use
-      // panel callbacks; settings only, never a send path.
+      // Slice 3 (combined panel, ADR-0075): the /menu admin panel gate
+      // (fail-closed, default false) — gates ONLY the main/mode/cap/event/
+      // schedule/drafts/posts/manual/ai/settings/stats/admins/debug/help
+      // screens and their single-use panel callbacks. The panel drives
+      // publish actions through the engine (draft approve → outbox,
+      // mode/cap/event settings, queue clear) — it never sends a post
+      // itself and never enables any scheduler path.
       panelEnabled,
     }),
     // R1.18: the read-only review service is wired ONLY while the gate is
-    // ON — the SAME production factory the offline demo shares.
-    editorialReview: reviewEnabled ? createEditorialReviewService({ executor }) : undefined,
+    // ON — the SAME production factory the offline demo shares. The SAME
+    // instance is reused by the admin panel (the Drafts screen preview).
+    editorialReview,
     // Phase 9A: the queue view service is wired ONLY while the gate is ON;
     // the send-gate note on the screen reads the parsed scheduler gate so
     // the observation NEVER pretends a live scheduler exists.
@@ -507,10 +551,12 @@ export async function handleTelegramWebhook(
           ownerTelegramId: phase2.config.ownerTelegramId,
         })
       : undefined,
-    // Slice 3: the admin panel service is wired ONLY while its gate is
-    // ON. Settings only — it never sends a post and never enables any
-    // publish or scheduler path. The bootstrap owner id comes from the
-    // parsed Phase 2 config (the protected identity).
+    // Slice 3 (combined panel, ADR-0075): the admin panel service is
+    // wired ONLY while its gate is ON. The combined panel drives publish
+    // actions through the engine (draft approve/reject → outbox enqueue,
+    // mode/cap/event settings, queue clear) — it never sends a post itself
+    // and never enables any scheduler path. The bootstrap owner id comes
+    // from the parsed Phase 2 config (the protected identity).
     // The presence slice: the per-provider AI presence BOOLEANS are
     // computed with the SAME expressions the AI wiring already uses above
     // (`env.AI !== undefined`, `env.GEMINI_API_KEY !== undefined`, and the
@@ -522,6 +568,10 @@ export async function handleTelegramWebhook(
           clock: systemClock,
           ownerTelegramId: phase2.config.ownerTelegramId,
           postManagement,
+          editorialReview,
+          workerInfo,
+          featureFlags: panelFeatureFlags,
+          publishDestination: phase2.config.targetChannel,
           aiPresence: {
             workersAiBindingPresent: env.AI !== undefined,
             geminiApiKeyPresent: env.GEMINI_API_KEY !== undefined,
