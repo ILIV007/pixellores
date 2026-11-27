@@ -489,6 +489,15 @@ export interface RewriteDraftInput {
  * typed permanent outcome, never a guessed rewrite input. A present but
  * malformed `rewrite` block is also a rejection: a half-written block
  * must never decide the draft's fate.
+ *
+ * SHAPE NOTE (found by the rewrite-draft integration test, 2026-11-27):
+ * the stored `document_json` is the BARE StoredDraftDocument — the
+ * prepare-draft handler stores `canonicalizeJson(document.document)`,
+ * not the `{title, document, facts, warnings}` build wrapper — and
+ * every other reader (the auto-gate, the exact-content basis) reads it
+ * bare. This parser reads the bare record directly; an earlier version
+ * unwrapped a `document` key that never exists in stored JSON, which
+ * would have rejected every real draft as invalid.
  */
 export function parseDraftDocumentForRewrite(documentJson: string): RewriteDraftInput | null {
   let parsed: unknown;
@@ -500,12 +509,7 @@ export function parseDraftDocumentForRewrite(documentJson: string): RewriteDraft
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return null;
   }
-  const record = parsed as Record<string, unknown>;
-  const document = record['document'];
-  if (document === null || typeof document !== 'object' || Array.isArray(document)) {
-    return null;
-  }
-  const doc = document as Record<string, unknown>;
+  const doc = parsed as Record<string, unknown>;
   const headlineFa = doc['headlineFa'];
   const summaryFa = doc['summaryFa'];
   if (typeof headlineFa !== 'string' || headlineFa.trim().length === 0) {

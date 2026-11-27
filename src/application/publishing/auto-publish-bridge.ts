@@ -151,11 +151,10 @@ function readRewriteStatus(documentJson: string): string | null {
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
       return null;
     }
-    const document = (parsed as Record<string, unknown>)['document'];
-    if (document === null || typeof document !== 'object' || Array.isArray(document)) {
-      return null;
-    }
-    const rewrite = (document as Record<string, unknown>)['rewrite'];
+    // Stored document_json is the BARE StoredDraftDocument (see
+    // parseDraftDocumentForRewrite's shape note) — the rewrite block
+    // rides at the top level, never under a `document` key.
+    const rewrite = (parsed as Record<string, unknown>)['rewrite'];
     if (rewrite === null || typeof rewrite !== 'object' || Array.isArray(rewrite)) {
       return null;
     }
