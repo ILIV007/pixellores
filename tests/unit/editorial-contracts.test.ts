@@ -149,6 +149,9 @@ describe('editorial enablement policy (ADR-0042 §3)', () => {
   it('pauses editorial.prepare_draft only while its own gate is off', () => {
     expect(isPausedByPolicy('editorial.prepare_draft', gatesOff)).toBe(true);
     expect(isPausedByPolicy('editorial.prepare_draft', gatesOn)).toBe(false);
+    // ADR-0070: the rewrite job lives under the same editorial gate.
+    expect(isPausedByPolicy('editorial.rewrite_draft', gatesOff)).toBe(true);
+    expect(isPausedByPolicy('editorial.rewrite_draft', gatesOn)).toBe(false);
   });
 
   it('keeps the ingestion gate independent of the editorial gate', () => {
@@ -162,10 +165,14 @@ describe('editorial enablement policy (ADR-0042 §3)', () => {
   });
 
   it('excludes only the paused type from scans', () => {
-    expect(policyExcludedTypes(gatesOff)).toEqual(['editorial.prepare_draft']);
+    expect(policyExcludedTypes(gatesOff)).toEqual([
+      'editorial.prepare_draft',
+      'editorial.rewrite_draft',
+    ]);
     expect(policyExcludedTypes({ ingestionGateOn: false, editorialGateOn: false })).toEqual([
       'sources.fetch_poll',
       'editorial.prepare_draft',
+      'editorial.rewrite_draft',
     ]);
   });
 });
