@@ -14,6 +14,7 @@ import type { WorkerEnv } from '../../shared/types/env';
 import { handleHealth, handleHealthLive, handleHealthReady } from './handlers/health';
 import { handleTelegramWebhook } from './handlers/telegram-webhook';
 import { handleVersion } from './handlers/version';
+import { handleWebPanel } from './handlers/web-panel';
 import type { RequestIdResolution } from './request-context';
 import type { Logger } from '../../observability/logger';
 
@@ -49,6 +50,14 @@ export async function routeRequest(
   // a nonexistent route.
   if (method === 'POST' && path === '/telegram/webhook') {
     return handleTelegramWebhook(request, env, ctx);
+  }
+
+  // Site admin panel (ADR-0081, Phase 3). The handler owns the exact
+  // route table; while ADMIN_WEB_PANEL_ENABLED is off it answers the
+  // uniform safe 404 for every path here, and unknown methods on known
+  // paths fall through to the same 404 below.
+  if (path === '/admin' || path.startsWith('/admin/') || path.startsWith('/api/admin/')) {
+    return handleWebPanel(request, env, ctx);
   }
 
   // Uniformly reject unknown paths and unsupported methods.
