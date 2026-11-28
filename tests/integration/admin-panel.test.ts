@@ -434,18 +434,19 @@ describe('the /menu screens over the real ingress', () => {
     await harness.ingress.processUpdate(privateMessage(251, CHIEF_EDITOR_ID, '/menu cap'));
     const capToken = bot.sends[0]!.keyboardTokens[0]!;
     await harness.ingress.processUpdate(callbackUpdate(252, CHIEF_EDITOR_ID, capToken.slice(2)));
-    expect(bot.answers).toEqual([ADMIN_PANEL_STRINGS.en.callbackCapSet(12, TOMORROW_TEHRAN)]);
+    // First preset is 6 (ADR-0084: presets are [6, 12, 15, 18]).
+    expect(bot.answers).toEqual([ADMIN_PANEL_STRINGS.en.callbackCapSet(6, TOMORROW_TEHRAN)]);
     const capJson = await settingsRow('publishing.daily_cap');
-    expect(JSON.parse(capJson!).cap).toBe(12);
+    expect(JSON.parse(capJson!).cap).toBe(6);
     // The editor's own cap screen mints editor-bound tokens; the click is denied.
     await harness.ingress.processUpdate(privateMessage(253, EDITOR_ID, '/menu cap'));
     const editorToken = bot.sends[1]!.keyboardTokens[0]!;
     await harness.ingress.processUpdate(callbackUpdate(254, EDITOR_ID, editorToken.slice(2)));
     expect(bot.answers).toEqual([
-      ADMIN_PANEL_STRINGS.en.callbackCapSet(12, TOMORROW_TEHRAN),
+      ADMIN_PANEL_STRINGS.en.callbackCapSet(6, TOMORROW_TEHRAN),
       ADMIN_PANEL_STRINGS.en.callbackPermissionDenied,
     ]);
-    expect(JSON.parse((await settingsRow('publishing.daily_cap'))!).cap).toBe(12);
+    expect(JSON.parse((await settingsRow('publishing.daily_cap'))!).cap).toBe(6);
     expect((await auditRows()).filter((row) => row.action === 'settings.cap_changed')).toHaveLength(
       1,
     );
@@ -482,16 +483,17 @@ describe('the daily cap: next-day rule, D1 counter, Tehran-midnight reset, P0 by
       screen: 'cap',
     });
     expect(capScreen.text).toContain('Cap in force today: 15');
-    const token12 = capScreen.buttons![0]![0]!.callbackData.slice(2);
+    // First preset is 6 (ADR-0084: presets are [6, 12, 15, 18]).
+    const token6 = capScreen.buttons![0]![0]!.callbackData.slice(2);
     const changed = await panel.handleCallback({
       telegramUserId: OWNER_ID,
       role: 'owner',
       uiLanguage: 'en',
-      token: token12,
+      token: token6,
     });
     expect(changed).toEqual({
       kind: 'answer',
-      callbackText: ADMIN_PANEL_STRINGS.en.callbackCapSet(12, TOMORROW_TEHRAN),
+      callbackText: ADMIN_PANEL_STRINGS.en.callbackCapSet(6, TOMORROW_TEHRAN),
     });
     const mainToday = await panel.main({
       telegramUserId: OWNER_ID,
@@ -499,14 +501,14 @@ describe('the daily cap: next-day rule, D1 counter, Tehran-midnight reset, P0 by
       uiLanguage: 'en',
     });
     expect(mainToday.text).toContain('Daily cap: 15');
-    expect(mainToday.text).toContain('New cap from tomorrow: 12');
+    expect(mainToday.text).toContain('New cap from tomorrow: 6');
     clock.advance(DAY_MS);
     const mainTomorrow = await panel.main({
       telegramUserId: OWNER_ID,
       role: 'owner',
       uiLanguage: 'en',
     });
-    expect(mainTomorrow.text).toContain('Daily cap: 12');
+    expect(mainTomorrow.text).toContain('Daily cap: 6');
     expect(mainTomorrow.text).not.toContain('New cap from tomorrow');
   });
 
