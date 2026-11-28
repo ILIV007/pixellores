@@ -88,7 +88,7 @@ import {
   readDraftClaimDatePhrases,
 } from '../../domain/publishing/draft-freshness';
 import { recordQualityRejection } from '../../adapters/db/near-dup-store';
-import { recordPublication } from '../../adapters/db/publishing-settings-store';
+import { checkPublishGate, recordPublication } from '../../adapters/db/publishing-settings-store';
 import {
   planReleaseAfterScheduleDecision,
   planRetryAfterProvedFailure,
@@ -98,6 +98,7 @@ import {
   type PublicationPriorityClass,
 } from '../../domain/publishing/priority-classes';
 import { planPublicationTime } from '../../domain/publishing/publication-schedule';
+import type { PublishPriority } from '../../domain/publishing/publishing-settings';
 import type { MixCategory } from '../../domain/publishing/anti-robot';
 import {
   renderEditorialPostCaption,
@@ -1846,6 +1847,67 @@ export function createPublicationScheduler(deps: {
     };
   }
 
+  /**
+   * ADR-0084 — the cap refusal for ONE claimed autonomous row: consult
+   * the daily publication gate (`checkPublishGate` — the same gate the
+   * admin panel enforces) BEFORE any send; on refusal — or on a
+   * gate-read failure, which refuses too (fail closed) — RELEASE the
+   * claim with the attempt restored and report a policy deferral, so
+   * the row re-evaluates 10 minutes later like every policy deferral
+   * and is never lost or dead-lettered for a cap that resets at Tehran
+   * midnight. Returns null when the gate allows the send.
+   *
+   * The P0 bypass is the gate's own rule (blueprint: no daily cap for
+   * P0); an unclassified score never earns it — it rides as 'normal'
+   * and consumes the cap. Unreachable for rows that passed enqueue +
+   * policy validation, which already classify the score.
+   */
+  async function refuseIfCapReached(
+    row: PublicationRow,
+    generation: number,
+    nowMs: number,
+  ): Promise<ScanDetail | null> {
+    const classified = classifyPriority(row.priority);
+    const priority: PublishPriority =
+      classified.ok && classified.value.class === 'P0'
+        ? 'p0'
+        : classified.ok && classified.value.class === 'P1'
+          ? 'p1'
+          : 'normal';
+    let code: string | null = null;
+    try {
+      const gate = await checkPublishGate(deps.executor, { priority, nowMs });
+      if (!gate.decision.allowed) {
+        code = gate.decision.reason;
+        deps.logger.warn('publication.scheduler.cap_reached', {
+          publicationId: row.id,
+          cap: gate.cap,
+          counted: gate.counted,
+        });
+      }
+    } catch {
+      code = 'cap_check_failed';
+      deps.logger.warn('publication.scheduler.cap_check_failed', {
+        publicationId: row.id,
+      });
+    }
+    if (code === null) return null;
+    const release = planReleaseAfterScheduleDecision({ dueAtMs: null, nowMs });
+    if (!release.ok) {
+      throw new AppError('internal_error');
+    }
+    const written = await releaseClaimed(deps.executor, {
+      publicationId: row.id,
+      generation,
+      runAfterMs: release.runAfterMs,
+      scheduledAtMs: release.scheduledAtMs,
+      nowMs,
+    });
+    return written.kind === 'written'
+      ? { publicationId: row.id, draftId: row.draft_id, outcome: 'deferred_policy', code }
+      : { publicationId: row.id, draftId: row.draft_id, outcome: 'fence_rejected' };
+  }
+
   async function sendClaimed(
     row: PublicationRow,
     generation: number,
@@ -1856,6 +1918,19 @@ export function createPublicationScheduler(deps: {
       // Unreachable: the gate-ON path validated the transport before any
       // claim. The typed guard keeps the send honest under any cast.
       throw new AppError('config_invalid');
+    }
+    // ADR-0084 — the daily publication cap binds HERE, at the send
+    // terminal (the scheduler is the ONLY sender): an autonomous
+    // (auto / safe_auto) row sends ONLY while today's counted
+    // publications are under the cap from settings.publishing.daily_cap.
+    // The panel's checkPublishGate was the only caller before — the
+    // scheduler never consulted it, so the cap never bound a send.
+    // Owner/human rows (approval_mode 'approval') stay cap-exempt:
+    // their posts count in the separate daily_posts_owner bucket (PR
+    // #36), never in the counted bucket this gate reads.
+    if (row.approval_mode === 'auto' || row.approval_mode === 'safe_auto') {
+      const capRefusal = await refuseIfCapReached(row, generation, nowMs);
+      if (capRefusal !== null) return capRefusal;
     }
     // The pre-send evidence check: a recorded delivery from a crashed
     // earlier generation heals WITHOUT a second send (the ADR-0032 gate).

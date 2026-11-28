@@ -172,8 +172,8 @@ export const ADMIN_PANEL_TOKEN_ACTIONS = {
 /** The bounded token TTL of the panel buttons. */
 export const ADMIN_PANEL_TOKEN_TTL_MS = 10 * 60 * 1000;
 
-/** The three cap presets on the cap screen (12 / 15 / 18). */
-export const ADMIN_PANEL_CAP_PRESETS: readonly number[] = [12, 15, 18];
+/** The cap presets on the cap screen — 6 first (ADR-0084: the live cap is 6 and the old [12, 15, 18] could not express it). */
+export const ADMIN_PANEL_CAP_PRESETS: readonly number[] = [6, 12, 15, 18];
 
 /**
  * Human-approved drafts queue at the auto lane's priority — the same
