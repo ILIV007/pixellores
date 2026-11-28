@@ -32,6 +32,13 @@
  *    any drift means the stored basis moved and the report stays);
  *  - the rebuilt report reads back as a valid v1 report (the reader's
  *    own contract — a rebuild that cannot validate is never stored).
+ * ADR-0082 — a draft with NO stored report at all (the flag-off
+ * historical shape) is BUILT, not skipped: same builder, same
+ * validation, same CAS write, same audit row — from the draft's own
+ * stored claims + the stored source item the document names. There is
+ * no stored report to compare against, so no snapshot-hash or
+ * excerpt-truncated comparison exists to check (said so at the build
+ * site); the item as read IS the basis.
  * The replacement is the compare-and-swap update: it applies ONLY when
  * the draft is still `ready` AND its document is byte-identical to the
  * one evaluated. ONE system audit event records the rebuild (ids and
@@ -71,7 +78,7 @@ export type FactGuardReevaluationOutcome =
   | {
       readonly kind: 'not_applicable';
       readonly reason:
-        'report_absent' | 'report_not_v1' | 'no_numbers_findings' | 'claims_malformed';
+        'report_not_v1' | 'no_numbers_findings' | 'claims_malformed' | 'source_item_unresolvable';
     }
   | {
       readonly kind: 'skipped';
@@ -125,6 +132,136 @@ function readStoredModelClaims(
   return claims;
 }
 
+/**
+ * ADR-0082 — the source item a flag-off draft names. The stored
+ * document always carries it twice: `sourceReport.sourceItemId` (the
+ * draft's own recorded source) and `evidenceGuard.snapshot.sourceItemId`
+ * (the guard's recorded snapshot). The two must AGREE — a document
+ * whose own records disagree names no item at all and is never guessed
+ * (the exact-content basis discipline). Either record missing or
+ * unreadable ⇒ null.
+ */
+function readDocumentSourceItemId(document: Record<string, unknown>): string | null {
+  const sourceReport = document['sourceReport'];
+  if (typeof sourceReport !== 'object' || sourceReport === null || Array.isArray(sourceReport)) {
+    return null;
+  }
+  const sourceItemId = (sourceReport as Record<string, unknown>)['sourceItemId'];
+  if (typeof sourceItemId !== 'string' || sourceItemId === '') {
+    return null;
+  }
+  const evidenceGuard = document['evidenceGuard'];
+  if (
+    typeof evidenceGuard === 'object' &&
+    evidenceGuard !== null &&
+    !Array.isArray(evidenceGuard)
+  ) {
+    const snapshot = (evidenceGuard as Record<string, unknown>)['snapshot'];
+    if (typeof snapshot === 'object' && snapshot !== null && !Array.isArray(snapshot)) {
+      const guardItemId = (snapshot as Record<string, unknown>)['sourceItemId'];
+      if (typeof guardItemId === 'string' && guardItemId !== sourceItemId) {
+        return null;
+      }
+    }
+  }
+  return sourceItemId;
+}
+
+/**
+ * ADR-0082 — BUILD a fact-guard report for a draft that has NONE (the
+ * flag-off historical shape: the key was never written). Same builder,
+ * same read-back validation, same CAS write, same audit row as the
+ * numbers path — from the draft's own stored claims + the stored source
+ * item the document names. Guards: the claims must be well-formed and
+ * non-empty; the item must exist. NO stored-report comparisons exist to
+ * check here (no snapshot hash, no excerpt-truncated flag — there is no
+ * stored report to compare against), so none are performed: the item as
+ * read IS the basis. `claimsRequiringReviewBefore` is 0: no prior report
+ * existed, so 0 marks absence, not a measured count.
+ */
+async function buildAbsentFactGuardReport(input: {
+  readonly executor: DbExecutor;
+  readonly draftId: string;
+  readonly document: Record<string, unknown>;
+  readonly documentJson: string;
+  readonly nowMs: number;
+  readonly logger?: Logger;
+}): Promise<FactGuardReevaluationOutcome> {
+  const modelClaims = readStoredModelClaims(input.document);
+  if (modelClaims === null || modelClaims.length === 0) {
+    return { kind: 'not_applicable', reason: 'claims_malformed' };
+  }
+  const sourceItemId = readDocumentSourceItemId(input.document);
+  if (sourceItemId === null) {
+    return { kind: 'not_applicable', reason: 'source_item_unresolvable' };
+  }
+  const item = await findSourceItemForReevaluation(input.executor, sourceItemId);
+  if (item === null) {
+    input.logger?.debug('editorial.fact_guard_reevaluation.skipped', {
+      draftId: input.draftId,
+      reason: 'source_item_missing',
+    });
+    return { kind: 'skipped', reason: 'source_item_missing' };
+  }
+  const excerpt = buildTraceableExcerpt({ title: item.title, body_excerpt: item.body_excerpt });
+  const rebuilt = buildFactGuardReport({
+    snapshot: { sourceItemId: item.id, contentHash: item.content_hash },
+    evidence: {
+      evidenceId: item.id,
+      excerptText: excerpt.text,
+      excerptTruncated: excerpt.truncated,
+    },
+    draftClaims: modelClaims.map((claim) => ({
+      text: claim.text,
+      evidenceIds: claim.evidenceIds,
+    })),
+    draftHeadlineFa:
+      typeof input.document['headlineFa'] === 'string' ? input.document['headlineFa'] : '',
+    draftSummaryFa:
+      typeof input.document['summaryFa'] === 'string' ? input.document['summaryFa'] : '',
+    draftSourceItemId: item.id,
+  });
+  if (readFactGuardReport({ factGuard: rebuilt }).kind !== 'fact_guard_v1') {
+    input.logger?.debug('editorial.fact_guard_reevaluation.skipped', {
+      draftId: input.draftId,
+      reason: 'rebuilt_report_invalid',
+    });
+    return { kind: 'skipped', reason: 'rebuilt_report_invalid' };
+  }
+  const nextDocumentJson = JSON.stringify({ ...input.document, factGuard: rebuilt });
+  const replaced = await replaceDraftFactGuardReport(input.executor, {
+    draftId: input.draftId,
+    expectedDocumentJson: input.documentJson,
+    documentJson: nextDocumentJson,
+    nowMs: input.nowMs,
+  });
+  if (!replaced) {
+    return { kind: 'concurrent_change' };
+  }
+  await insertFactGuardReevaluationAudit(input.executor, {
+    draftId: input.draftId,
+    nowMs: input.nowMs,
+    metadata: {
+      factGuardVersion: FACT_GUARD_VERSION,
+      claimsRequiringReviewBefore: 0,
+      claimsRequiringReviewAfter: rebuilt.counts.claimsRequiringReview,
+      snapshotSourceItemId: sourceItemId,
+    },
+  });
+  input.logger?.debug('editorial.fact_guard_reevaluation.updated', {
+    draftId: input.draftId,
+    claimsRequiringReviewBefore: 0,
+    claimsRequiringReviewAfter: rebuilt.counts.claimsRequiringReview,
+  });
+  return {
+    kind: 'updated',
+    documentJson: nextDocumentJson,
+    cleared: rebuilt.counts.claimsRequiringReview === 0,
+    claimsRequiringReviewBefore: 0,
+    claimsRequiringReviewAfter: rebuilt.counts.claimsRequiringReview,
+  };
+}
+
 export async function reevaluateDraftFactGuard(input: {
   readonly executor: DbExecutor;
   readonly draftId: string;
@@ -144,7 +281,16 @@ export async function reevaluateDraftFactGuard(input: {
   const document = parsed as Record<string, unknown>;
   const read = readFactGuardReport(parsed);
   if (read.kind === 'absent') {
-    return { kind: 'not_applicable', reason: 'report_absent' };
+    // ADR-0082 — no stored report to re-evaluate: BUILD one from the
+    // stored claims + the stored source item (the flag-off backfill).
+    return buildAbsentFactGuardReport({
+      executor: input.executor,
+      draftId: input.draftId,
+      document,
+      documentJson: input.documentJson,
+      nowMs: input.nowMs,
+      logger: input.logger,
+    });
   }
   if (read.kind !== 'fact_guard_v1') {
     return { kind: 'not_applicable', reason: 'report_not_v1' };
