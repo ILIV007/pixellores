@@ -13,8 +13,15 @@
  * - Only the five predefined XML entities and numeric character
  *   references are decoded; any other named entity is a parse FAILURE.
  * - CDATA is literal text (terminated only by `]]>`).
- * - Hard bounds: depth, element count, text-node size, attribute count,
- *   attribute value size — malformed or hostile input fails safely.
+ * - Hard bounds: depth, element count, attribute count, attribute
+ *   value size — malformed or hostile input fails safely. An over-long
+ *   TEXT node is TRUNCATED at `maxTextNodeChars` instead of failing the
+ *   document (ADR-0079): a single long article body (a GameSpot
+ *   `content:encoded` CDATA ran 86,704 chars against the 65,536 bound)
+ *   must not kill the whole feed — the feed reader and the normalizer
+ *   truncate every field far below this bound anyway, so nothing
+ *   downstream ever sees the cut. The emitted event never exceeds the
+ *   bound, so the memory posture is unchanged.
  *
  * The scanner never resolves external identifiers and never performs
  * network I/O.
@@ -28,7 +35,6 @@ export type XmlParseFailureReason =
   | 'malformed_markup'
   | 'depth_exceeded'
   | 'element_count_exceeded'
-  | 'text_too_long'
   | 'truncated_input'
   | 'cdata_unterminated'
   | 'attr_too_long'
@@ -70,6 +76,24 @@ export const XML_BOUNDS = {
   maxAttributes: 32,
   maxAttrValueChars: 4_096,
 } as const;
+
+/**
+ * Truncate a text node at the bound without splitting a surrogate
+ * pair (ADR-0079): a HIGH surrogate at the cut end would orphan its
+ * low half, so the cut backs off one unit. Over-long nodes are cut,
+ * never a parse failure — see the module docstring.
+ */
+function truncateTextNode(text: string): string {
+  if (text.length <= XML_BOUNDS.maxTextNodeChars) {
+    return text;
+  }
+  let cut = XML_BOUNDS.maxTextNodeChars;
+  const lastUnit = text.charCodeAt(cut - 1);
+  if (lastUnit >= 0xd800 && lastUnit <= 0xdbff) {
+    cut -= 1;
+  }
+  return text.slice(0, cut);
+}
 
 export type XmlScanResult =
   | { readonly ok: true; readonly events: readonly XmlEvent[] }
@@ -166,11 +190,9 @@ export function scanXmlDocument(input: string): XmlScanResult {
         if (!decoded.ok) {
           return { ok: false, error: { reason: decoded.reason } };
         }
-        if (decoded.text.length > XML_BOUNDS.maxTextNodeChars) {
-          return { ok: false, error: { reason: 'text_too_long' } };
-        }
-        if (decoded.text.length > 0) {
-          events.push({ kind: 'text', text: decoded.text });
+        const text = truncateTextNode(decoded.text);
+        if (text.length > 0) {
+          events.push({ kind: 'text', text });
         }
       }
       // Whitespace outside the root is tolerated.
@@ -203,10 +225,7 @@ export function scanXmlDocument(input: string): XmlScanResult {
         if (end === -1) {
           return { ok: false, error: { reason: 'cdata_unterminated' } };
         }
-        const text = input.slice(lt + 9, end);
-        if (text.length > XML_BOUNDS.maxTextNodeChars) {
-          return { ok: false, error: { reason: 'text_too_long' } };
-        }
+        const text = truncateTextNode(input.slice(lt + 9, end));
         if (openStack.length > 0 && text.length > 0) {
           events.push({ kind: 'text', text });
         }

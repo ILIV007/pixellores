@@ -122,3 +122,59 @@ describe('image-url helpers (ADR-0068)', () => {
     expect(imageUrlHost('http://cdn.example.com/a.jpg')).toBeNull();
   });
 });
+
+describe('parseFeedDocument — content:encoded <img> fallback (ADR-0079)', () => {
+  const IMG_A = 'https://cdn.example.com/encoded-a.jpg';
+  const IMG_B = 'https://cdn.example.com/encoded-b.jpg';
+  const MEDIA = 'https://cdn.example.com/media.jpg';
+
+  function rssEncodedItem(inner: string): string {
+    return `<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:media="http://search.yahoo.com/mrss/"><channel><title>T</title><item><title>Item</title><link>https://example.com/a</link>${inner}</item></channel></rss>`;
+  }
+
+  it('takes the first <img src> from content:encoded when no media image exists', () => {
+    const parsed = parseFeedDocument(
+      rssEncodedItem(
+        `<content:encoded><![CDATA[<p>Text</p><img src="${IMG_A}"><img src="${IMG_B}">]]></content:encoded>`,
+      ),
+    );
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.feed.items[0]?.imageUrl).toBe(IMG_A);
+  });
+
+  it('a media:content image wins even when it comes after content:encoded', () => {
+    const parsed = parseFeedDocument(
+      rssEncodedItem(
+        `<content:encoded><![CDATA[<img src="${IMG_A}">]]></content:encoded><media:content url="${MEDIA}" medium="image"/>`,
+      ),
+    );
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.feed.items[0]?.imageUrl).toBe(MEDIA);
+  });
+
+  it('ignores a non-https <img src> and takes the next valid one', () => {
+    const parsed = parseFeedDocument(
+      rssEncodedItem(
+        `<content:encoded><![CDATA[<img src="http://example.com/plain.jpg"><img src="${IMG_B}">]]></content:encoded>`,
+      ),
+    );
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.feed.items[0]?.imageUrl).toBe(IMG_B);
+  });
+
+  it('no <img> in the encoded body leaves the item imageless', () => {
+    const parsed = parseFeedDocument(
+      rssEncodedItem(`<content:encoded><![CDATA[<p>No image here</p>]]></content:encoded>`),
+    );
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.feed.items[0]?.imageUrl).toBeNull();
+  });
+
+  it('takes the first <img src> from an Atom content body too', () => {
+    const parsed = parseFeedDocument(
+      `<feed xmlns="http://www.w3.org/2005/Atom"><title>T</title><entry><id>e1</id><title>Item</title><link rel="alternate" href="https://example.com/a"/><content type="html">&lt;img src="${IMG_A}"&gt;</content></entry></feed>`,
+    );
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.feed.items[0]?.imageUrl).toBe(IMG_A);
+  });
+});

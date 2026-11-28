@@ -266,15 +266,18 @@
         // implies a live send). Local defaults above stay "false".
         "ADMIN_POST_ENABLED": "true",
         "ADMIN_POST_LIVE_PUBLISH_ENABLED": "true",
-        // Phase 4 ingestion gate ships DISABLED on preview too (ADR-0038):
-        // activation is a post-review operator procedure (runbook Phase 4).
-        // The reviewed Phase 3 engine behavior is preserved unchanged.
-        "SOURCE_INGESTION_ENABLED": "false",
-        // Phase 5A editorial source→draft gate ships DISABLED on preview
-        // (ADR-0042): activation is a post-review owner procedure. While
-        // off, editorial.prepare_draft work is losslessly policy-paused;
-        // AI_ENABLED stays an independent fail-closed gate.
-        "EDITORIAL_ENABLED": "false",
+        // Phase 4 ingestion gate ships ENABLED on preview (ADR-0079,
+        // owner order 2026-11-28: the Nov 22–28 dead queue — the flags
+        // were "false" in every committed wrangler.jsonc and a deploy
+        // wiped the live override, so ingestion died silently for six
+        // days. The ON state is committed here so no deploy can kill
+        // the feed again. Local defaults above stay "false".
+        "SOURCE_INGESTION_ENABLED": "true",
+        // Phase 5A editorial source→draft gate ships ENABLED on preview
+        // (ADR-0079, owner order 2026-11-28 — same dead-queue fix as
+        // SOURCE_INGESTION_ENABLED above; the editorial drain runs only
+        // while this is "true"). Local defaults above stay "false".
+        "EDITORIAL_ENABLED": "true",
         // Phase 5C-4 candidate-MATCHING report gate ships DISABLED on
         // preview too (V4 Phase 5.2 local slice): a pure zero-SQL/
         // zero-cost derivation of the discovery + assessment of the same

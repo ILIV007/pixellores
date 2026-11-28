@@ -131,6 +131,17 @@ export interface IngestItemRow {
   readonly fetchedAtMs: number;
   readonly contentHash: string;
   readonly rawJson: string;
+  /**
+   * ADR-0079: the resolved feed/og:image image URL (else null) — the
+   * ingest commit persists it as a media_assets row (below), because
+   * the scheduler resolves photos via findAssetsByUrls and raw_json
+   * alone never produced a row (0 media_assets rows, live).
+   */
+  readonly imageUrl?: string | null;
+  /** ADR-0079: the media_assets row id for the image (else null). */
+  readonly mediaAssetId?: string | null;
+  /** ADR-0079: attribution for the image — the image host (else null). */
+  readonly imageAttribution?: string | null;
 }
 
 export interface PollTerminalState {
@@ -154,6 +165,62 @@ export interface PollCommitResult {
   readonly duplicateUrl: number;
   /** True when the fenced state write WON (we owned the poll window). */
   readonly stateWriteWon: boolean;
+}
+
+/**
+ * ADR-0079: persist the resolved source photo at ingest commit — one
+ * `media_assets` row per INSERTED item with an image, in a second batch
+ * after the item batch (the item batch stays exactly as specified; the
+ * media batch rides the classification, so a duplicate item — whose
+ * attempted row does not exist — never mints an orphan row pointing
+ * at a fresh id).
+ *
+ * Shape mirrors the scheduler's send-time `insertUrlAsset` call
+ * (scheduler.ts `resolveOneEditorialPhotoAsset`): type `photo`,
+ * rights `attribution_required`, attribution = the image host, status
+ * `validated` — the shape `resolveEditorialPhoto` already accepts
+ * (publishable rights + `validated` status). Dedup is atomic, no DDL:
+ * `WHERE NOT EXISTS` on the canonical URL (no UNIQUE index on the
+ * column, ADR-0068) or the row id — a replay inserts nothing. A media
+ * failure propagates: the items are already committed, so a retry
+ * absorbs them as duplicates and re-attempts only the media rows —
+ * a silently dropped photo row would hide a broken photo path.
+ */
+async function insertIngestMediaAssets(
+  executor: DbExecutor,
+  input: { readonly items: readonly IngestItemRow[]; readonly nowMs: number },
+): Promise<void> {
+  const statements: DbStatement[] = [];
+  for (const item of input.items) {
+    const imageUrl = item.imageUrl ?? null;
+    const mediaAssetId = item.mediaAssetId ?? null;
+    if (imageUrl === null || mediaAssetId === null) {
+      continue;
+    }
+    statements.push({
+      sql: `INSERT INTO media_assets
+              (id, source_item_id, type, canonical_url, rights_status, attribution,
+               status, created_at, updated_at)
+            SELECT ?, ?, 'photo', ?, 'attribution_required', ?, 'validated', ?, ?
+            WHERE NOT EXISTS (
+              SELECT 1 FROM media_assets WHERE canonical_url = ? OR id = ?
+            )`,
+      params: [
+        mediaAssetId,
+        item.id,
+        imageUrl,
+        item.imageAttribution ?? null,
+        input.nowMs,
+        input.nowMs,
+        imageUrl,
+        mediaAssetId,
+      ],
+    });
+  }
+  if (statements.length === 0) {
+    return;
+  }
+  await executor.batch(statements);
 }
 
 /**
@@ -250,6 +317,8 @@ export async function commitPollResults(
   let inserted = 0;
   let duplicateExternal = 0;
   let duplicateUrl = 0;
+  // ADR-0079: only items whose own row exists mint a media row.
+  const insertedItems: IngestItemRow[] = [];
   for (const item of input.items) {
     const own = await executor.first<{ id: string }>({
       sql: 'SELECT id FROM source_items WHERE id = ? AND source_id = ?',
@@ -257,6 +326,7 @@ export async function commitPollResults(
     });
     if (own !== null) {
       inserted += 1;
+      insertedItems.push(item);
       continue;
     }
     const byExternal = await executor.first<{ id: string }>({
@@ -285,6 +355,10 @@ export async function commitPollResults(
       duplicateExternal += 1;
     }
   }
+
+  // ADR-0079: the photo write rides the classification (inserted items
+  // only) — a media failure propagates; see insertIngestMediaAssets.
+  await insertIngestMediaAssets(executor, { items: insertedItems, nowMs: input.nowMs });
 
   return { inserted, duplicateExternal, duplicateUrl, stateWriteWon };
 }
@@ -935,6 +1009,8 @@ export async function commitOwnedPollResults(
   let inserted = 0;
   let duplicateExternal = 0;
   let duplicateUrl = 0;
+  // ADR-0079: only items whose own row exists mint a media row.
+  const insertedItems: IngestItemRow[] = [];
   for (const item of input.items) {
     const own = await executor.first<{ id: string }>({
       sql: 'SELECT id FROM source_items WHERE id = ? AND source_id = ?',
@@ -942,6 +1018,7 @@ export async function commitOwnedPollResults(
     });
     if (own !== null) {
       inserted += 1;
+      insertedItems.push(item);
       continue;
     }
     const byExternal = await executor.first<{ id: string }>({
@@ -965,6 +1042,10 @@ export async function commitOwnedPollResults(
       duplicateExternal += 1;
     }
   }
+
+  // ADR-0079: the photo write rides the classification (inserted items
+  // only) — a media failure propagates; see insertIngestMediaAssets.
+  await insertIngestMediaAssets(executor, { items: insertedItems, nowMs: input.nowMs });
 
   return { inserted, duplicateExternal, duplicateUrl, stateWriteWon };
 }

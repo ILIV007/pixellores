@@ -9,11 +9,16 @@
  * - Atom entry: id → link[rel=alternate, else first link] → title →
  *               published else updated → summary/content → author/name
  *
- * IMAGE (ADR-0068): the first https image URL wins, in document order:
+ * IMAGE (ADR-0068, ADR-0079): the first https image URL wins, in
+ * document order:
  * - RSS item: `enclosure` / `media:content` / `media:thumbnail` `url`
  *   attribute (the local names are `enclosure`, `content`,
  *   `thumbnail` — the scanner strips the prefix);
  * - Atom entry: `link rel="enclosure"` href (never the article link).
+ * - Fallback (ADR-0079): the first `<img src>` inside the item's
+ *   `content:encoded` (RSS) or `content` (Atom) body HTML — applied
+ *   only when no enclosure/media image was found, so the media fields
+ *   keep strict priority regardless of document order.
  * A non-https or over-long URL is not an image URL. The reader only
  * selects the field; it never fetches anything.
  */
@@ -60,6 +65,8 @@ interface ItemDraft {
   author: string | null;
   publishedRaw: string | null;
   imageUrl: string | null;
+  /** First https `<img src>` inside the body HTML (ADR-0079 fallback). */
+  encodedImageUrl: string | null;
 }
 
 function freshDraft(): ItemDraft {
@@ -73,6 +80,7 @@ function freshDraft(): ItemDraft {
     author: null,
     publishedRaw: null,
     imageUrl: null,
+    encodedImageUrl: null,
   };
 }
 
@@ -84,10 +92,36 @@ function freshDraft(): ItemDraft {
  */
 const RSS_MEDIA_FIELDS = new Set(['enclosure', 'content', 'thumbnail']);
 
+/** First `<img src="...">` in body HTML (ADR-0079 fallback). */
+const ENCODED_IMG_SRC = /<img\b[^>]*?\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)')/i;
+
 /** Record the first valid image URL (document order wins). */
 function takeImageUrl(draft: ItemDraft, url: string | null): void {
   if (draft.imageUrl === null && url !== null && isHttpImageUrl(url)) {
     draft.imageUrl = url;
+  }
+}
+
+/** Record the first valid `<img src>` inside the body HTML. */
+function takeEncodedImageUrl(draft: ItemDraft, bodyHtml: string): void {
+  if (draft.encodedImageUrl !== null) {
+    return;
+  }
+  // The FIRST https <img> wins — an http:// or over-long src is not an
+  // image URL (same validation as the media fields), so the scan moves
+  // on to the next <img>; bounded at 10 candidates per body.
+  const global = new RegExp(ENCODED_IMG_SRC.source, 'gi');
+  let attempts = 0;
+  for (const match of bodyHtml.matchAll(global)) {
+    if (attempts >= 10) {
+      return;
+    }
+    attempts += 1;
+    const url = match[1] ?? match[2] ?? null;
+    if (url !== null && isHttpImageUrl(url)) {
+      draft.encodedImageUrl = url;
+      return;
+    }
   }
 }
 
@@ -225,6 +259,12 @@ export function parseFeedDocument(xml: string): FeedParseResult {
       case 'encoded':
       case 'summary':
       case 'content':
+        // ADR-0079: the first <img> inside the encoded/content body is
+        // the image fallback — collected, not applied, so a media field
+        // later in the item still wins (see finishItem).
+        if (cap.field === 'encoded' || cap.field === 'content') {
+          takeEncodedImageUrl(draft, text);
+        }
         if (draft.bodyText === null && text !== '') {
           draft.bodyText = text;
         }
@@ -371,6 +411,8 @@ function finishItem(draft: ItemDraft): ParsedFeedItem {
     bodyText: draft.bodyText,
     author: draft.author,
     publishedRaw: draft.publishedRaw,
-    imageUrl: draft.imageUrl,
+    // ADR-0079: the encoded-body <img> fills the gap only when no
+    // enclosure/media image was selected (strict priority).
+    imageUrl: draft.imageUrl ?? draft.encodedImageUrl,
   };
 }

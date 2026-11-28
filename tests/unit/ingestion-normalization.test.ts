@@ -264,6 +264,56 @@ describe('normalizeRawItem', () => {
     }
   });
 
+  it('caps the excerpt at 4000 chars so a full article body reaches the model (ADR-0079)', async () => {
+    const longBody = 'word '.repeat(1200);
+    const result = await normalizeRawItem({
+      connector: 'rss',
+      sourceId: 'gamespot_news',
+      originLabel: 'https://www.gamespot.com/feeds/news/',
+      raw: {
+        id: 'gs-long',
+        link: 'https://www.gamespot.com/articles/long',
+        title: 'Long article',
+        bodyText: longBody,
+        author: null,
+        publishedRaw: null,
+        guidPermalink: null,
+      },
+      stripDownloads: false,
+      nowMs: NOW,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // 4000 = EDITORIAL_EXCERPT_MAX_CHARS: the excerpt fills the
+      // editorial evidence cap exactly (was 512 — a stub).
+      expect(result.item.excerpt?.length).toBe(4000);
+    }
+  });
+
+  it('keeps a 600-char body whole (above the old 512 stub cap)', async () => {
+    const body = 'word '.repeat(120);
+    const result = await normalizeRawItem({
+      connector: 'rss',
+      sourceId: 'gamespot_news',
+      originLabel: 'https://www.gamespot.com/feeds/news/',
+      raw: {
+        id: 'gs-mid',
+        link: 'https://www.gamespot.com/articles/mid',
+        title: 'Mid article',
+        bodyText: body,
+        author: null,
+        publishedRaw: null,
+        guidPermalink: null,
+      },
+      stripDownloads: false,
+      nowMs: NOW,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.item.excerpt).toBe(body.trim());
+    }
+  });
+
   it('drops a non-https imageUrl instead of storing it (ADR-0068)', async () => {
     const result = await normalizeRawItem({
       connector: 'rss',

@@ -255,19 +255,15 @@ describe('rss connector — fetch contract', () => {
 
 /**
  * ADR-0068 — og:image (media by hotlink, no R2): imageless feed items
- * get one article fetch each (max 2 per feed, freshest-first) to read
- * og:image; every failure is fail-soft — the items commit with or
- * without an image, and a budget denial stops og:image for the poll.
+ * get one article fetch each (max 8 per feed, freshest-first — ADR-0079
+ * raises the cap from 2: feeds return 10–20 items) to read og:image;
+ * every failure is fail-soft — the items commit with or without an
+ * image, and a budget denial stops og:image for the poll.
  */
 describe('rss connector — og:image (ADR-0068)', () => {
   const feedTwoImageless = `<?xml version="1.0"?><rss version="2.0"><channel><title>PS Blog</title>
 <item><title>One</title><link>https://blog.playstation.com/article/one</link><guid isPermaLink="false">ps-1</guid><pubDate>Mon, 06 Oct 2025 10:00:00 +0000</pubDate></item>
 <item><title>Two</title><link>https://blog.playstation.com/article/two</link><guid isPermaLink="false">ps-2</guid><pubDate>Mon, 06 Oct 2025 09:00:00 +0000</pubDate></item>
-</channel></rss>`;
-  const feedThreeImageless = `<?xml version="1.0"?><rss version="2.0"><channel><title>PS Blog</title>
-<item><title>One</title><link>https://blog.playstation.com/article/one</link><guid isPermaLink="false">ps-1</guid><pubDate>Mon, 06 Oct 2025 10:00:00 +0000</pubDate></item>
-<item><title>Two</title><link>https://blog.playstation.com/article/two</link><guid isPermaLink="false">ps-2</guid><pubDate>Mon, 06 Oct 2025 09:00:00 +0000</pubDate></item>
-<item><title>Three</title><link>https://blog.playstation.com/article/three</link><guid isPermaLink="false">ps-3</guid><pubDate>Mon, 06 Oct 2025 08:00:00 +0000</pubDate></item>
 </channel></rss>`;
   const articleWithOg = (img: string) =>
     `<html><head><meta property="og:image" content="${img}"/></head><body>x</body></html>`;
@@ -287,6 +283,25 @@ describe('rss connector — og:image (ADR-0068)', () => {
     expect(extractOgImage('<meta property="og:image" content="/relative.jpg"/>')).toBeNull();
     expect(extractOgImage('<meta property="og:image" content="http://x/y.jpg"/>')).toBeNull();
     expect(extractOgImage('<html><head></head></html>')).toBeNull();
+  });
+
+  it('extractOgImage reads real Gematsu article HTML (live 2026-11-28)', () => {
+    // Verbatim meta lines from a live Gematsu article page, fetched with
+    // the worker UA (PixelEditorialAgent/1.4): og:image:width/height
+    // siblings carry the og:image prefix but a non-URL content, so the
+    // extractor must skip them and take the real og:image.
+    const head = `<meta property="og:image" content="https://www.gematsu.com/wp-content/uploads/2026/11/Sea-of-Sorrow-Date_11-27-26.jpg" />
+<meta property="og:image:width" content="1280" />
+<meta property="og:image:height" content="720" />`;
+    expect(extractOgImage(`<html><head>${head}</head></html>`)).toBe(
+      'https://www.gematsu.com/wp-content/uploads/2026/11/Sea-of-Sorrow-Date_11-27-26.jpg',
+    );
+    // Width/height first: still skips them (non-URL content) and finds og:image.
+    const reordered = `<meta property="og:image:width" content="1280" />
+<meta property="og:image" content="https://www.gematsu.com/wp-content/uploads/2026/11/Sea-of-Sorrow-Date_11-27-26.jpg" />`;
+    expect(extractOgImage(`<html><head>${reordered}</head></html>`)).toBe(
+      'https://www.gematsu.com/wp-content/uploads/2026/11/Sea-of-Sorrow-Date_11-27-26.jpg',
+    );
   });
 
   it('resolves og:image for imageless items and counts requests honestly', async () => {
@@ -314,28 +329,38 @@ describe('rss connector — og:image (ADR-0068)', () => {
     expect(mock.calls[1]?.url).toBe('https://blog.playstation.com/article/one');
   });
 
-  it('fetches at most two article pages per feed', async () => {
-    const mock = createFetchMock([
+  it('fetches at most eight article pages per feed (ADR-0079)', async () => {
+    const items = Array.from({ length: 9 }, (_, i) => {
+      const n = i + 1;
+      return `<item><title>Item ${n}</title><link>https://blog.playstation.com/article/${n}</link><guid isPermaLink="false">ps-${n}</guid><pubDate>Mon, 06 Oct 2025 0${9 - i}:00:00 +0000</pubDate></item>`;
+    }).join('\n');
+    const feedNineImageless = `<?xml version="1.0"?><rss version="2.0"><channel><title>PS Blog</title>\n${items}\n</channel></rss>`;
+    const responses = [
       {
         status: 200,
         headers: { 'content-type': 'application/rss+xml' },
-        bodyText: feedThreeImageless,
+        bodyText: feedNineImageless,
       },
-      { status: 200, bodyText: articleWithOg('https://cdn.example.com/one.jpg') },
-      { status: 200, bodyText: articleWithOg('https://cdn.example.com/two.jpg') },
-    ]);
+      ...Array.from({ length: 8 }, (_, i) => ({
+        status: 200,
+        bodyText: articleWithOg(`https://cdn.example.com/${i + 1}.jpg`),
+      })),
+    ];
+    const mock = createFetchMock(responses);
     const result = await rssConnector().fetch({
       ...fetchInput,
       effects: connectorEffects(mock.fetchFn),
     });
     expect(result.status).toBe('changed');
     if (result.status === 'changed') {
-      expect(result.items).toHaveLength(3);
-      expect(result.items[0]?.imageUrl).toBe('https://cdn.example.com/one.jpg');
-      expect(result.items[1]?.imageUrl).toBe('https://cdn.example.com/two.jpg');
-      expect(result.items[2]?.imageUrl).toBeNull();
+      expect(result.items).toHaveLength(9);
+      for (let i = 0; i < 8; i += 1) {
+        expect(result.items[i]?.imageUrl).toBe(`https://cdn.example.com/${i + 1}.jpg`);
+      }
+      // The ninth imageless item gets no article fetch (cap 8).
+      expect(result.items[8]?.imageUrl).toBeNull();
     }
-    expect(mock.calls).toHaveLength(3);
+    expect(mock.calls).toHaveLength(9);
   });
 
   it('a budget denial stops og:image for the poll, items still commit', async () => {
