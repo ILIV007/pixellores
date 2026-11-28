@@ -252,11 +252,12 @@
         // queue provisioning and migration 0003. Local defaults stay disabled;
         // production resources remain unprovisioned.
         "JOBS_ENABLED": "true",
-        // Combined admin panel (ADR-0075): the rebuilt AI-admin +
-        // Fredy-admin panel — enabled on preview now that the rebuild
-        // shipped (PR #39). Local default above stays "false".
-        // ADMIN_MANAGE_ENABLED stays "false" (slice 2 untouched).
-        "ADMIN_PANEL_ENABLED": "true",
+        // Combined admin panel (ADR-0075): v1 REJECTED by the owner
+        // 2026-11-28 ("not like the two originals at all") — disabled
+        // on preview until the v2 rebuild ships. Local default above
+        // stays "false". ADMIN_MANAGE_ENABLED stays "false" (slice 2
+        // untouched).
+        "ADMIN_PANEL_ENABLED": "false",
         // ADR-0073 inbound AI-admin gates: owner-authorized Preview
         // enablement (owner order 2026-11-27 23:39 Tehran) — the
         // owner-send-post flow (inbound pipeline + admin-post capture)
