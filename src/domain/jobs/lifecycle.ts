@@ -69,6 +69,16 @@ export function decideRetry(
   if (ownedGeneration >= maxAttempts) {
     return { kind: 'exhausted' };
   }
+  if (errorCode === 'job_budget_parked') {
+    // ADR-0083 — budget parking is NOT backoff: the handler asked for a
+    // run_after past the next Tehran midnight, and the 1h backoff cap
+    // must not clamp it (a clamped park would re-deny hourly and burn
+    // the job's attempts before the reset). The floor is honored whole
+    // — ONLY for this code; every other retry_after floor stays capped
+    // (see computeBackoffDelayMs). Producers bound the floor: the
+    // midnight math is ≤ 24h + the handler's 5-minute buffer.
+    return { kind: 'reschedule', delayMs: Math.max(0, params.retryAfterFloorMs ?? 0) };
+  }
   return {
     kind: 'reschedule',
     delayMs: computeBackoffDelayMs(ownedGeneration, params, random),

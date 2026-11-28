@@ -15,6 +15,7 @@ import { createAiDraftService } from '../../src/application/ai/draft-service';
 import type { AiCallOutcome, AiProviderPort } from '../../src/domain/ai/types';
 import { authorizeAiRequestAttempt, readAiBudget } from '../../src/adapters/db/ai-budget-store';
 import { readFactGuardReport } from '../../src/domain/editorial/fact-guard';
+import { msUntilNextTehranMidnight } from '../../src/shared/time/tehran-day';
 import { sha256Hex } from '../../src/shared/ids/idempotency-key';
 import {
   handleTelegramWebhook,
@@ -131,6 +132,7 @@ interface JobRowLite {
   readonly attempts: number;
   readonly max_attempts: number;
   readonly last_error: string | null;
+  readonly run_after: number;
 }
 
 interface AiRunRowLite {
@@ -273,7 +275,7 @@ async function createChain(options: ChainOptions): Promise<ChainHarness> {
 
   const jobRow = async (): Promise<JobRowLite | null> =>
     executor.first<JobRowLite>({
-      sql: 'SELECT id, status, attempts, max_attempts, last_error FROM jobs ORDER BY created_at LIMIT 1',
+      sql: 'SELECT id, status, attempts, max_attempts, last_error, run_after FROM jobs ORDER BY created_at LIMIT 1',
     });
 
   const draftRows = async (): Promise<{ id: string; documentJson: string }[]> => {
@@ -360,6 +362,10 @@ describe('Phase 6.4 — failure paths along the REAL end-to-end chain', () => {
     expect(job?.status).toBe('retry_wait');
     expect(job?.attempts).toBe(1);
     expect(job?.last_error).toBe('job_handler_retryable_error');
+    // ADR-0083 control: a NORMAL failure keeps its short retry — the
+    // run_after is the bounded backoff (base 1ms here), NOT a park.
+    expect(job?.run_after).toBeGreaterThanOrEqual(NOW);
+    expect(job?.run_after).toBeLessThanOrEqual(NOW + 60_000);
 
     // The provider DID run and stays honestly auditable; zero usage invented.
     const runs = await h.aiRunRows();
@@ -433,7 +439,7 @@ describe('Phase 6.4 — failure paths along the REAL end-to-end chain', () => {
     expect(await h.workersAiBudget()).toBe(1);
   });
 
-  it('budget-first quota denial → ZERO provider calls, TERMINAL editorial_budget_exhausted, no fabricated run', async () => {
+  it('budget-first quota denial → ZERO provider calls, PARKS until after the next Tehran midnight, no fabricated run', async () => {
     // Pre-exhaust the workers-ai day bucket (cap 120, ai-policy-v2.2) BEFORE the chain runs.
     const executor = createDbExecutor(env.DB);
     for (let i = 0; i < 120; i += 1) {
@@ -448,18 +454,21 @@ describe('Phase 6.4 — failure paths along the REAL end-to-end chain', () => {
 
     const h = await createChain({ script: () => okOutcome(undefined, 'هرگز') });
     const outcomes = await h.drain();
-    // ai-policy-v2.2: the daily budget resets at Tehran midnight, so no
-    // same-day retry can succeed — terminal dead_letter, not retry_wait.
-    expect(outcomes).toEqual(['ack:job_dead_lettered']);
+    // ADR-0083: the daily budget resets at Tehran midnight, so no
+    // same-day retry can succeed — the job PARKS past the reset
+    // (retry_wait, run_after = midnight + 5 min) instead of
+    // dead-lettering; its attempts are preserved for when units exist.
+    expect(outcomes).toEqual(['ack:retry_scheduled']);
 
     // Budget-first: the denial happened BEFORE any provider involvement.
     expect(h.portCalls).toHaveLength(0);
     expect(await h.workersAiBudget()).toBe(120);
 
     const job = await h.jobRow();
-    expect(job?.status).toBe('dead_letter');
+    expect(job?.status).toBe('retry_wait');
     expect(job?.attempts).toBe(1);
-    expect(job?.last_error).toBe('editorial_budget_exhausted');
+    expect(job?.last_error).toBe('job_budget_parked');
+    expect(job?.run_after).toBe(NOW + msUntilNextTehranMidnight(NOW) + 5 * 60 * 1000);
     expect(await h.draftRows()).toHaveLength(0);
 
     // The ledger observed the denial honestly (no usage, no success row).
