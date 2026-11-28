@@ -294,6 +294,11 @@
         // commit; independent fail-closed flag, never implies other gates.
         "EDITORIAL_MATCHING_ENABLED": "false",
         "EDITORIAL_ADJUDICATION_ENABLED": "false",
+        // Phase 6.3 fact-guard report gate ships ENABLED on preview
+        // (fix round 2026-11-28): fresh drafts get no factGuard report
+        // while this is off (defaults 'false' in phase5.ts), so the
+        // bridge can never gate on it. Pure zero-cost derivation.
+        "EDITORIAL_FACT_GUARD_ENABLED": "true",
         // Target public channel username — NON-SECRET configuration
         // (ADR-0009). R1.10.5 owner channel identity: @pixellores
         // (https://t.me/pixellores). Format-validated; unconsumed today.
