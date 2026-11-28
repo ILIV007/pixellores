@@ -22,7 +22,16 @@ export const INGESTION_LIMITS = {
   maxFeedBytes: 2 * 1024 * 1024,
   maxRedirects: 2,
   maxItemsPerFeed: 100,
-  excerptMaxChars: 512,
+  /**
+   * ADR-0079: the excerpt cap is 4000 chars — exactly
+   * EDITORIAL_EXCERPT_MAX_CHARS, the editorial pipeline's evidence
+   * cap (mapper.ts), so a full article body from a GameSpot-type feed
+   * reaches the model instead of a 512-char stub, and nothing above
+   * the cap is ever stored (storing the full encoded body would be
+   * cut by buildTraceableExcerpt anyway, and would bloat source_items
+   * for zero model input). The AI snippet cap (8000) is untouched.
+   */
+  excerptMaxChars: 4000,
   titleMaxChars: 512,
   authorMaxChars: 256,
   rawJsonMaxBytes: 8 * 1024,

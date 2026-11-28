@@ -94,6 +94,7 @@ import {
   INGESTION_POLL_HOLD_MS,
 } from '../../shared/config/phase4';
 import { isImplementedConnector } from '../../domain/source/types';
+import { imageUrlHost } from '../../domain/media/image-url';
 import type { IdGenerator } from '../../shared/ids/id';
 import type { Logger } from '../../observability/logger';
 
@@ -565,6 +566,12 @@ async function commitTerminalState(
     fetchedAtMs: nowMs,
     contentHash: item.contentHash,
     rawJson: JSON.stringify(item.rawJson),
+    // ADR-0079: the resolved image rides the commit so the store can
+    // mint the media_assets row (one fresh id per imaged item; the
+    // store writes it only for items that actually insert).
+    imageUrl: item.imageUrl,
+    mediaAssetId: item.imageUrl !== null ? options.idGenerator.newId() : null,
+    imageAttribution: item.imageUrl !== null ? imageUrlHost(item.imageUrl) : null,
   }));
 
   if (owner === null) {

@@ -195,3 +195,55 @@ describe('parseFeedDocument — bounds', () => {
     }
   });
 });
+
+describe('scanXmlDocument — over-long text nodes truncate (ADR-0079)', () => {
+  it('truncates an over-long CDATA node at the bound instead of failing', () => {
+    const longBody = 'x'.repeat(70_000);
+    const feed = `<rss><channel><item><title>T</title><content:encoded xmlns:content="http://purl.org/rss/1.0/modules/content/"><![CDATA[${longBody}]]></content:encoded></item></channel></rss>`;
+    const scanned = scanXmlDocument(feed);
+    expect(scanned.ok).toBe(true);
+    if (scanned.ok) {
+      const texts = scanned.events.filter((event) => event.kind === 'text');
+      expect(texts.map((event) => event.text.length).sort((a, b) => b - a)[0]).toBe(65_536);
+    }
+    const parsed = parseFeedDocument(feed);
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(parsed.feed.items[0]?.bodyText?.length).toBe(65_536);
+    }
+  });
+
+  it('truncates over-long plain text the same way', () => {
+    const longText = 'y'.repeat(70_000);
+    const feed = `<rss><channel><item><title>T</title><description>${longText}</description></item></channel></rss>`;
+    const parsed = parseFeedDocument(feed);
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(parsed.feed.items[0]?.bodyText?.length).toBe(65_536);
+    }
+  });
+
+  it('backs the cut off a split surrogate pair', () => {
+    // 65,535 fillers + an emoji astride the 65,536 cut: the high
+    // surrogate lands exactly at the cut, so the node ends at 65,535
+    // with no lone surrogate.
+    const body = `${'a'.repeat(65_535)}\uD83D\uDE00${'b'.repeat(100)}`;
+    const feed = `<rss><channel><item><title>T</title><description>${body}</description></item></channel></rss>`;
+    const parsed = parseFeedDocument(feed);
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      const text = parsed.feed.items[0]?.bodyText ?? '';
+      expect(text.length).toBe(65_535);
+      expect(text).not.toContain('\uD83D');
+    }
+  });
+
+  it('leaves short text nodes byte-identical', () => {
+    const feed = `<rss><channel><item><title>T</title><description>short &amp; sweet</description></item></channel></rss>`;
+    const parsed = parseFeedDocument(feed);
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(parsed.feed.items[0]?.bodyText).toBe('short & sweet');
+    }
+  });
+});

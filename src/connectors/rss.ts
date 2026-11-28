@@ -49,14 +49,15 @@ interface FeedCursorEntry {
 type FeedCursor = Record<string, FeedCursorEntry>;
 
 /**
- * ADR-0068 — og:image resolution bounds. At most two article fetches
- * per feed per poll, freshest-first: the feed is newer-first, so the
- * first imageless items are the ones most likely new. Each fetch
- * charges ONE source/day ingestion unit (the same authority as the
- * feed fetch); a budget denial stops og:image for the poll only —
- * the feed items still commit.
+ * ADR-0068 — og:image resolution bounds (ADR-0079 raises the cap 2 → 8:
+ * feeds return 10–20 items and only the freshest few had any chance of
+ * an article fetch). At most eight article fetches per feed per poll,
+ * freshest-first: the feed is newer-first, so the first imageless items
+ * are the ones most likely new. Each fetch charges ONE source/day
+ * ingestion unit (the same authority as the feed fetch); a budget denial
+ * stops og:image for the poll only — the feed items still commit.
  */
-const OG_IMAGE_MAX_PER_FEED = 2;
+const OG_IMAGE_MAX_PER_FEED = 8;
 /** og:image lives in <head>: 256 KiB is far more than enough. */
 const OG_IMAGE_BYTE_CAP = 256 * 1024;
 const OG_IMAGE_TIMEOUT_MS = 5_000;
