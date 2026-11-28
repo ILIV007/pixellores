@@ -166,6 +166,27 @@ describe('backoff (full jitter, bounded)', () => {
     expect(computeBackoffDelayMs(1, bigFloor, () => 0)).toBe(3_600_000);
   });
 
+  it('ADR-0083: a budget park honors its floor past the 1h backoff cap, and only for the parking code', () => {
+    // The handler asked for a run_after past the next Tehran midnight;
+    // the backoff cap must not clamp it, or the job would re-deny
+    // hourly and burn its attempts before the reset.
+    const parked = { ...params, retryAfterFloorMs: 10_000_000 };
+    expect(decideRetry('retryable', 'job_budget_parked', 1, 3, parked, () => 0)).toEqual({
+      kind: 'reschedule',
+      delayMs: 10_000_000,
+    });
+    // The same floor under any other code stays capped — the bypass is
+    // scoped to the parking family only.
+    expect(decideRetry('retryable', 'job_handler_retryable_error', 1, 3, parked, () => 0)).toEqual({
+      kind: 'reschedule',
+      delayMs: 3_600_000,
+    });
+    // Parking still respects the attempt budget: a spent job exhausts.
+    expect(decideRetry('retryable', 'job_budget_parked', 3, 3, parked, () => 0)).toEqual({
+      kind: 'exhausted',
+    });
+  });
+
   it('never reschedules beyond max_attempts and dead-letters permanents', () => {
     expect(decideRetry('permanent', 'job_handler_permanent_error', 1, 3, params, () => 0)).toEqual({
       kind: 'exhausted',

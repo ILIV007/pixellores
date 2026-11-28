@@ -42,11 +42,13 @@
  *   A `circuit_open` deferral means the breaker is holding provider
  *   calls AND charges, so the retry costs nothing until the cooldown
  *   passes. EXCEPTION
- *   (ai-policy-v2.2): `budget_denied` is TERMINAL
- *   (`editorial_budget_exhausted`) — the daily budget resets at Tehran
- *   midnight, so no same-day retry can succeed; the item is NOT a
- *   quality rejection and is never written into the 30-day negative
- *   cache.
+ *   (ADR-0083): `budget_pressure` / `budget_denied` PARK until after
+ *   the next Tehran midnight (`job_budget_parked`, run_after = midnight
+ *   + 5 min) — the daily budget resets at the day boundary, so no
+ *   same-day retry can succeed; parking preserves the remaining
+ *   attempts for when units exist instead of burning all 3 in minutes
+ *   and dead-lettering. The item is NOT a quality rejection and is
+ *   never written into the 30-day negative cache.
  * - mid-commit storage failure → propagates: the engine classifies it as
  *   transient (`job_internal_error`) and reschedules; the atomic batch
  *   guarantees NO partial editorial state and NO fake processed.
@@ -211,6 +213,7 @@ import {
 } from '../../domain/editorial/event-relation-candidates';
 import { EVENT_RELATION_BOUNDS } from '../../domain/ai/event-relation-policy';
 import { awaitWithDeadline, type DeadlineTimeoutScheduler } from '../../shared/time/deadline-wait';
+import { msUntilNextTehranMidnight } from '../../shared/time/tehran-day';
 import type { EventRelationAttemptObservation } from '../../domain/ai/event-relation-types';
 import {
   buildEventRelationPairBundle,
@@ -385,8 +388,7 @@ export type EditorialAiStep =
   | { readonly kind: 'retry' }
   | {
       readonly kind: 'permanent';
-      readonly reasonCode:
-        'editorial_input_invalid' | 'editorial_ai_refused' | 'editorial_budget_exhausted';
+      readonly reasonCode: 'editorial_input_invalid' | 'editorial_ai_refused';
     };
 
 export function classifyAiOutcome(outcome: AiOutcome): EditorialAiStep {
@@ -399,15 +401,11 @@ export function classifyAiOutcome(outcome: AiOutcome): EditorialAiStep {
       if (outcome.reason === 'input_invalid') {
         return { kind: 'permanent', reasonCode: 'editorial_input_invalid' };
       }
-      if (outcome.reason === 'budget_denied') {
-        // ai-policy-v2.2: the daily budget is exhausted (resets at
-        // Tehran midnight), so no same-day retry can succeed — terminal,
-        // NOT recoverable. This explicit branch is REQUIRED: merely
-        // removing 'budget_denied' from RETRYABLE_DEFERRED_REASONS
-        // would change nothing, because the fallback below still maps
-        // any unlisted reason onto 'retry'.
-        return { kind: 'permanent', reasonCode: 'editorial_budget_exhausted' };
-      }
+      // ADR-0083 — `budget_pressure` / `budget_denied` are RETRYABLE
+      // here, not terminal: the handler parks them until after the next
+      // Tehran midnight (see the retry branch below). A same-day retry
+      // can never succeed, but dead-lettering would discard a good item
+      // for a budget that resets at midnight.
       if (RETRYABLE_DEFERRED_REASONS.has(outcome.reason)) {
         return { kind: 'retry' };
       }
@@ -1812,6 +1810,22 @@ export function createEditorialPrepareDraftHandler(
         }
         await recordRealRelationRuns(executor, jobId, generation, relationRunRows, nowMs());
         logger?.info('editorial.prepare_draft.ai_deferred', { outcome: outcome.kind });
+        if (
+          outcome.kind === 'deferred' &&
+          (outcome.reason === 'budget_pressure' || outcome.reason === 'budget_denied')
+        ) {
+          // ADR-0083 — PARK until after the next Tehran midnight (+ 5
+          // min past the boundary, so the retry never lands on the
+          // reset itself): the budget resets at the day boundary, so a
+          // short backoff would only re-deny and burn the job's 3
+          // attempts in minutes. The engine honors this delay past its
+          // 1h backoff cap ONLY for the parking reason code.
+          return {
+            kind: 'retry',
+            reasonCode: 'job_budget_parked',
+            retryAfterMs: msUntilNextTehranMidnight(nowMs()) + 5 * 60 * 1000,
+          };
+        }
         return { kind: 'retry', reasonCode: 'job_handler_retryable_error' };
       }
       if (step.kind === 'permanent') {
@@ -1822,12 +1836,9 @@ export function createEditorialPrepareDraftHandler(
         logger?.warn('editorial.prepare_draft.ai_terminal', { reasonCode: step.reasonCode });
         // Slice 6 — the quality gate rejected this item: cache the
         // fingerprint 30 days so the NEXT cycle never re-feeds it to AI.
-        // EXCEPT budget exhaustion (ai-policy-v2.2): the item itself is
-        // fine and the budget resets at Tehran midnight — caching its
-        // fingerprint would wrongly suppress a good item for 30 days.
-        if (step.reasonCode !== 'editorial_budget_exhausted') {
-          await noteQualityRejection(step.reasonCode);
-        }
+        // (Budget exhaustion never reaches this branch since ADR-0083 —
+        // it parks instead — so no budget exception is needed here.)
+        await noteQualityRejection(step.reasonCode);
         return { kind: 'permanent', reasonCode: step.reasonCode };
       }
 

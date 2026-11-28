@@ -617,15 +617,18 @@ describe('AI outcome mapping (ADR-0042 §5)', () => {
     }
   });
 
-  it('maps budget_denied onto the TERMINAL path (ai-policy-v2.2, no same-day retry can succeed)', () => {
-    // The daily budget resets at Tehran midnight; retrying only churns
-    // the engine's attempt budget. budget_denied is NOT in the retryable
-    // set AND has an explicit branch — the fallback below the set still
-    // maps unlisted reasons onto 'retry', so the set alone cannot make
-    // it terminal.
+  it('maps budget_denied onto the RETRY path (ADR-0083: it parks until after midnight, never dead-letters)', () => {
+    // The daily budget resets at Tehran midnight; a same-day retry
+    // cannot succeed — so the handler parks the job past the reset
+    // (job_budget_parked) instead of dead-lettering a good item. The
+    // park itself is decided in the handler's retry branch, not here.
     expect(classifyAiOutcome({ kind: 'deferred', reason: 'budget_denied', attempts: [] })).toEqual({
-      kind: 'permanent',
-      reasonCode: 'editorial_budget_exhausted',
+      kind: 'retry',
+    });
+    expect(
+      classifyAiOutcome({ kind: 'deferred', reason: 'budget_pressure', attempts: [] }),
+    ).toEqual({
+      kind: 'retry',
     });
   });
 
