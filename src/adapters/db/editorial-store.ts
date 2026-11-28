@@ -216,6 +216,105 @@ export async function listReadyDrafts(
   return rows.rows;
 }
 
+export interface DraftRow extends ReadyDraftRow {
+  readonly status: string;
+}
+
+/**
+ * ADR-0081 — the single-draft read for the web panel's draft preview.
+ * Returns null for an unknown id (the handler answers 404); the
+ * document parses defensively in the service, never here.
+ */
+export async function getDraftById(
+  executor: DbExecutor,
+  draftId: string,
+): Promise<DraftRow | null> {
+  return await executor.first<DraftRow>({
+    sql: `SELECT id, story_id, document_json, status, created_at FROM drafts
+          WHERE id = ?`,
+    params: [draftId],
+  });
+}
+
+export interface ReadyDraftsByContentTypeRow {
+  readonly contentType: string;
+  readonly count: number;
+}
+
+/**
+ * ADR-0081 — ready-draft counts per story content type, for the web
+ * panel's Manual Post screen (one grouped query, bounded by the
+ * content-type enum).
+ */
+export async function countReadyDraftsByContentType(
+  executor: DbExecutor,
+): Promise<readonly ReadyDraftsByContentTypeRow[]> {
+  const rows = await executor.query<{
+    readonly content_type: string;
+    readonly count: number;
+  }>({
+    sql: `SELECT s.content_type, COUNT(*) AS count
+          FROM drafts d
+          JOIN stories s ON s.id = d.story_id
+          WHERE d.status = 'ready'
+          GROUP BY s.content_type
+          ORDER BY count DESC, s.content_type ASC`,
+  });
+  return rows.rows.map((row) => ({ contentType: row.content_type, count: row.count }));
+}
+
+export interface AiRunsByProviderRow {
+  readonly provider: string;
+  readonly runs: number;
+  readonly succeeded: number;
+  readonly outputTokens: number;
+}
+
+/**
+ * ADR-0081 — ai_runs totals per provider, for the web panel's Soul &
+ * Memory screen ("AI today") and Stats screen (all time). `sinceMs`
+ * bounds the window (Tehran-day start for "today"); omitted means all
+ * time. Output tokens are the honest cost signal (input tokens are not
+ * stored per run — see the ai_runs table).
+ */
+export async function countAiRunsByProvider(
+  executor: DbExecutor,
+  input: { readonly sinceMs?: number },
+): Promise<readonly AiRunsByProviderRow[]> {
+  const rows = await executor.query<{
+    readonly provider: string;
+    readonly runs: number;
+    readonly succeeded: number;
+    readonly output_tokens: number;
+  }>(
+    input.sinceMs === undefined
+      ? {
+          sql: `SELECT provider, COUNT(*) AS runs,
+                SUM(CASE WHEN status = 'succeeded' THEN 1 ELSE 0 END) AS succeeded,
+                COALESCE(SUM(output_tokens), 0) AS output_tokens
+              FROM ai_runs
+              GROUP BY provider
+              ORDER BY runs DESC, provider ASC`,
+        }
+      : {
+          sql: `SELECT provider, COUNT(*) AS runs,
+                SUM(CASE WHEN status = 'succeeded' THEN 1 ELSE 0 END) AS succeeded,
+                COALESCE(SUM(output_tokens), 0) AS output_tokens
+              FROM ai_runs
+              WHERE created_at >= ?
+              GROUP BY provider
+              ORDER BY runs DESC, provider ASC`,
+          params: [input.sinceMs],
+        },
+  );
+  return rows.rows.map((row) => ({
+    provider: row.provider,
+    runs: row.runs,
+    succeeded: row.succeeded,
+    outputTokens: row.output_tokens,
+  }));
+}
+
 /**
  * ADR-0074 — the bridge's progress-ordered ready-draft scan (migration
  * 0013). The plain oldest-first scan livelocks when the oldest drafts

@@ -59,6 +59,7 @@
 import type { DbExecutor, DbStatement } from './db-executor';
 import type { Registry, RegistrySource } from '../../domain/source/source-registry';
 import { laneDefaultPriority } from '../../domain/source/source-registry';
+import { randomToken } from '../../domain/admin-post/fingerprint';
 
 export interface SeedSummary {
   /** Rows whose descriptor was written (new inserts + refreshed rows). */
@@ -197,4 +198,169 @@ function canonicalizeConfig(source: RegistrySource): string {
     merged['endpointTemplates'] = source.endpointTemplates;
   }
   return JSON.stringify(merged);
+}
+
+/**
+ * Provider health row (ADR-0081): one registry source with its live
+ * state and its story counts. The story→source linkage runs through the
+ * ingestion chain `source_items → evidence → claims → stories →
+ * drafts/publications` (the same linkage the editorial pipeline writes);
+ * a multi-source story counts for EACH of its sources, so the per-source
+ * numbers can overlap — they are attribution counts, not a partition.
+ */
+export interface ProviderHealthRow {
+  readonly id: string;
+  readonly name: string;
+  readonly connector: string;
+  readonly lane: string;
+  readonly trustTier: string;
+  readonly enabled: boolean;
+  readonly intervalSeconds: number;
+  readonly priority: number;
+  readonly dailyRequestBudget: number;
+  readonly approvalPolicy: string;
+  readonly lastPolledAt: number | null;
+  readonly lastSuccessAt: number | null;
+  readonly lastError: string | null;
+  readonly consecutiveFailures: number;
+  readonly itemsTotal: number;
+  readonly readyCount: number;
+  readonly publishedCount: number;
+}
+
+interface ProviderHealthDbRow {
+  readonly id: string;
+  readonly name: string;
+  readonly connector: string;
+  readonly lane: string;
+  readonly trust_tier: string;
+  readonly enabled: number;
+  readonly interval_seconds: number;
+  readonly priority: number;
+  readonly daily_request_budget: number;
+  readonly approval_policy: string;
+  readonly last_polled_at: number | null;
+  readonly last_success_at: number | null;
+  readonly last_error: string | null;
+  readonly consecutive_failures: number | null;
+  readonly items_total: number;
+  readonly ready_count: number;
+  readonly published_count: number;
+}
+
+/**
+ * List every registry source with its live state and story counts, one
+ * bounded grouped query (the sources table is capped at 32 by the
+ * registry schema, so the correlated subqueries stay bounded).
+ */
+export async function listProvidersWithHealth(
+  executor: DbExecutor,
+): Promise<readonly ProviderHealthRow[]> {
+  const result = await executor.query<ProviderHealthDbRow>({
+    sql: `SELECT
+        s.id, s.name, s.connector, s.lane, s.trust_tier, s.enabled,
+        s.interval_seconds, s.priority, s.daily_request_budget,
+        s.approval_policy,
+        st.last_polled_at, st.last_success_at, st.last_error,
+        st.consecutive_failures,
+        (SELECT COUNT(*) FROM source_items WHERE source_id = s.id)
+          AS items_total,
+        (SELECT COUNT(DISTINCT d.id) FROM drafts d
+          JOIN stories st2 ON st2.id = d.story_id
+          JOIN claims c ON c.story_id = st2.id
+          JOIN evidence e ON e.claim_id = c.id
+          JOIN source_items si ON si.id = e.source_item_id
+          WHERE si.source_id = s.id AND d.status = 'ready')
+          AS ready_count,
+        (SELECT COUNT(DISTINCT p.id) FROM publications p
+          JOIN drafts d ON d.id = p.draft_id
+          JOIN stories st2 ON st2.id = d.story_id
+          JOIN claims c ON c.story_id = st2.id
+          JOIN evidence e ON e.claim_id = c.id
+          JOIN source_items si ON si.id = e.source_item_id
+          WHERE si.source_id = s.id AND p.status = 'published')
+          AS published_count
+      FROM sources s
+      LEFT JOIN source_state st ON st.source_id = s.id
+      ORDER BY s.priority ASC, s.name ASC`,
+  });
+  return result.rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    connector: row.connector,
+    lane: row.lane,
+    trustTier: row.trust_tier,
+    enabled: row.enabled === 1,
+    intervalSeconds: row.interval_seconds,
+    priority: row.priority,
+    dailyRequestBudget: row.daily_request_budget,
+    approvalPolicy: row.approval_policy,
+    lastPolledAt: row.last_polled_at,
+    lastSuccessAt: row.last_success_at,
+    lastError: row.last_error,
+    consecutiveFailures: row.consecutive_failures ?? 0,
+    itemsTotal: row.items_total,
+    readyCount: row.ready_count,
+    publishedCount: row.published_count,
+  }));
+}
+
+export type SetSourceEnabledOutcome =
+  | { readonly kind: 'applied'; readonly enabled: boolean }
+  | { readonly kind: 'no_change'; readonly enabled: boolean }
+  | { readonly kind: 'not_found' };
+
+/**
+ * Toggle one source's `enabled` flag (ADR-0081, owner-approved 09:06).
+ * Fenced: the UPDATE only fires when the value actually changes, and
+ * the setting + its audit row commit in ONE atomic batch — the house
+ * pattern for owner settings (publishing-settings-store). A toggle that
+ * changes nothing writes no audit row. `enabled` is OWNER-OVERRIDABLE
+ * under R07: a registry re-import never touches it.
+ */
+export async function setSourceEnabled(
+  executor: DbExecutor,
+  input: {
+    readonly sourceId: string;
+    readonly enabled: boolean;
+    readonly actorId: number;
+    readonly nowMs: number;
+  },
+): Promise<SetSourceEnabledOutcome> {
+  const existing = await executor.first<{ readonly enabled: number }>({
+    sql: 'SELECT enabled FROM sources WHERE id = ?',
+    params: [input.sourceId],
+  });
+  if (existing === null) {
+    return { kind: 'not_found' };
+  }
+  const currentEnabled = existing.enabled === 1;
+  if (currentEnabled === input.enabled) {
+    return { kind: 'no_change', enabled: currentEnabled };
+  }
+  const flag = input.enabled ? 1 : 0;
+  await executor.batch([
+    {
+      sql: 'UPDATE sources SET enabled = ? WHERE id = ? AND enabled != ?',
+      params: [flag, input.sourceId, flag],
+    },
+    // The audit row rides the same atomic batch as the setting (the
+    // publishing-settings-store pattern): a toggle without its audit
+    // never lands. `actor_type` is 'admin' — the actor is a human admin
+    // identified by actor_id, never the system.
+    {
+      sql: `INSERT INTO audit_events (id, actor_type, actor_id, action, target_type,
+              target_id, trace_id, metadata_json, created_at)
+            VALUES (?, 'admin', ?, ?, 'source', ?, NULL, ?, ?)`,
+      params: [
+        `webpanel:${randomToken()}`,
+        String(input.actorId),
+        'source.enabled',
+        input.sourceId,
+        JSON.stringify({ enabled: input.enabled ? 'true' : 'false' }),
+        input.nowMs,
+      ],
+    },
+  ]);
+  return { kind: 'applied', enabled: input.enabled };
 }
