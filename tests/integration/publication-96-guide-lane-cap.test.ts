@@ -25,18 +25,26 @@ const executor: DbExecutor = createDbExecutor(db);
 /** Tehran 10:00:00 on 2023-11-15. */
 const NOW = 1_700_029_800_000;
 const DESTINATION = '@pixel_channel_bridge96';
-const CLAIM_TEXT = 'استودیو بازی تازه را معرفی کرد';
-const EXCERPT = 'استودیو بازی تازه را معرفی کرد و جزئیات بیشتری منتشر شد.';
+const CLAIM_TEXTS = [
+  'استودیو بازی تازه را معرفی کرد',
+  'جزئیات بیشتری منتشر شد',
+  'بخش داستانی تازه هم معرفی شد',
+];
+const EXCERPT =
+  'استودیو بازی تازه را معرفی کرد و جزئیات بیشتری منتشر شد؛ بخش داستانی تازه هم معرفی شد.';
 
 function silentLogger() {
   return createLogger({ level: 'error', sink: () => {} });
 }
 
 function eligibleDocument(itemId: string, contentHash: string): string {
+  // ADR-0079 §3.7a: the substance gate needs ≥3 grounded claims, so
+  // the eligible document carries three — each witnessed verbatim in
+  // the excerpt — and ONLY the lane/cap decides.
   const report = buildFactGuardReport({
     snapshot: { sourceItemId: itemId, contentHash },
     evidence: { evidenceId: itemId, excerptText: EXCERPT, excerptTruncated: false },
-    draftClaims: [{ text: CLAIM_TEXT, evidenceIds: [itemId] }],
+    draftClaims: CLAIM_TEXTS.map((text) => ({ text, evidenceIds: [itemId] })),
     draftHeadlineFa: 'تیتر خبر گیمینگ',
     draftSummaryFa: 'خلاصهٔ خبر',
     draftSourceItemId: itemId,
@@ -45,7 +53,7 @@ function eligibleDocument(itemId: string, contentHash: string): string {
     schemaVersion: 1,
     headlineFa: 'تیتر خبر گیمینگ',
     summaryFa: 'خلاصهٔ خبر',
-    modelClaims: [{ text: CLAIM_TEXT, status: 'unverified' }],
+    modelClaims: CLAIM_TEXTS.map((text) => ({ text, status: 'unverified' })),
     factGuard: report,
   });
 }
@@ -220,6 +228,7 @@ describe('bridge guide lane + category cap (ADR-0068)', () => {
       duplicates: 0,
       requiresReview: 0,
       refused: 0,
+      retiredStale: 0,
       reevaluated: 0,
       reevaluationSkipped: 0,
       deferredGuideLane: 1,
@@ -285,6 +294,7 @@ describe('bridge guide lane + category cap (ADR-0068)', () => {
       duplicates: 0,
       requiresReview: 0,
       refused: 0,
+      retiredStale: 0,
       reevaluated: 0,
       reevaluationSkipped: 0,
       deferredGuideLane: 0,
@@ -348,6 +358,7 @@ describe('bridge guide lane + category cap (ADR-0068)', () => {
       duplicates: 0,
       requiresReview: 0,
       refused: 0,
+      retiredStale: 0,
       reevaluated: 0,
       reevaluationSkipped: 0,
       deferredGuideLane: 0,

@@ -16,15 +16,22 @@ import { z } from 'zod';
 /** Maximum generated claims per draft (bounded output contract). */
 export const AI_DRAFT_CLAIMS_MAX = 10;
 
+/** Maximum figures per draft — mirrors EDITORIAL_POST_MAX_FIGURES (the render's cap). */
+export const AI_DRAFT_FIGURES_MAX = 8;
+
 /** Maximum evidence ids referenced by one claim. */
 export const AI_DRAFT_CLAIM_EVIDENCE_MAX = 8;
 
 /** Shape the model must emit for the news-draft task (versioned).
- * Prompt v3 (ADR-0070, raw extraction only): the model emits a plain
- * factual headline + summary + claims — NO categoryEmoji, NO trustLabel.
- * The Soul v1 form choice moved to the Gemini-only rewrite prompt v1;
- * a v2-shaped output (with those fields) now fails this strict schema
- * as invalid_output. */
+ * Prompt v4 (ADR-0080 §3.8ii, raw extraction + the four structured
+ * fields): the model emits a plain factual headline + summary + claims —
+ * NO categoryEmoji, NO trustLabel — PLUS the OPTIONAL figures / quote /
+ * verdict / gameName. The bounds mirror the render's defensive readers
+ * (label ≤120, value ≤40, quote text ≤600, attribution ≤120, verdict
+ * ≤300, gameName ≤120, at most one main figure is enforced by the
+ * render): a model answer the schema accepts is one the render can
+ * compose. A v2-shaped output (with categoryEmoji/trustLabel) still
+ * fails this strict schema as invalid_output. */
 export const aiSemanticDraftSchema = z
   .object({
     headlineFa: z.string().min(1).max(200),
@@ -39,6 +46,28 @@ export const aiSemanticDraftSchema = z
           .strict(),
       )
       .max(AI_DRAFT_CLAIMS_MAX),
+    figures: z
+      .array(
+        z
+          .object({
+            label: z.string().min(1).max(120),
+            value: z.string().min(1).max(40),
+            significance: z.enum(['headline', 'context']).optional(),
+            main: z.boolean().optional(),
+          })
+          .strict(),
+      )
+      .max(AI_DRAFT_FIGURES_MAX)
+      .optional(),
+    quote: z
+      .object({
+        text: z.string().min(1).max(600),
+        attribution: z.string().min(1).max(120).optional(),
+      })
+      .strict()
+      .optional(),
+    verdict: z.string().min(1).max(300).optional(),
+    gameName: z.string().min(1).max(120).optional(),
   })
   .strict();
 

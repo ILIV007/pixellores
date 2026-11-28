@@ -192,7 +192,9 @@ describe('auto-gate ag1 — the fail-closed refusal family', () => {
     // ADR-0071 (owner order 2026-11-22): the claim `status` is no longer
     // a render contract — the unverified line is gone from posts and the
     // internal gate is the fact-guard report, not the status field. With
-    // a clean report over the same claim, the gate reaches eligible_auto.
+    // a clean report over the same claims, the gate reaches eligible_auto.
+    // ADR-0079 §3.7a: the document needs 3 claims now (the substance
+    // minimum) — one thin claim no longer reaches eligible_auto.
     const document: Record<string, unknown> = {
       schemaVersion: 1,
       headlineFa: 'تیتر آزمون گیت',
@@ -204,8 +206,20 @@ describe('auto-gate ag1 — the fail-closed refusal family', () => {
           claimType: 'source_report',
           status: 'confirmed',
         },
+        {
+          text: 'ادعای آزمون 1 بر پایهٔ شواهد ثبت‌شده ارائه شد.',
+          evidenceIds: ['ev-1'],
+          claimType: 'source_report',
+          status: 'unverified',
+        },
+        {
+          text: 'ادعای آزمون 2 بر پایهٔ شواهد ثبت‌شده ارائه شد.',
+          evidenceIds: ['ev-2'],
+          claimType: 'source_report',
+          status: 'unverified',
+        },
       ],
-      factGuard: cleanReport(1),
+      factGuard: cleanReport(3),
     };
     const verdict = evaluateAutoPublishGate(JSON.stringify(document));
     expect(verdict.kind).toBe('eligible_auto');
@@ -275,10 +289,17 @@ describe('auto-gate ag1 — the measurable review family', () => {
 
 describe('auto-gate ag1 — the eligible family', () => {
   it('eligible_auto on a fully grounded document with a clean TOTAL report', () => {
-    const verdict = evaluateAutoPublishGate(docWithClaims(ONE_GROUNDED_CLAIM, cleanReport(1)));
+    // ADR-0079 §3.7a: the substance minimum is 3 claims — the eligible
+    // document carries three grounded claims, not one.
+    const threeClaims = [
+      GROUNDED_CLAIM_A,
+      { text: 'ادعای دوم آزمون بر پایهٔ شواهد ثبت‌شده ارائه شد.', evidenceIds: ['ev-1'] },
+      { text: 'ادعای سوم آزمون بر پایهٔ شواهد ثبت‌شده ارائه شد.', evidenceIds: ['ev-2'] },
+    ];
+    const verdict = evaluateAutoPublishGate(docWithClaims(threeClaims, cleanReport(3)));
     expect(verdict.kind).toBe('eligible_auto');
     if (verdict.kind === 'eligible_auto') {
-      expect(verdict.claimCount).toBe(1);
+      expect(verdict.claimCount).toBe(3);
       expect(verdict.factGuardVersion).toBe(FACT_GUARD_VERSION);
       expect(verdict.limitationLabels).toEqual(FACT_GUARD_LIMITATIONS);
     }
@@ -302,5 +323,58 @@ describe('auto-gate ag1 — the eligible family', () => {
     const first = evaluateAutoPublishGate(bytes);
     const second = evaluateAutoPublishGate(bytes);
     expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+  });
+});
+
+describe('auto-gate ag1 — the substance minimum (ADR-0079 §3.7a)', () => {
+  it('a 1-claim draft with a clean report goes to human review (insufficient_claims), never auto-publish', () => {
+    const verdict = evaluateAutoPublishGate(docWithClaims(ONE_GROUNDED_CLAIM, cleanReport(1)));
+    expect(verdict.kind).toBe('requires_review');
+    if (verdict.kind === 'requires_review') {
+      expect(verdict.reason).toBe('insufficient_claims');
+      expect(verdict.claims).toHaveLength(1);
+      expect(verdict.claims[0]).toEqual({ claimIndex: 0, findings: [] });
+      expect(verdict.limitationLabels).toEqual(FACT_GUARD_LIMITATIONS);
+    }
+  });
+
+  it('a 2-claim draft with a clean report goes to human review too', () => {
+    const twoClaims = [
+      GROUNDED_CLAIM_A,
+      { text: 'ادعای دوم آزمون بر پایهٔ شواهد ثبت‌شده ارائه شد.', evidenceIds: ['ev-1'] },
+    ];
+    const verdict = evaluateAutoPublishGate(docWithClaims(twoClaims, cleanReport(2)));
+    expect(verdict.kind).toBe('requires_review');
+    if (verdict.kind === 'requires_review') {
+      expect(verdict.reason).toBe('insufficient_claims');
+    }
+  });
+
+  it('a 3-claim draft passes the substance rule (other rules unchanged)', () => {
+    const threeClaims = [
+      GROUNDED_CLAIM_A,
+      { text: 'ادعای دوم آزمون بر پایهٔ شواهد ثبت‌شده ارائه شد.', evidenceIds: ['ev-1'] },
+      { text: 'ادعای سوم آزمون بر پایهٔ شواهد ثبت‌شده ارائه شد.', evidenceIds: ['ev-2'] },
+    ];
+    const verdict = evaluateAutoPublishGate(docWithClaims(threeClaims, cleanReport(3)));
+    expect(verdict.kind).toBe('eligible_auto');
+  });
+
+  it('the substance rule sits LAST: a thin draft without a report is still refused (report_absent), not reviewed', () => {
+    const verdict = evaluateAutoPublishGate(docWithClaims(ONE_GROUNDED_CLAIM));
+    expect(verdict.kind).toBe('refused');
+    if (verdict.kind === 'refused') {
+      expect(verdict.reason).toBe('report_absent');
+    }
+  });
+
+  it('the substance rule sits LAST: a thin draft with an ungrounded claim still reports its finding first', () => {
+    const verdict = evaluateAutoPublishGate(
+      docWithClaims(ONE_GROUNDED_CLAIM, reportWithNumberFinding(1, 0)),
+    );
+    expect(verdict.kind).toBe('requires_review');
+    if (verdict.kind === 'requires_review') {
+      expect(verdict.reason).toBe('fact_guard_findings');
+    }
   });
 });

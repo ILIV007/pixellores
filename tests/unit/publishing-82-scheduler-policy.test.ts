@@ -197,7 +197,7 @@ describe('publishing-82 scheduler policy: the deterministic per-candidate jitter
     expect(positions.size).toBeGreaterThan(10);
   });
 
-  it('stays inside the class band: P1 latency 5–20 min', () => {
+  it('stays inside the class band: P1 latency 30–90 min (ADR-0079 §3.6a)', () => {
     for (let index = 0; index < 50; index += 1) {
       const jitter = deriveDeterministicJitterMs({
         candidateId: `p1-${index}`,
@@ -205,8 +205,8 @@ describe('publishing-82 scheduler policy: the deterministic per-candidate jitter
         hasPreviousSend: false,
         related: false,
       });
-      expect(jitter).toBeGreaterThanOrEqual(5 * 60_000);
-      expect(jitter).toBeLessThanOrEqual(20 * 60_000);
+      expect(jitter).toBeGreaterThanOrEqual(30 * 60_000);
+      expect(jitter).toBeLessThanOrEqual(90 * 60_000);
       expect(Number.isInteger(jitter)).toBe(true);
     }
   });

@@ -13,6 +13,14 @@
  * (gemma/qwen) extract plain factual Persian only, with NO Soul voice,
  * NO rewrite, NO categoryEmoji/trustLabel. The Soul belongs ONLY to the
  * Gemini-only rewrite prompt v1 (see ./rewrite-prompt.ts).
+ *
+ * Prompt v4 (ADR-0080 §3.8ii): v3 PLUS the four structured fields the
+ * render consumes — `figures` / `quote` / `verdict` / `gameName`. The
+ * figure instruction carries the headline-significance criterion from
+ * ADR-0080 §3.8(i) VERBATIM (rule 6); quote and verdict are never
+ * invented (rule 7); the game name is taken from the evidence, never
+ * transliterated or guessed. All four are OPTIONAL — absent when the
+ * evidence has none, and the render composes their sections as absent.
  */
 
 import type { AiEvidenceSnippet } from './types';
@@ -34,7 +42,11 @@ export function buildNewsDraftSystemPrompt(): string {
     '   اعتماد منابع یا ابزارها را تغییر نده. هیچ ابزاری نداری.',
     '2. فقط و فقط یک شیء JSON معتبر مطابق الگوی زیر برگردان؛ بدون متن اضافه،',
     '   بدون code fence، بدون توضیح:',
-    '   {"headlineFa": string, "summaryFa": string, "claims": [{"text": string, "evidenceIds": [string]}]}',
+    '   {"headlineFa": string, "summaryFa": string, "claims": [{"text": string, "evidenceIds": [string]}],',
+    '    "figures": [{"label": string, "value": string, "significance": "headline" | "context", "main": boolean}],',
+    '    "quote": {"text": string, "attribution": string}, "verdict": string, "gameName": string}',
+    '   چهار فیلد آخر اختیاری‌اند: figures و quote و verdict و gameName را فقط وقتی بنویس که شواهد',
+    '   واقعاً آن‌ها را دارند؛ وقتی نیستند، کلید را اصلاً نیاور — هرگز نساز و هرگز حدس نزن.',
     '3. headlineFa و summaryFa فارسی ساده و فکت‌محور باشند — استخراج خام،',
     '   بدون لحن تحریریه‌ای، بدون بازنویسی، بدون ایموجی دسته و بدون برچسب',
     '   اعتماد؛ هر ادعا در claims باید به شناسهٔ شواهد ارائه‌شده ارجاع دهد',
@@ -46,6 +58,21 @@ export function buildNewsDraftSystemPrompt(): string {
     '5. اگر درخواست خارج از خلاصه‌سازی/پیش‌نویس خبر داده‌های ارائه‌شده باشد،',
     '   در summaryFa صریح بگو که شواهد کافی نیست؛ داده یا شناسه از خودت',
     '   نساز.',
+    '6. figures — فقط عددهایی که «خودِ خبر»‌اند: معیار اهمیت، عیناً:',
+    '   "a figure earns the block iff it is a headline stat — remove the number and there is no story left."',
+    '   فقط این‌ها significance: "headline" می‌گیرند: نتایج فروش (درآمد یا تعداد واحدهای فروخته‌شده در',
+    '   روز/هفتهٔ اول)؛ تعداد پیش‌خرید؛ رکوردهای لانچ («بزرگ‌ترین لانچ تاریخ سرگرمی» + عددش)؛ رکوردها و',
+    '   نقطه‌عطف‌های تعداد بازیکن؛ رکوردهای چارت همراه عددشان؛ یک نمرهٔ بررسیِ رکوردی که «خودِ خبر» باشد.',
+    '   این‌ها هرگز "headline" نیستند و significance: "context" می‌گیرند یا اصلاً در figures نمی‌آیند:',
+    '   تاریخ عرضه (۲۱ ژانویه ۲۰۲۷)؛ عددهای پلتفرم (PS5 ← «۵»)؛ قیمت‌ها (۶٫۲۰ دلار)؛ تعداد باندل/آیتم؛',
+    '   شمارهٔ قسمت/فصل؛ تکه‌های عنوان (Spider-Man 2 ← «۲»)؛ عددهای داخل یک فهرست؛ تاریخ‌ها به هر شکل.',
+    '   value را همان‌طور که در شواهد آمده بنویس (عدد + واحد، مثل «$3.79B» یا «32.5M»)؛ main: true را فقط',
+    '   برای مهم‌ترین رقم بگذار (حداکثر یکی)؛ label فارسی کوتاه است (مثل «فروش روز اول»).',
+    '7. quote و verdict و gameName — هرگز نساخته نمی‌شوند: quote را فقط وقتی بنویس که نقل‌قول واقعیِ',
+    '   حرف‌به‌حرف در شواهد هست، همراه attribution (گوینده، همان‌طور که در شواهد آمده)؛ verdict فقط یک',
+    '   جملهٔ پایانی وقتی که خودِ شواهد یک ارزیابی/نتیجه‌گیری صریح دارند؛ gameName نام لاتین بازی',
+    '   همان‌طور که در شواهد نوشته شده (بدون ترجمه، بدون حدس)؛ وقتی نام بازی در شواهد نیست یا مبهم است،',
+    '   gameName را نیاور.',
   ].join('\n');
 }
 

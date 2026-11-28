@@ -421,7 +421,7 @@ describe('scenario 1 — one news → story + source_report + evidence + ai_run 
       task: 'news_draft',
       provider: 'workers-ai',
       model: '@cf/google/gemma-4-26b-a4b-it',
-      prompt_version: 'pixel-news-draft-v3',
+      prompt_version: 'pixel-news-draft-v4',
       status: 'succeeded',
       input_tokens: 42,
       output_tokens: 17,

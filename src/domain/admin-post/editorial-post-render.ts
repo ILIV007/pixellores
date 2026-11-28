@@ -14,19 +14,23 @@
  *      inline game-page link when the document carries one.
  *   2. Body — `summaryFa` as stored (never invented, never restated by the
  *      render: the no-repetition rule is enforced by the model writing
- *      the body WITHOUT figures — prompt v3 follow-up).
+ *      the body WITHOUT figures — prompt v4 asks for the figures
+ *      separately, marked by significance).
  *   3. Quote block — a REAL quote from the stored `document.quote`
  *      (model-supplied verbatim text + attribution); the attribution sits
  *      on its OWN line INSIDE the same blockquote. Long quotes ride an
  *      expandable_blockquote. Absent when the document carries no quote —
  *      a quote is never derived or invented.
- *   4. Figures block — ONE line per key figure, `label: value`, values in
- *      mono; the MAIN figure's whole line is BOLD with the mono value
- *      inside it (the nesting Telegram preserves — see the envelope's
- *      ADR-0071 exception; equal-range bold+code flattened live on msg 16
- *      and stays rejected). Figures come from the stored
- *      `document.figures` when present (model-authored, prompt v3), else
- *      are DERIVED mechanically from the model claims (see below).
+ *   4. Figures block — ONE line per HEADLINE figure, `label: value`,
+ *      values in mono; the MAIN figure's whole line is BOLD with the
+ *      mono value inside it (the nesting Telegram preserves — see the
+ *      envelope's ADR-0071 exception; equal-range bold+code flattened
+ *      live on msg 16 and stays rejected). Figures come ONLY from the
+ *      stored `document.figures` (model-authored, prompt v4) AND only
+ *      the entries the model marked `significance: 'headline'` render —
+ *      the mechanical derivation is DELETED (ADR-0080), and unmarked or
+ *      `'context'` figures are dropped. Until prompt-v4 figures land,
+ *      NO post has a figures block — the owner's decision.
  *   5. Verdict — the stored `document.verdict` sentence, with NO label
  *      (the old «حرف آخر:» label is gone by owner order). Absent when the
  *      document carries none — the sentence is never invented.
@@ -70,8 +74,9 @@
  * - NO repetition BY THE RENDER: each figure the render emits appears
  *   exactly once, in the figures block. The render never restates a
  *   figure in the body, the quote, or the verdict — the body/quote/
- *   verdict are the stored texts, and the figures block is built from
- *   the claims (or the stored structured figures), never from the body.
+ *   verdict are the stored texts, and the figures block is built ONLY
+ *   from the stored figures marked `'headline'`, never from the body
+ *   and never from the claims.
  * - Latin digits ONLY (owner order 2026-11-22, v3): Persian/Arabic-Indic
  *   digits fold to Latin at render time (the same 1:1 map the fact-guard
  *   numbers lens uses for matching, ADR-0066). The stored document is
@@ -86,25 +91,22 @@
  *   and the same entities, so the same editorial draft version always
  *   fingerprints identically.
  *
- * FIGURE DERIVATION (when `document.figures` is absent): one figure line
- * per number phrase found in the model claims, in claim order. The value
- * is the number folded to Latin with a compact unit symbol
- * (میلیارد→B, میلیون→M, هزار→K, دلار→$ prefix; any other unit word, e.g.
- * تومان/نسخه, rides after the number). The label is the claim text around
- * the number — the up-to-3 words before it (cleaned of punctuation and
- * trailing copulas), falling back to the claim minus all its number
- * phrases. This is MECHANICAL best-effort formatting of the model's own
- * words, not a semantic parse: odd claims yield odd labels, and the
- * structured `document.figures` field (prompt v3) overrides it. The
- * first derived figure is the MAIN figure.
- *
- * DATE CLUSTERS (ADR-0077): consecutive number phrases separated ONLY by
- * month words («21 ژانویه 2027») are one date, not two figures — they
- * merge into a single figure whose value is the claim's own date text.
- * A merged cluster followed within a few words by a release marker
- * (منتشر / عرضه / انتشار) is the release date and takes the fixed house
- * label «تاریخ عرضه»; any other merged cluster keeps its mechanical
- * label. Single-number dates (month+year, year-only) are untouched.
+ * FIGURE SIGNIFICANCE (ADR-0080 §3.8i, owner decision 2026-11-28
+ * 08:07): the block appears ONLY when the number IS the story — a
+ * figure earns it iff it is a headline stat (remove the number and
+ * there is no story left). EARNS it: sales results (day-one / week-one
+ * revenue, units sold); pre-order counts; launch records; player-count
+ * records / milestones; chart records with their numbers; a record
+ * review score that IS the story. Does NOT earn it: release dates;
+ * platform numbers; prices; bundle / item counts; episode / season
+ * numbers; title fragments; counts inside a list; dates in any form.
+ * The model marks each figure `significance: 'headline' | 'context'`
+ * (prompt v4 carries this criterion verbatim); the render is a dumb
+ * gate that renders ONLY `'headline'`. The mechanical derivation that
+ * used to fill this block from the claims is DELETED, with its
+ * date-cluster merger (PR #42 / ADR-0077 — the merger stays in
+ * history; its month-word lists live on in
+ * `src/domain/publishing/date-phrases.ts` for the freshness gate).
  *
  * The raw source excerpt is deliberately NOT part of the post: the channel
  * carries the editorial OUTPUT; the full evidence excerpt stays in the
@@ -296,18 +298,28 @@ function readSoulForm(value: unknown): { readonly categoryEmoji: string } | null
   return { categoryEmoji };
 }
 
-/** One figure line of the figures block. */
+/**
+ * One figure line of the figures block. `significance` is the MODEL's
+ * marker (ADR-0080 §3.8i): `'headline'` = a headline stat — remove the
+ * number and there is no story left — and ONLY those render. `'context'`
+ * (or an absent marker, the old-document shape) never renders: the
+ * render is a dumb gate, fail-closed toward NO block.
+ */
 interface RenderFigure {
   readonly label: string;
   readonly value: string;
   readonly main: boolean;
+  readonly significance?: 'headline' | 'context';
 }
 
 /**
- * Defensively read the model-authored `document.figures` override
- * (prompt v3 — the upgrade path over mechanical derivation). Absent (or
- * an empty list) = derive from the claims; malformed = the render fails.
- * At most ONE main figure; labels/values are bounded plain strings.
+ * Defensively read the model-authored `document.figures` (prompt v4 —
+ * the ONLY source of figures since the mechanical derivation was
+ * deleted, ADR-0080). Absent (or an empty list) = no figures block;
+ * malformed = the render fails. At most ONE main figure; labels/values
+ * are bounded plain strings; `significance`, when present, must be
+ * `'headline'` or `'context'` (anything else is malformed, never
+ * silently treated as headline).
  */
 function readStructuredFigures(value: unknown): readonly RenderFigure[] | null | undefined {
   if (value === undefined) {
@@ -343,7 +355,16 @@ function readStructuredFigures(value: unknown): readonly RenderFigure[] | null |
     if (main === true) {
       mainCount += 1;
     }
-    figures.push({ label, value: figureValue, main: main === true });
+    const significance = entry['significance'];
+    if (significance !== undefined && significance !== 'headline' && significance !== 'context') {
+      return null;
+    }
+    figures.push({
+      label,
+      value: figureValue,
+      main: main === true,
+      ...(significance !== undefined ? { significance } : {}),
+    });
   }
   if (mainCount > 1) {
     return null;
@@ -478,300 +499,6 @@ function readLatinGameAlias(value: unknown): string | undefined {
     }
   }
   return best;
-}
-
-// ---------------------------------------------------------------------------
-// Mechanical figure derivation from the model claims
-// ---------------------------------------------------------------------------
-
-/** Number token: digit runs with optional decimal/thousand separators — the fact-guard numbers-lens shape (ADR-0066). */
-const NUMBER_TOKEN = /[\d۰-۹٠-٩]+(?:[.,٬٫][\d۰-۹٠-٩]+)*/gu;
-
-/** Unit words a number phrase may carry (max 2, in claim order). */
-const FIGURE_UNIT_WORDS: ReadonlySet<string> = new Set([
-  'میلیون',
-  'میلیارد',
-  'هزار',
-  'دلار',
-  'تومان',
-  'ریال',
-  'یورو',
-  'نسخه',
-  'نفر',
-  'درصد',
-]);
-
-/** Compact scale symbols for the unit words that carry one. */
-const FIGURE_SCALE: Readonly<Record<string, string>> = {
-  میلیارد: 'B',
-  میلیون: 'M',
-  هزار: 'K',
-};
-
-/** Trailing copula/verb words stripped from a derived label (FIXED list). */
-const FIGURE_LABEL_STOP_WORDS: ReadonlySet<string> = new Set([
-  'بود',
-  'است',
-  'شد',
-  'هست',
-  'می‌شود',
-  'میشه',
-  'دارد',
-  'دارند',
-  'می‌کند',
-  'می‌کنند',
-  'کرد',
-  'داشت',
-  'داشتند',
-]);
-
-function stripWordPunctuation(word: string): string {
-  return word.replace(/^[،,.!؟:؛]+|[،,.!؟:؛]+$/g, '');
-}
-
-/** Clean a label's words: strip punctuation, drop a leading 'و', drop trailing copulas / 'و'. */
-function cleanLabelWords(words: readonly string[]): string {
-  const cleaned = words.map(stripWordPunctuation).filter((word) => word.length > 0);
-  while (cleaned.length > 0 && cleaned[0] === 'و') {
-    cleaned.shift();
-  }
-  while (
-    cleaned.length > 0 &&
-    (cleaned[cleaned.length - 1] === 'و' ||
-      FIGURE_LABEL_STOP_WORDS.has(cleaned[cleaned.length - 1]!))
-  ) {
-    cleaned.pop();
-  }
-  return cleaned.join(' ');
-}
-
-/** Compact a derived value: `$` for دلار, scale symbol, other unit words kept verbatim. */
-function compactFigureValue(numberText: string, units: readonly string[]): string {
-  const scaleWord = units.find((unit) => FIGURE_SCALE[unit] !== undefined);
-  const prefix = units.includes('دلار') ? '$' : '';
-  const scale = scaleWord !== undefined ? FIGURE_SCALE[scaleWord]! : '';
-  const rest = units.filter((unit) => FIGURE_SCALE[unit] === undefined && unit !== 'دلار');
-  return `${prefix}${numberText}${scale}${rest.length > 0 ? ` ${rest.join(' ')}` : ''}`;
-}
-
-/**
- * Month names that join two number phrases into one date figure
- * (ADR-0077): Gregorian months in Persian transliteration, Jalali months,
- * and English month names. A gap between two number phrases that holds
- * ONLY these words is a date, not two figures.
- */
-const FIGURE_MONTH_WORDS: ReadonlySet<string> = new Set([
-  // Gregorian, Persian transliteration.
-  'ژانویه',
-  'فوریه',
-  'مارس',
-  'آوریل',
-  'مه',
-  'ژوئن',
-  'ژوئیه',
-  'اوت',
-  'سپتامبر',
-  'اکتبر',
-  'نوامبر',
-  'دسامبر',
-  // Jalali.
-  'فروردین',
-  'اردیبهشت',
-  'خرداد',
-  'تیر',
-  'مرداد',
-  'شهریور',
-  'مهر',
-  'آبان',
-  'آذر',
-  'دی',
-  'بهمن',
-  'اسفند',
-  // English.
-  'January',
-  'February',
-  'March',
-  'April',
-  'May',
-  'June',
-  'July',
-  'August',
-  'September',
-  'October',
-  'November',
-  'December',
-  'january',
-  'february',
-  'march',
-  'april',
-  'may',
-  'june',
-  'july',
-  'august',
-  'september',
-  'october',
-  'november',
-  'december',
-]);
-
-/** Release markers: a date figure followed by one of these is a release date (ADR-0077). */
-const FIGURE_RELEASE_MARKERS: ReadonlySet<string> = new Set(['منتشر', 'عرضه', 'انتشار']);
-
-/** How many words after a date cluster are scanned for a release marker. */
-const FIGURE_RELEASE_MARKER_WINDOW = 4 as const;
-
-/** The fixed label for a release-date figure (house phrasing, cf. the headline «تاریخ عرضه …»). */
-const FIGURE_RELEASE_DATE_LABEL = 'تاریخ عرضه' as const;
-
-/**
- * One figure entry: a single number phrase (value compacted with its
- * units) or a merged date cluster (value = the claim's own date text,
- * e.g. «21 ژانویه 2027»).
- */
-type FigureEntry = {
-  readonly start: number;
-  readonly end: number;
-  readonly units: readonly string[];
-  readonly isDateCluster: boolean;
-  readonly value: string;
-};
-
-/**
- * Derive the figures block from the model claims (one line per number
- * phrase, claim order, first figure = main). MECHANICAL best-effort: the
- * label is the up-to-3 words before the number (cleaned), falling back
- * to the claim minus all its number phrases; a phrase whose label cleans
- * to empty is skipped; exact (label, value) duplicates collapse; the
- * block caps at EDITORIAL_POST_MAX_FIGURES. The structured
- * `document.figures` field overrides this entirely.
- *
- * DATE CLUSTERS (ADR-0077): consecutive number phrases in one claim
- * separated ONLY by month words («21 ژانویه 2027») merge into ONE figure
- * whose value is the claim's own date text — a date is one figure, never
- * one line per number. A merged cluster followed within a few words by
- * a release marker (منتشر / عرضه / انتشار) is the release date and
- * takes the fixed house label «تاریخ عرضه»; any other merged cluster
- * keeps its mechanical label. Single-number dates (month+year,
- * year-only) are untouched: one number is already one figure.
- */
-function deriveFiguresFromClaims(claims: readonly RenderClaim[]): RenderFigure[] {
-  const figures: RenderFigure[] = [];
-  const seen = new Set<string>();
-  for (const claim of claims) {
-    const folded = foldDigitsToLatin(claim.text);
-    const matches = [...folded.matchAll(NUMBER_TOKEN)];
-    if (matches.length === 0) {
-      continue;
-    }
-    // Each number phrase = the number token + up to 2 following unit words.
-    const phrases: {
-      readonly start: number;
-      readonly end: number;
-      readonly numberText: string;
-      readonly units: readonly string[];
-    }[] = [];
-    for (const match of matches) {
-      const numberText = match[0];
-      const start = match.index ?? 0;
-      let end = start + numberText.length;
-      const units: string[] = [];
-      const afterWords = folded
-        .slice(end)
-        .split(/\s+/)
-        .filter((word) => word.length > 0)
-        .slice(0, 2);
-      for (const word of afterWords) {
-        const clean = stripWordPunctuation(word);
-        if (!FIGURE_UNIT_WORDS.has(clean)) {
-          break;
-        }
-        const at = folded.indexOf(word, end);
-        if (at === -1) {
-          break;
-        }
-        units.push(clean);
-        end = at + word.length;
-      }
-      phrases.push({ start, end, numberText, units });
-    }
-    // Merge adjacent date phrases: consecutive phrases separated only
-    // by month words are one date — one figure, value = the date text.
-    const entries: FigureEntry[] = [];
-    for (const phrase of phrases) {
-      const prev = entries[entries.length - 1];
-      if (prev !== undefined && prev.units.length === 0 && phrase.units.length === 0) {
-        const gapWords = folded
-          .slice(prev.end, phrase.start)
-          .split(/\s+/)
-          .map(stripWordPunctuation)
-          .filter((word) => word.length > 0);
-        if (gapWords.length > 0 && gapWords.every((word) => FIGURE_MONTH_WORDS.has(word))) {
-          entries[entries.length - 1] = {
-            start: prev.start,
-            end: phrase.end,
-            units: [],
-            isDateCluster: true,
-            value: folded.slice(prev.start, phrase.end),
-          };
-          continue;
-        }
-      }
-      entries.push({
-        start: phrase.start,
-        end: phrase.end,
-        units: phrase.units,
-        isDateCluster: false,
-        value: compactFigureValue(phrase.numberText, phrase.units),
-      });
-    }
-    for (let index = 0; index < entries.length; index += 1) {
-      const entry = entries[index]!;
-      const prevEnd = index === 0 ? 0 : entries[index - 1]!.end;
-      const beforeWords = folded
-        .slice(prevEnd, entry.start)
-        .split(/\s+/)
-        .filter((word) => word.length > 0)
-        .slice(-3);
-      let label = cleanLabelWords(beforeWords);
-      if (label === '') {
-        // Fallback: the claim minus every number phrase, cleaned.
-        let without = '';
-        let cursor = 0;
-        for (const span of phrases) {
-          without += folded.slice(cursor, span.start);
-          cursor = span.end;
-        }
-        without += folded.slice(cursor);
-        label = cleanLabelWords(without.split(/\s+/).filter((word) => word.length > 0));
-      }
-      if (label === '') {
-        continue;
-      }
-      // Release-date label (ADR-0077): a merged date cluster followed
-      // within a few words by a release marker is the release date.
-      if (entry.isDateCluster) {
-        const afterWords = folded
-          .slice(entry.end)
-          .split(/\s+/)
-          .map(stripWordPunctuation)
-          .filter((word) => word.length > 0)
-          .slice(0, FIGURE_RELEASE_MARKER_WINDOW);
-        if (afterWords.some((word) => FIGURE_RELEASE_MARKERS.has(word))) {
-          label = FIGURE_RELEASE_DATE_LABEL;
-        }
-      }
-      const key = `${label}\n${entry.value}`;
-      if (seen.has(key)) {
-        continue;
-      }
-      seen.add(key);
-      figures.push({ label, value: entry.value, main: figures.length === 0 });
-      if (figures.length >= EDITORIAL_POST_MAX_FIGURES) {
-        return figures;
-      }
-    }
-  }
-  return figures;
 }
 
 // ---------------------------------------------------------------------------
@@ -1019,7 +746,14 @@ function buildBlocks(document: ParsedEditorialDocument): RenderBlock[] {
   if (document.quote !== undefined) {
     blocks.push(buildQuoteBlock(document.quote));
   }
-  const figures = document.figures ?? deriveFiguresFromClaims(document.claims);
+  // ADR-0080 §3.8i — the figures block exists ONLY for headline stats:
+  // the derivation fallback is DELETED, and the significance gate
+  // renders ONLY figures the model marked `'headline'`. Unmarked or
+  // `'context'` figures are dropped; old documents without the field
+  // are not-significant. Until the prompt-v4 mapper writes marked
+  // figures, NO post has a figures block — the owner's decision for
+  // ordinary posts (better no block than a junk block).
+  const figures = (document.figures ?? []).filter((figure) => figure.significance === 'headline');
   if (figures.length > 0) {
     blocks.push(buildFiguresBlock(figures));
   }

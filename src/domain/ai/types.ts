@@ -73,6 +73,26 @@ export interface AiSemanticDraft {
   readonly categoryEmoji?: SoulCategoryEmoji;
   readonly trustLabel?: SoulTrustLabel;
   readonly claims: readonly AiSemanticClaim[];
+  /**
+   * Prompt v4 (ADR-0080 §3.8ii): the four structured fields the render
+   * consumes — all OPTIONAL, present only when the model extracted them
+   * from the evidence (never invented). `figures` carries the model's
+   * own `significance` marker (`'headline'` = the number IS the story);
+   * the mapper writes them through verbatim and the render gates on
+   * the marker. Absent = the section is absent.
+   */
+  readonly figures?: readonly {
+    readonly label: string;
+    readonly value: string;
+    readonly significance?: 'headline' | 'context';
+    readonly main?: boolean;
+  }[];
+  readonly quote?: {
+    readonly text: string;
+    readonly attribution?: string;
+  };
+  readonly verdict?: string;
+  readonly gameName?: string;
 }
 
 /**

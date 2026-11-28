@@ -225,7 +225,7 @@ describe('AI draft service — ladder, budget, and outcomes', () => {
       expect(outcome.usage[0]).toMatchObject({
         provider: 'workers-ai',
         modelId: '@cf/google/gemma-4-26b-a4b-it',
-        promptVersion: 'pixel-news-draft-v3',
+        promptVersion: 'pixel-news-draft-v4',
         inputTokens: 120,
         outputTokens: 64,
       });

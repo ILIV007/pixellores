@@ -455,7 +455,10 @@ describe('the /menu screens over the real ingress', () => {
 describe('the daily cap: next-day rule, D1 counter, Tehran-midnight reset, P0 bypass', () => {
   it('rejects out-of-range caps at the store boundary', async () => {
     const executor = createDbExecutor(env.DB);
-    expect(await setDailyCap(executor, { cap: 11, actorId: OWNER_ID, nowMs: NOW })).toEqual({
+    // ADR-0079 §3.6: the lower bound is 6 (was 12), so 5 is the
+    // out-of-range value below it; 6 itself applies (see the
+    // publication-85 cap test).
+    expect(await setDailyCap(executor, { cap: 5, actorId: OWNER_ID, nowMs: NOW })).toEqual({
       kind: 'invalid',
     });
     expect(await setDailyCap(executor, { cap: 19, actorId: OWNER_ID, nowMs: NOW })).toEqual({

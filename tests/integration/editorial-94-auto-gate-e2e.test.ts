@@ -250,36 +250,44 @@ async function createChain(options: ChainOptions): Promise<ChainHarness> {
 /** The traceable provider draft JSON (the SAME discipline as Phase 5A/6.4). */
 const EVIDENCE_HEADER_RE = /شواهد غیرقابل‌اعتماد — شناسه: ([^\n]+)\n<<<SHAHED_SHOROO>>>/;
 
-function tracedDraftJson(userContent: string | undefined, claimText: string): string {
+function tracedDraftJson(userContent: string | undefined, claimTexts: readonly string[]): string {
   const evidenceId =
     (userContent !== undefined ? EVIDENCE_HEADER_RE.exec(userContent)?.[1] : null) ??
     'missing-evidence-id';
   return JSON.stringify({
     headlineFa: 'تیتر زنجیرهٔ سرتاسری ۹۴',
     summaryFa: 'خلاصهٔ زنجیرهٔ سرتاسری ۹۴ بر اساس شواهد ارائه‌شده.',
-    claims: [
-      {
-        text: claimText,
-        evidenceIds: [evidenceId],
-      },
-    ],
+    claims: claimTexts.map((text) => ({
+      text,
+      evidenceIds: [evidenceId],
+    })),
   });
 }
 
 function okOutcome(
   input: Parameters<AiProviderPort['complete']>[0] | undefined,
-  claimText: string,
+  ...claimTexts: string[]
 ): AiCallOutcome {
   const userContent = input?.messages.at(-1)?.content;
   return {
     kind: 'ok',
-    rawText: tracedDraftJson(userContent, claimText),
+    rawText: tracedDraftJson(userContent, claimTexts),
     usage: { inputTokens: 300, outputTokens: 90 },
   };
 }
 
 /** The GROUNDED claim: every word comes from the stored item body. */
 const GROUNDED_CLAIM = 'نسخهٔ تازهٔ بازی نمونه منتشر شده است.';
+/**
+ * ADR-0079 §3.7a — the substance gate needs ≥3 grounded claims for
+ * `eligible_auto`, so the eligible-path chains send three claims,
+ * each witnessed word-for-word in the stored item body.
+ */
+const GROUNDED_CLAIMS: readonly string[] = [
+  GROUNDED_CLAIM,
+  'بخش داستانی گسترده منتشر شده است.',
+  'بهبود عملکرد منتشر شده است.',
+];
 /** The UNGROUNDED number: ۱۲۰ appears NOWHERE in the stored item body. */
 const UNGROUNDED_CLAIM = 'بازی نمونه ۱۲۰ هزار بازیکن دارد.';
 
@@ -305,7 +313,7 @@ describe('slice 3 — the connected chain to a published AUTO-eligible draft', (
   it('REAL snapshot -> REAL AI draft + fact-guard -> gate eligible_auto -> fenced auto_approved -> enqueue(auto) -> scheduler send -> published + ledger', async () => {
     const chain = await createChain({
       factGuardEnabled: true,
-      script: async (callIndex, input) => okOutcome(input, GROUNDED_CLAIM),
+      script: async (callIndex, input) => okOutcome(input, ...GROUNDED_CLAIMS),
     });
     const outcomes = await chain.drain();
     expect(outcomes.some((entry) => entry.startsWith('ack'))).toBe(true);
@@ -318,7 +326,7 @@ describe('slice 3 — the connected chain to a published AUTO-eligible draft', (
     const verdict = evaluateAutoPublishGate(draft.documentJson);
     expect(verdict.kind).toBe('eligible_auto');
     if (verdict.kind === 'eligible_auto') {
-      expect(verdict.claimCount).toBe(1);
+      expect(verdict.claimCount).toBe(3);
       expect(verdict.limitationLabels.length).toBeGreaterThan(0);
     }
 
@@ -355,7 +363,7 @@ describe('slice 3 — the connected chain to a published AUTO-eligible draft', (
       claimCount?: number;
     };
     expect(metadata.gateVersion).toBe('ag1');
-    expect(metadata.claimCount).toBe(1);
+    expect(metadata.claimCount).toBe(3);
 
     // THE IDEMPOTENT ENQUEUE (auto mode agrees with auto_approved).
     const enqueuedRow = await enqueuePublication(chain.executor, {
@@ -430,7 +438,7 @@ describe('slice 3 — the connected chain to a published AUTO-eligible draft', (
   it('the transition is the ONLY route to auto_approved: with the flag OFF an eligible verdict still refuses with ZERO writes', async () => {
     const chain = await createChain({
       factGuardEnabled: true,
-      script: async (_callIndex, input) => okOutcome(input, GROUNDED_CLAIM),
+      script: async (_callIndex, input) => okOutcome(input, ...GROUNDED_CLAIMS),
     });
     await chain.drain();
     const draft = await chain.storedDraft();
@@ -543,7 +551,7 @@ describe('slice 3 — the fail-closed refusals never write', () => {
   it('the fence never flips a HUMAN decision: an approved (or superseded) draft refuses not_ready', async () => {
     const chain = await createChain({
       factGuardEnabled: true,
-      script: async (_callIndex, input) => okOutcome(input, GROUNDED_CLAIM),
+      script: async (_callIndex, input) => okOutcome(input, ...GROUNDED_CLAIMS),
     });
     await chain.drain();
     const draft = await chain.storedDraft();

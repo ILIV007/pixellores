@@ -146,7 +146,9 @@ interface ChainHarness {
   readonly listDrafts: () => Promise<readonly { readonly id: string; readonly status: string }[]>;
 }
 
-async function createChain(claimByCallIndex: (callIndex: number) => string): Promise<ChainHarness> {
+async function createChain(
+  claimsByCallIndex: (callIndex: number) => readonly string[],
+): Promise<ChainHarness> {
   const clock = fixedClock(NOW);
   const executor = createDbExecutor(env.DB, { clock });
   await freshDb(executor);
@@ -168,7 +170,10 @@ async function createChain(claimByCallIndex: (callIndex: number) => string): Pro
         rawText: JSON.stringify({
           headlineFa: 'تیتر زنجیرهٔ سرتاسری ۰۹',
           summaryFa: 'خلاصهٔ زنجیرهٔ سرتاسری ۰۹ بر اساس شواهد ارائه‌شده.',
-          claims: [{ text: claimByCallIndex(callIndex), evidenceIds: [evidenceId] }],
+          claims: claimsByCallIndex(callIndex).map((text) => ({
+            text,
+            evidenceIds: [evidenceId],
+          })),
         }),
         usage: { inputTokens: 300, outputTokens: 90 },
       };
@@ -265,6 +270,21 @@ async function createChain(claimByCallIndex: (callIndex: number) => string): Pro
 /** The GROUNDED claims: every word comes from the matching stored item body. */
 const GROUNDED_CLAIM_A = 'نسخهٔ تازهٔ بازی نمونه منتشر شده است.';
 const GROUNDED_CLAIM_B = 'بستهٔ تازهٔ بازی دوم منتشر شده است.';
+/**
+ * ADR-0079 §3.7a — the substance gate needs ≥3 grounded claims for
+ * `eligible_auto`, so the eligible-path chains send three claims per
+ * draft, each witnessed word-for-word in its item body.
+ */
+const GROUNDED_CLAIMS_A: readonly string[] = [
+  GROUNDED_CLAIM_A,
+  'بخش داستانی گسترده منتشر شده است.',
+  'بهبود عملکرد منتشر شده است.',
+];
+const GROUNDED_CLAIMS_B: readonly string[] = [
+  GROUNDED_CLAIM_B,
+  'مرحله‌های تازه منتشر شده است.',
+  'بهبود عملکرد منتشر شده است.',
+];
 /** The UNGROUNDED number: ۱۲۰ appears NOWHERE in either stored item body. */
 const UNGROUNDED_CLAIM = 'بازی نمونه ۱۲۰ هزار بازیکن دارد.';
 
@@ -289,7 +309,7 @@ beforeEach(async () => {
 
 describe('slice 9 — the wired autonomous chain', () => {
   it('drain: fresh items -> prepare_draft jobs (bounded, oldest-first, claimed once)', async () => {
-    const chain = await createChain(() => GROUNDED_CLAIM_A);
+    const chain = await createChain(() => GROUNDED_CLAIMS_A);
     const first = await enqueueFreshSourceItems({
       executor: chain.executor,
       engine: chain.engine,
@@ -321,7 +341,7 @@ describe('slice 9 — the wired autonomous chain', () => {
 
   it('full chain: drain -> drafts -> bridge (Soul-stamped) -> scheduler scan -> published', async () => {
     const chain = await createChain((callIndex) =>
-      callIndex === 0 ? GROUNDED_CLAIM_A : GROUNDED_CLAIM_B,
+      callIndex === 0 ? GROUNDED_CLAIMS_A : GROUNDED_CLAIMS_B,
     );
     await seedSoulPointer(chain.executor);
 
@@ -353,6 +373,7 @@ describe('slice 9 — the wired autonomous chain', () => {
       duplicates: 0,
       requiresReview: 0,
       refused: 0,
+      retiredStale: 0,
       reevaluated: 0,
       reevaluationSkipped: 0,
       deferredGuideLane: 0,
@@ -394,17 +415,20 @@ describe('slice 9 — the wired autonomous chain', () => {
       logger,
       scanLimit: 10,
     });
-    // P1 latency (5–20 min) defers the first scan; nothing sends yet.
+    // P1 latency (30–90 min, ADR-0079 §3.6) defers the first scan;
+    // nothing sends yet.
     const first = await scheduler.scanDuePublications();
     expect(first.details.map((detail) => detail.outcome)).toEqual([
       'deferred_time',
       'deferred_time',
     ]);
     expect(transport.calls).toHaveLength(0);
-    // Advance past the latency + the 8-minute P1 gap, scanning until both
-    // are published (bounded rounds — the second send waits for the gap).
-    for (let round = 0; round < 6; round += 1) {
-      scanClock.advance(10 * 60_000);
+    // Advance past the latency (30–90 min) + the 30-minute P1 gap,
+    // scanning until both are published (bounded rounds — the second
+    // send waits for the gap; worst case 90 + 30 = 120 min, so the
+    // loop covers 150 min).
+    for (let round = 0; round < 10; round += 1) {
+      scanClock.advance(15 * 60_000);
       await scheduler.scanDuePublications();
       const published = await chain.executor.query<{ n: number }>({
         sql: `SELECT COUNT(*) AS n FROM publications WHERE status = 'published'`,
@@ -433,7 +457,7 @@ describe('slice 9 — the wired autonomous chain', () => {
   });
 
   it('bridge paused: zero writes, drafts stay ready; scan gate-off is decision-only', async () => {
-    const chain = await createChain(() => GROUNDED_CLAIM_A);
+    const chain = await createChain(() => GROUNDED_CLAIMS_A);
     await seedSoulPointer(chain.executor);
     // No mode row at all: the strict read is NULL (never the panel `auto`).
     expect(await readExplicitPublishMode(chain.executor)).toBeNull();
@@ -477,7 +501,7 @@ describe('slice 9 — the wired autonomous chain', () => {
   });
 
   it('bridge requires_review: an ungrounded draft never reaches the outbox', async () => {
-    const chain = await createChain(() => UNGROUNDED_CLAIM);
+    const chain = await createChain(() => [UNGROUNDED_CLAIM]);
     await seedSoulPointer(chain.executor);
     await enqueueFreshSourceItems({
       executor: chain.executor,
@@ -504,6 +528,7 @@ describe('slice 9 — the wired autonomous chain', () => {
       duplicates: 0,
       requiresReview: 2,
       refused: 0,
+      retiredStale: 0,
       // ADR-0074: both drafts ARE re-evaluated (their stored reports
       // carry number_not_observed_in_evidence for ۱۲۰) — and the rebuild
       // still fails, because 120 appears in NO script in the excerpt.
@@ -525,7 +550,7 @@ describe('slice 9 — the wired autonomous chain', () => {
   });
 
   it('bridge soul unknown: no Soul version resolvable -> the whole pass skips', async () => {
-    const chain = await createChain(() => GROUNDED_CLAIM_A);
+    const chain = await createChain(() => GROUNDED_CLAIMS_A);
     // Deliberately NO soul pointer and NO souls rows.
     await enqueueFreshSourceItems({
       executor: chain.executor,

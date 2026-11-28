@@ -83,6 +83,13 @@ import {
 } from '../../adapters/db/publication-outbox-store';
 import { classifySendOutcome } from '../../domain/publishing/send-outcome';
 import {
+  FRESHNESS_MAX_AGE_MS,
+  isDraftStale,
+  readDraftClaimDatePhrases,
+} from '../../domain/publishing/draft-freshness';
+import { recordQualityRejection } from '../../adapters/db/near-dup-store';
+import { recordPublication } from '../../adapters/db/publishing-settings-store';
+import {
   planReleaseAfterScheduleDecision,
   planRetryAfterProvedFailure,
 } from '../../domain/publishing/outbox-lifecycle';
@@ -805,6 +812,175 @@ export function createPublicationScheduler(deps: {
       pool.add(entry.layout);
     }
     return pool;
+  }
+
+  /**
+   * ADR-0079 §3.3/§3.5 — the due scan's story-source map, computed ONCE
+   * per scan from the loaded due rows (one bounded query over their story
+   * ids, mirroring `duePoolLayouts`): each story's PRIMARY reference
+   * source item (first by id — the story's anchor source, the same item
+   * the bridge reads) with its source's trust priority, its publication
+   * instant, and its negative-cache identity. The map feeds three
+   * rules: the send-time freshness gate (published_at), the P1
+   * source-priority tiebreak, and the fairness slot (provider). A story
+   * with no reference items is ABSENT from the map — the freshness gate
+   * skips it (no evidence to judge) and the ordering treats it as
+   * lowest priority. A failure throws — the scan fails closed with zero
+   * sends, like an unreadable published history.
+   */
+  interface DueStorySource {
+    readonly sourceId: string;
+    readonly sourcePriority: number;
+    readonly publishedAtMs: number | null;
+    readonly sourceItemId: string;
+    readonly contentHash: string;
+  }
+
+  async function resolveDueStorySources(
+    rows: readonly PublicationRow[],
+  ): Promise<ReadonlyMap<string, DueStorySource>> {
+    const storyIds = [...new Set(rows.map((row) => row.story_id))];
+    if (storyIds.length === 0) return new Map<string, DueStorySource>();
+    const placeholders = storyIds.map(() => '?').join(',');
+    const found = await deps.executor.query<{
+      story_id: string;
+      source_id: string;
+      source_priority: number;
+      published_at_ms: number | null;
+      source_item_id: string;
+      content_hash: string;
+    }>({
+      sql: `SELECT c.story_id AS story_id, si.source_id AS source_id,
+                   s.priority AS source_priority, si.published_at AS published_at_ms,
+                   si.id AS source_item_id, si.content_hash AS content_hash
+              FROM claims c
+              JOIN evidence e ON e.claim_id = c.id
+              JOIN source_items si ON si.id = e.source_item_id
+              JOIN sources s ON s.id = si.source_id
+             WHERE c.story_id IN (${placeholders}) AND c.claim_type = 'source_report'
+             ORDER BY c.story_id ASC, si.id ASC`,
+      params: storyIds,
+    });
+    const map = new Map<string, DueStorySource>();
+    for (const entry of found.rows) {
+      if (map.has(entry.story_id)) continue;
+      map.set(entry.story_id, {
+        sourceId: entry.source_id,
+        sourcePriority: entry.source_priority,
+        publishedAtMs: entry.published_at_ms,
+        sourceItemId: entry.source_item_id,
+        contentHash: entry.content_hash,
+      });
+    }
+    return map;
+  }
+
+  /**
+   * ADR-0079 §3.5c — the P1 source-priority tiebreak. The store's
+   * ORDER BY (priority DESC, run_after ASC) still governs which rows
+   * enter the scan window; WITHIN the window, two P1 rows on the same
+   * priority score order by their source's trust priority (PS Blog 80
+   * above editorial 60), then run_after ASC. The tiebreak applies ONLY
+   * within P1: the send priority class encodes WHEN a post may send,
+   * and copying source priority into other classes' order would demote
+   * them by trust instead of by class. A row with no mapped source
+   * sorts as the lowest priority (-1). Pure — the window property is
+   * documented: a row outside the scan window is reached on a later
+   * tick, never reordered into this one.
+   */
+  function orderDueRowsForTick(
+    rows: readonly PublicationRow[],
+    sources: ReadonlyMap<string, DueStorySource>,
+  ): PublicationRow[] {
+    return [...rows].sort((a, b) => {
+      if (a.priority !== b.priority) return b.priority - a.priority;
+      const aClass = classifyPriority(a.priority);
+      const bClass = classifyPriority(b.priority);
+      if (aClass.ok && bClass.ok && aClass.value.class === 'P1' && bClass.value.class === 'P1') {
+        const aSource = sources.get(a.story_id)?.sourcePriority ?? -1;
+        const bSource = sources.get(b.story_id)?.sourcePriority ?? -1;
+        if (aSource !== bSource) return bSource - aSource;
+      }
+      if (a.run_after !== b.run_after) return a.run_after - b.run_after;
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    });
+  }
+
+  /**
+   * ADR-0079 §3.5a — the fairness slot (cap 1/tick). After the
+   * priority-ordered selection, at least one slot goes to the
+   * highest-priority due row from a DIFFERENT provider than the rows
+   * already selected. The tick sends at most one row in the steady state
+   * (the gap floor defers the rest once the first sends), so the slot
+   * PROMOTES that row to the front of the processing order: it takes
+   * the tick's send and the displaced rows defer on the gap. The
+   * promoted provider's due set drains one row per send-tick, so the
+   * inversion is bounded by that queue's depth — and a P0 first row is
+   * never displaced (breaking news keeps its slot).
+   *
+   * PRECEDENCE (§3.5a vs §3.5c — the two rules would otherwise fight):
+   * the slot rescues a LOWER-class row only. When the best
+   * different-provider row is the SAME class as the first row, the
+   * tiebreak already orders it fairly (by source priority) and it
+   * rotates in on a later tick by the gap — it cannot starve, so no
+   * promotion fires and the tiebreak's order stands. Only a row the
+   * priority order would starve behind a higher class (the §4 case: a
+   * P2 from provider B behind nine P1s from provider A) is promoted.
+   * Without this scoping the slot would defeat the tiebreak wherever
+   * the top two rows differ in provider — the tiebreak would never
+   * change an outcome.
+   */
+  function applyFairnessSlot(
+    rows: readonly PublicationRow[],
+    sources: ReadonlyMap<string, DueStorySource>,
+  ): PublicationRow[] {
+    if (rows.length < 2) return [...rows];
+    const first = rows[0]!;
+    const firstClass = classifyPriority(first.priority);
+    if (!firstClass.ok || firstClass.value.class === 'P0') return [...rows];
+    const firstProvider = sources.get(first.story_id)?.sourceId;
+    if (firstProvider === undefined) return [...rows];
+    const classRank = (priorityClass: string): number => {
+      if (priorityClass === 'P0') return 0;
+      if (priorityClass === 'P1') return 1;
+      if (priorityClass === 'P2') return 2;
+      return 3;
+    };
+    const firstRank = classRank(firstClass.value.class);
+    const candidateIndex = rows.findIndex((row, index) => {
+      if (index === 0) return false;
+      const provider = sources.get(row.story_id)?.sourceId;
+      if (provider === undefined || provider === firstProvider) return false;
+      // The rescue fires only for a LOWER class (see the precedence
+      // note above); a same-class row rotates in by the tiebreak.
+      const candidateClass = classifyPriority(row.priority);
+      return candidateClass.ok && classRank(candidateClass.value.class) > firstRank;
+    });
+    if (candidateIndex === -1) return [...rows];
+    const candidate = rows[candidateIndex]!;
+    return [candidate, ...rows.slice(0, candidateIndex), ...rows.slice(candidateIndex + 1)];
+  }
+
+  /**
+   * ADR-0079 §3.6c — record one successful channel publication in
+   * today's Tehran bucket (the cap's counter). Best-effort and AFTER
+   * the delivery proof: a counter failure is logged and never un-sends
+   * the post. P0 increments ONLY the bypass counter (never the cap).
+   * Deliberately NOT called on the evidence-heal path: a healed row was
+   * sent by a crashed generation, and the heal cannot tell whether that
+   * generation already counted it — counting there could double-count
+   * one post, while missing it under-counts a rare crash by one.
+   */
+  async function recordPublicationCounted(row: PublicationRow, nowMs: number): Promise<void> {
+    try {
+      const classified = classifyPriority(row.priority);
+      await recordPublication(deps.executor, {
+        isP0: classified.ok && classified.value.class === 'P0',
+        nowMs,
+      });
+    } catch {
+      deps.logger.warn('publication.scheduler.publication_count_failed');
+    }
   }
 
   async function buildPolicyDecision(
@@ -1573,6 +1749,10 @@ export function createPublicationScheduler(deps: {
       nowMs,
     });
     if (terminal.kind === 'written') {
+      // ADR-0079 §3.6c — the delivery proof lands here: count the
+      // publication in today's Tehran bucket (the daily cap's counter).
+      // Best-effort, like the pin below.
+      await recordPublicationCounted(row, nowMs);
       // Slice 6 — a terminally-sent P0 album pins its FIRST message
       // (toggle-gated, best-effort: never fails the publication).
       const firstMessage = sentMessages[0];
@@ -1994,6 +2174,10 @@ export function createPublicationScheduler(deps: {
           messageId: sent.messageId,
           nowMs,
         });
+        // ADR-0079 §3.6c — the delivery proof lands here: count the
+        // publication in today's Tehran bucket (the daily cap's
+        // counter). Best-effort, like the photo ledger above.
+        await recordPublicationCounted(row, nowMs);
       }
       return terminal.kind === 'written'
         ? { publicationId: row.id, draftId: row.draft_id, outcome: 'sent' }
@@ -2341,6 +2525,10 @@ export function createPublicationScheduler(deps: {
       nowMs,
     });
     if (terminal.kind === 'written') {
+      // ADR-0079 §3.6c — the delivery proof lands here: count the
+      // publication in today's Tehran bucket (the daily cap's counter).
+      // Best-effort, like the pin below.
+      await recordPublicationCounted(row, nowMs);
       // Slice 6 — a terminally-sent P0 album pins its FIRST message
       // (toggle-gated, best-effort: never fails the publication).
       const firstMessage = sentMessages[0];
@@ -2478,9 +2666,15 @@ export function createPublicationScheduler(deps: {
         const poolCategories = await duePoolCategories(due);
         // ADR-0078 — the due scan's layout pool (one query for the loop).
         const poolLayouts = await duePoolLayouts(due);
+        // ADR-0079 §3.3/§3.5 — the due scan's story-source map (one query
+        // for the loop) + the P1 source-priority tiebreak order. The
+        // fairness slot does NOT apply here: nothing is selected for
+        // sending in decision-only mode, so there is no slot to fill.
+        const storySources = await resolveDueStorySources(due);
+        const orderedDue = orderDueRowsForTick(due, storySources);
         const dueCount = await countDuePublications(deps.executor, { nowMs });
         const details: ScanDetail[] = [];
-        for (const row of due) {
+        for (const row of orderedDue) {
           const draft = await deps.executor.first<DraftRead>({
             sql: `SELECT id, status, layout, document_json FROM drafts WHERE id = ?`,
             params: [row.draft_id],
@@ -2493,6 +2687,27 @@ export function createPublicationScheduler(deps: {
               code: 'draft_not_found',
             });
             continue;
+          }
+          // ADR-0079 §3.3 — the send-time freshness gate, REPORTED here
+          // (zero writes in decision-only mode): a stale due row is
+          // named `stale` in the scan report instead of being decided.
+          const storySource = storySources.get(row.story_id);
+          if (storySource !== undefined) {
+            const freshness = isDraftStale({
+              sourcePublishedAtMs: storySource.publishedAtMs,
+              claimDatePhrases: readDraftClaimDatePhrases(draft.document_json),
+              nowMs,
+              maxAgeMs: FRESHNESS_MAX_AGE_MS,
+            });
+            if (freshness.stale) {
+              details.push({
+                publicationId: row.id,
+                draftId: row.draft_id,
+                outcome: 'decision_only',
+                code: 'stale',
+              });
+              continue;
+            }
           }
           const decision = await buildPolicyDecision(
             row,
@@ -2553,8 +2768,15 @@ export function createPublicationScheduler(deps: {
       const poolCategories = await duePoolCategories(due);
       // ADR-0078 — the due scan's layout pool (one query for the loop).
       const poolLayouts = await duePoolLayouts(due);
+      // ADR-0079 §3.3/§3.5 — the due scan's story-source map (one query
+      // for the loop), the P1 source-priority tiebreak order, and the
+      // fairness slot (cap 1/tick): the tick's processing order is the
+      // priority order with the best different-provider row promoted to
+      // the front.
+      const storySources = await resolveDueStorySources(due);
+      const tickOrder = applyFairnessSlot(orderDueRowsForTick(due, storySources), storySources);
       const details: ScanDetail[] = [];
-      for (const row of due) {
+      for (const row of tickOrder) {
         const claim = await claimPublicationSafe(row, nowMs);
         if (claim.kind === 'dead_lettered') {
           details.push({
@@ -2615,6 +2837,59 @@ export function createPublicationScheduler(deps: {
               : { publicationId: row.id, draftId: row.draft_id, outcome: 'fence_rejected' },
           );
           continue;
+        }
+        // ADR-0079 §3.3 — the send-time freshness gate, for rows ALREADY
+        // enqueued: a stale row goes `dead_letter` with the stale reason
+        // code (the existing terminal path, no new status) + a
+        // quality_rejections row for the draft. The dead-letter writes
+        // FIRST (the terminal disposition); the rejection row is
+        // best-effort after it — a rejection-write failure is logged and
+        // never resurrects the row. A story with no mapped source skips
+        // the check (no evidence to judge).
+        const storySource = storySources.get(row.story_id);
+        if (storySource !== undefined) {
+          const freshness = isDraftStale({
+            sourcePublishedAtMs: storySource.publishedAtMs,
+            claimDatePhrases: readDraftClaimDatePhrases(draft.document_json),
+            nowMs,
+            maxAgeMs: FRESHNESS_MAX_AGE_MS,
+          });
+          if (freshness.stale) {
+            const written = await markClaimedDeadLetter(deps.executor, {
+              publicationId: row.id,
+              generation,
+              errorCode: 'stale',
+              nowMs,
+            });
+            if (written.kind === 'written') {
+              try {
+                await recordQualityRejection(deps.executor, {
+                  id: `qr:stale:${row.draft_id}`,
+                  fingerprint: `stale:${storySource.contentHash}`,
+                  reason: freshness.reason,
+                  sourceItemId: storySource.sourceItemId,
+                  nowMs,
+                });
+              } catch {
+                deps.logger.warn('publication.scheduler.stale_rejection_unrecorded', {
+                  publicationId: row.id,
+                });
+              }
+              details.push({
+                publicationId: row.id,
+                draftId: row.draft_id,
+                outcome: 'dead_lettered',
+                code: 'stale',
+              });
+            } else {
+              details.push({
+                publicationId: row.id,
+                draftId: row.draft_id,
+                outcome: 'fence_rejected',
+              });
+            }
+            continue;
+          }
         }
         const decision = await buildPolicyDecision(row, draft, nowMs, poolCategories, poolLayouts);
         if (!decision.ok) {

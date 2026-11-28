@@ -9,11 +9,11 @@
  *   P0 (90–100): publish after verification, NO daily cap, bypasses
  *                quiet hours (the ONLY class the blueprint grants
  *                that bypass). Window policy: anytime.
- *   P1 (75–89):  within 5–20 minutes (the latency bound). Window
- *                policy: latency_bound.
+ *   P1 (75–89):  within 30–90 minutes (the latency bound, ADR-0079
+ *                §3.6 — was 5–20). Window policy: latency_bound.
  *                DOCUMENTED PIN: the blueprint's quiet label names
  *                «P2/P3» only, and a quiet deferral would break the
- *                5–20 minute contract — so P1 is NOT quiet-gated.
+ *                30–90 minute contract — so P1 is NOT quiet-gated.
  *                This is the literal blueprint text, pinned and
  *                tested, recorded in the ADR.
  *   P2 (40–74):  dynamic window (the scheduling windows apply — the
