@@ -661,6 +661,10 @@ describe('publishing-82 scheduler: the policy defers and the scan order', () => 
   it('a non-time-resolvable layout-cap block releases with attempts RESTORED and a pinned re-evaluation interval', async () => {
     // Seed three published posts of the SAME layout as the candidate: the
     // trailing-run cap (<=3) blocks the fourth — a NON-time-resolvable defer.
+    // ADR-0078: the due set ALSO holds a 'hero' draft, so the layout pool
+    // has an alternative and the cap still blocks the fourth 'standard'
+    // row — a single-layout due set would now ADMIT it (see the
+    // ADR-0078 live-shape test below).
     const base = clock.now();
     await insertStory('ssame');
     for (let index = 0; index < 3; index += 1) {
@@ -692,6 +696,83 @@ describe('publishing-82 scheduler: the policy defers and the scan order', () => 
       approvalMode: 'safe_auto',
       nowMs: clock.now(),
     });
+    await insertStory('s13');
+    await insertDraft('d13', 's13', { layout: 'hero' });
+    await enqueuePublication(executor, {
+      publicationId: 'pub-cap-hero',
+      draftId: 'd13',
+      destination: DESTINATION,
+      priorityScore: 62,
+      approvalMode: 'safe_auto',
+      nowMs: clock.now(),
+    });
+    let sendCalls = 0;
+    const transport = makeTransport(() => {
+      sendCalls += 1;
+      return 5;
+    });
+    const scheduler = buildScheduler(transport, true);
+    const report = await scheduler.scanDuePublications();
+    expect(report.details).toHaveLength(2);
+    const cappedDetail = report.details.find((detail) => detail.publicationId === 'pub-cap');
+    expect(cappedDetail).toMatchObject({
+      publicationId: 'pub-cap',
+      outcome: 'deferred_policy',
+    });
+    // The 'hero' row has no trailing run, so it passes the cap — but its
+    // P2 due is still in the future (previous send 1 minute ago + the
+    // 25–45 minute gap), so it defers on time, not on policy.
+    const heroDetail = report.details.find((detail) => detail.publicationId === 'pub-cap-hero');
+    expect(heroDetail).toMatchObject({
+      publicationId: 'pub-cap-hero',
+      outcome: 'deferred_time',
+    });
+    expect(sendCalls).toBe(0);
+    const row = await findPublicationById(executor, 'pub-cap');
+    expect(row?.status).toBe('pending');
+    expect(row?.attempts).toBe(0);
+    expect(row?.scheduled_at).toBeNull();
+    expect(row?.run_after).toBe(clock.now() + 10 * 60_000);
+  });
+
+  it('ADR-0078 — a single-layout due pool SENDS despite a 3-post news_v1 trail (both bypasses working)', async () => {
+    // The exact Nov-28 live shape: the last 3 published posts are all
+    // layout news_v1 (trailing run 3) and the whole due set is news_v1.
+    // The layout cap AND the category cap (3 mainstream in the rolling
+    // six) would each block alone; both single-pool bypasses admit.
+    // The trail is seeded 120+ minutes back so the send-gap floor
+    // (previous send + 25–45 min) is already in the past.
+    const base = clock.now();
+    await insertStory('ssame');
+    for (let index = 0; index < 3; index += 1) {
+      await insertDraft(`sd-${index}`, 'ssame', { layout: 'news_v1' });
+      await executor.run({
+        sql: `INSERT INTO publications (id, story_id, draft_id, status, priority, approval_mode,
+                scheduled_at, run_after, published_at, attempts, max_attempts, idempotency_key,
+                created_at, updated_at)
+              VALUES (?, 'ssame', ?, 'published', 62, 'auto', ?, ?, ?, 1, 3, ?, ?, ?)`,
+        params: [
+          `seed-${index}`,
+          `sd-${index}`,
+          base - (120 + index) * 60_000,
+          base - (120 + index) * 60_000,
+          base - (120 + index) * 60_000,
+          `seeded-${index}`,
+          base - (120 + index) * 60_000 - 1_000,
+          base - (120 + index) * 60_000,
+        ],
+      });
+    }
+    await insertStory('s12');
+    await insertDraft('d12', 's12', { layout: 'news_v1' });
+    await enqueuePublication(executor, {
+      publicationId: 'pub-cap-pool',
+      draftId: 'd12',
+      destination: DESTINATION,
+      priorityScore: 62,
+      approvalMode: 'safe_auto',
+      nowMs: clock.now(),
+    });
     let sendCalls = 0;
     const transport = makeTransport(() => {
       sendCalls += 1;
@@ -700,15 +781,75 @@ describe('publishing-82 scheduler: the policy defers and the scan order', () => 
     const scheduler = buildScheduler(transport, true);
     const report = await scheduler.scanDuePublications();
     expect(report.details[0]).toMatchObject({
-      publicationId: 'pub-cap',
-      outcome: 'deferred_policy',
+      publicationId: 'pub-cap-pool',
+      outcome: 'sent',
     });
-    expect(sendCalls).toBe(0);
-    const row = await findPublicationById(executor, 'pub-cap');
-    expect(row?.status).toBe('pending');
-    expect(row?.attempts).toBe(0);
-    expect(row?.scheduled_at).toBeNull();
-    expect(row?.run_after).toBe(clock.now() + 10 * 60_000);
+    expect(sendCalls).toBe(1);
+    const row = await findPublicationById(executor, 'pub-cap-pool');
+    expect(row?.status).toBe('published');
+    expect(row?.published_at).toBe(clock.now());
+    const messages = await listPublicationMessages(executor, 'pub-cap-pool');
+    expect(messages).toHaveLength(1);
+  });
+
+  it('ADR-0078 — a mixed-layout due pool still defers the fourth consecutive same-layout row', async () => {
+    // Same 3-post news_v1 trail, but the due set ALSO holds a 'hero'
+    // draft: the pool has an alternative, so the news_v1 row defers
+    // while the hero row schedules. Decision-only: zero sends, zero
+    // writes — the decisions are read off the same pre-scan trail, so
+    // the scan order cannot change the outcome.
+    const base = clock.now();
+    await insertStory('ssame');
+    for (let index = 0; index < 3; index += 1) {
+      await insertDraft(`sd-${index}`, 'ssame', { layout: 'news_v1' });
+      await executor.run({
+        sql: `INSERT INTO publications (id, story_id, draft_id, status, priority, approval_mode,
+                scheduled_at, run_after, published_at, attempts, max_attempts, idempotency_key,
+                created_at, updated_at)
+              VALUES (?, 'ssame', ?, 'published', 62, 'auto', ?, ?, ?, 1, 3, ?, ?, ?)`,
+        params: [
+          `seed-${index}`,
+          `sd-${index}`,
+          base - (120 + index) * 60_000,
+          base - (120 + index) * 60_000,
+          base - (120 + index) * 60_000,
+          `seeded-${index}`,
+          base - (120 + index) * 60_000 - 1_000,
+          base - (120 + index) * 60_000,
+        ],
+      });
+    }
+    await insertStory('s12');
+    await insertDraft('d12', 's12', { layout: 'news_v1' });
+    await enqueuePublication(executor, {
+      publicationId: 'pub-mixed-std',
+      draftId: 'd12',
+      destination: DESTINATION,
+      priorityScore: 62,
+      approvalMode: 'safe_auto',
+      nowMs: clock.now(),
+    });
+    await insertStory('s13');
+    await insertDraft('d13', 's13', { layout: 'hero' });
+    await enqueuePublication(executor, {
+      publicationId: 'pub-mixed-hero',
+      draftId: 'd13',
+      destination: DESTINATION,
+      priorityScore: 62,
+      approvalMode: 'safe_auto',
+      nowMs: clock.now(),
+    });
+    const transport = makeTransport(() => 6);
+    const scheduler = buildScheduler(transport, false);
+    const report = await scheduler.scanDuePublications();
+    expect(report.decisionOnly).toBe(true);
+    expect(report.details).toHaveLength(2);
+    const stdDetail = report.details.find((detail) => detail.publicationId === 'pub-mixed-std');
+    const heroDetail = report.details.find((detail) => detail.publicationId === 'pub-mixed-hero');
+    expect(stdDetail?.outcome).toBe('decision_only');
+    expect(stdDetail?.dueAtMs).toBeUndefined(); // deferred on layout_run_cap
+    expect(heroDetail?.outcome).toBe('decision_only');
+    expect(heroDetail?.dueAtMs).toBe(clock.now()); // schedules
   });
 
   it('a quiet-hours P2 defers to the EXACT next active window start (time-resolvable)', async () => {

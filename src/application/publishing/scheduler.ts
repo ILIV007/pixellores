@@ -785,11 +785,34 @@ export function createPublicationScheduler(deps: {
     return pool;
   }
 
+  /**
+   * ADR-0078 — the due scan's layout pool, computed ONCE per scan from
+   * the loaded due rows (one bounded DISTINCT query over their draft
+   * ids): the layout run cap can only protect variety when the pool
+   * holds another layout. A failure throws — the scan fails closed
+   * with zero sends, like an unreadable published history.
+   */
+  async function duePoolLayouts(rows: readonly PublicationRow[]): Promise<ReadonlySet<string>> {
+    const draftIds = [...new Set(rows.map((row) => row.draft_id))];
+    if (draftIds.length === 0) return new Set<string>();
+    const placeholders = draftIds.map(() => '?').join(',');
+    const found = await deps.executor.query<{ layout: string }>({
+      sql: `SELECT DISTINCT layout FROM drafts WHERE id IN (${placeholders})`,
+      params: draftIds,
+    });
+    const pool = new Set<string>();
+    for (const entry of found.rows) {
+      pool.add(entry.layout);
+    }
+    return pool;
+  }
+
   async function buildPolicyDecision(
     row: PublicationRow,
     draft: DraftRead,
     nowMs: number,
     poolCategories: ReadonlySet<MixCategory>,
+    poolLayouts: ReadonlySet<string>,
   ): Promise<
     | {
         readonly ok: true;
@@ -878,6 +901,11 @@ export function createPublicationScheduler(deps: {
       // contains a mix category OTHER than the row's own.
       alternativeCategoryAvailable: [...poolCategories].some(
         (poolCategory) => poolCategory !== mapped.category,
+      ),
+      // ADR-0078 — the pool holds an alternative for this row iff it
+      // contains a layout OTHER than the row's own.
+      alternativeLayoutAvailable: [...poolLayouts].some(
+        (poolLayout) => poolLayout !== draft.layout,
       ),
     });
     return { ok: true, decision, priorityClass: jitter.priorityClass };
@@ -2448,6 +2476,8 @@ export function createPublicationScheduler(deps: {
         const due = await listDuePublications(deps.executor, { nowMs, limit: scanLimit });
         // ADR-0076 — the due scan's mix pool (one query for the loop).
         const poolCategories = await duePoolCategories(due);
+        // ADR-0078 — the due scan's layout pool (one query for the loop).
+        const poolLayouts = await duePoolLayouts(due);
         const dueCount = await countDuePublications(deps.executor, { nowMs });
         const details: ScanDetail[] = [];
         for (const row of due) {
@@ -2464,7 +2494,13 @@ export function createPublicationScheduler(deps: {
             });
             continue;
           }
-          const decision = await buildPolicyDecision(row, draft, nowMs, poolCategories);
+          const decision = await buildPolicyDecision(
+            row,
+            draft,
+            nowMs,
+            poolCategories,
+            poolLayouts,
+          );
           if (!decision.ok) {
             details.push({
               publicationId: row.id,
@@ -2515,6 +2551,8 @@ export function createPublicationScheduler(deps: {
       const due = await listDuePublications(deps.executor, { nowMs, limit: scanLimit });
       // ADR-0076 — the due scan's mix pool (one query for the loop).
       const poolCategories = await duePoolCategories(due);
+      // ADR-0078 — the due scan's layout pool (one query for the loop).
+      const poolLayouts = await duePoolLayouts(due);
       const details: ScanDetail[] = [];
       for (const row of due) {
         const claim = await claimPublicationSafe(row, nowMs);
@@ -2578,7 +2616,7 @@ export function createPublicationScheduler(deps: {
           );
           continue;
         }
-        const decision = await buildPolicyDecision(row, draft, nowMs, poolCategories);
+        const decision = await buildPolicyDecision(row, draft, nowMs, poolCategories, poolLayouts);
         if (!decision.ok) {
           const written = await markClaimedDeadLetter(deps.executor, {
             publicationId: row.id,

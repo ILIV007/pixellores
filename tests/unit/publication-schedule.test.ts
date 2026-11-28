@@ -72,6 +72,7 @@ function baseInput(
     sameGame: null,
     eventDriven: false,
     alternativeCategoryAvailable: true,
+    alternativeLayoutAvailable: true,
     ...overrides,
   };
 }
@@ -527,6 +528,49 @@ describe('the non-time-resolvable caps defer with dueAtMs NULL', () => {
       rollingCount: 2,
       result: 'bypassed_single_category_pool',
     });
+  });
+
+  it('ADR-0078 — a single-layout pool schedules despite the run cap (bypassed_single_layout_pool)', () => {
+    const allowed = schedule(
+      planPublicationTime(
+        baseInput({
+          candidateLayout: 'news_v1',
+          recentLayouts: ['news_v1', 'news_v1', 'news_v1'],
+          alternativeLayoutAvailable: false,
+        }),
+      ),
+    );
+    expect(allowed.dueAtMs).toBe(baseInput().nowMs);
+    expect(allowed.appliedRules).toContainEqual({
+      rule: 'layout_run_cap',
+      trailingRun: 3,
+      result: 'bypassed_single_layout_pool',
+    });
+  });
+
+  it('ADR-0078 — the same trailing run of 3 still defers when another layout exists', () => {
+    const decision = defer(
+      planPublicationTime(
+        baseInput({
+          candidateLayout: 'news_v1',
+          recentLayouts: ['news_v1', 'news_v1', 'news_v1'],
+          alternativeLayoutAvailable: true,
+        }),
+      ),
+    );
+    expect(decision.reason).toBe('layout_run_cap');
+    expect(decision.dueAtMs).toBeNull();
+    expect(decision.appliedRules).toContainEqual({
+      rule: 'layout_run_cap',
+      trailingRun: 3,
+      result: 'blocked',
+    });
+  });
+
+  it('ADR-0078 — input contract: a non-boolean alternativeLayoutAvailable fails invalid_input', () => {
+    expect(
+      planPublicationTime(baseInput({ alternativeLayoutAvailable: 'yes' as unknown as boolean })),
+    ).toEqual({ ok: false, reason: 'invalid_input' });
   });
 
   it('the documented precedence: layout beats category beats mix', () => {

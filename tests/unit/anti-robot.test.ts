@@ -311,35 +311,99 @@ describe('enforceLayoutRunCap — at most three consecutive', () => {
       [['A', 'A', 'A'], false, 3],
     ];
     for (const [recentLayouts, allowed, trailingRun] of cases) {
-      const result = enforceLayoutRunCap({ layout: 'A', recentLayouts });
+      const result = enforceLayoutRunCap({
+        layout: 'A',
+        recentLayouts,
+        alternativeLayoutAvailable: true,
+      });
       if (!result.ok) throw new Error(result.reason);
       expect(result.value).toEqual({ allowed, trailingRun });
     }
   });
 
   it('the trailing run counts from the END: A,A,A,B then candidate A is allowed (run 0)', () => {
-    const result = enforceLayoutRunCap({ layout: 'A', recentLayouts: ['A', 'A', 'A', 'B'] });
+    const result = enforceLayoutRunCap({
+      layout: 'A',
+      recentLayouts: ['A', 'A', 'A', 'B'],
+      alternativeLayoutAvailable: true,
+    });
     if (!result.ok) throw new Error(result.reason);
     expect(result.value).toEqual({ allowed: true, trailingRun: 0 });
   });
 
   it('an alternating history never accumulates a run (A,B,A,B,A ⇒ run 1)', () => {
-    const result = enforceLayoutRunCap({ layout: 'A', recentLayouts: ['A', 'B', 'A', 'B', 'A'] });
+    const result = enforceLayoutRunCap({
+      layout: 'A',
+      recentLayouts: ['A', 'B', 'A', 'B', 'A'],
+      alternativeLayoutAvailable: true,
+    });
     if (!result.ok) throw new Error(result.reason);
     expect(result.value).toEqual({ allowed: true, trailingRun: 1 });
   });
 
   it('input contract: an empty/oversized layout label or an over-64-entry history fails typed', () => {
-    expect(enforceLayoutRunCap({ layout: '', recentLayouts: [] })).toEqual({
-      ok: false,
-      reason: 'invalid_input',
-    });
-    expect(enforceLayoutRunCap({ layout: 'x'.repeat(65), recentLayouts: [] })).toEqual({
+    expect(
+      enforceLayoutRunCap({ layout: '', recentLayouts: [], alternativeLayoutAvailable: true }),
+    ).toEqual({
       ok: false,
       reason: 'invalid_input',
     });
     expect(
-      enforceLayoutRunCap({ layout: 'A', recentLayouts: Array.from({ length: 65 }, () => 'B') }),
+      enforceLayoutRunCap({
+        layout: 'x'.repeat(65),
+        recentLayouts: [],
+        alternativeLayoutAvailable: true,
+      }),
+    ).toEqual({
+      ok: false,
+      reason: 'invalid_input',
+    });
+    expect(
+      enforceLayoutRunCap({
+        layout: 'A',
+        recentLayouts: Array.from({ length: 65 }, () => 'B'),
+        alternativeLayoutAvailable: true,
+      }),
+    ).toEqual({ ok: false, reason: 'invalid_input' });
+  });
+
+  it('ADR-0078 — a single-layout pool admits a trailing run of 3 (no variety to protect)', () => {
+    const result = enforceLayoutRunCap({
+      layout: 'news_v1',
+      recentLayouts: ['news_v1', 'news_v1', 'news_v1'],
+      alternativeLayoutAvailable: false,
+    });
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.value).toEqual({ allowed: true, trailingRun: 3 });
+  });
+
+  it('ADR-0078 — the same trailing run of 3 still blocks when another layout exists', () => {
+    const result = enforceLayoutRunCap({
+      layout: 'news_v1',
+      recentLayouts: ['news_v1', 'news_v1', 'news_v1'],
+      alternativeLayoutAvailable: true,
+    });
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.value).toEqual({ allowed: false, trailingRun: 3 });
+  });
+
+  it('ADR-0078 — the bypass is pool-based, not run-length-based: a run of 4 with no alternative is admitted', () => {
+    const result = enforceLayoutRunCap({
+      layout: 'news_v1',
+      recentLayouts: ['news_v1', 'news_v1', 'news_v1', 'news_v1'],
+      alternativeLayoutAvailable: false,
+    });
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.value).toEqual({ allowed: true, trailingRun: 4 });
+  });
+
+  it('ADR-0078 — input contract: a non-boolean alternativeLayoutAvailable fails invalid_input', () => {
+    expect(
+      enforceLayoutRunCap({
+        layout: 'A',
+        recentLayouts: [],
+        alternativeLayoutAvailable: 'yes' as unknown as boolean,
+      }),
     ).toEqual({ ok: false, reason: 'invalid_input' });
   });
 });
@@ -632,8 +696,16 @@ describe('determinism', () => {
     });
     expect(JSON.stringify(cdA)).toBe(JSON.stringify(cdB));
 
-    const lrA = enforceLayoutRunCap({ layout: 'A', recentLayouts: ['A', 'A'] });
-    const lrB = enforceLayoutRunCap({ layout: 'A', recentLayouts: ['A', 'A'] });
+    const lrA = enforceLayoutRunCap({
+      layout: 'A',
+      recentLayouts: ['A', 'A'],
+      alternativeLayoutAvailable: true,
+    });
+    const lrB = enforceLayoutRunCap({
+      layout: 'A',
+      recentLayouts: ['A', 'A'],
+      alternativeLayoutAvailable: true,
+    });
     expect(JSON.stringify(lrA)).toBe(JSON.stringify(lrB));
 
     const mixA = assessWeeklyMix({ nowMs: NOW, recent: [{ category: 'mods', atMs: NOW }] });
