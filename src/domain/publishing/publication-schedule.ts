@@ -13,6 +13,9 @@
  * most restrictive outcome wins):
  *   1. layout run cap — NOT time-resolvable ⇒ a block is a typed
  *      DEFER with dueAtMs NULL (the caller must change the input);
+ *      ADR-0078: a single-layout pool is admitted (applied rule
+ *      `bypassed_single_layout_pool`) — the cap cannot shape a
+ *      variety that does not exist;
  *   2. category share cap — NOT time-resolvable by waiting alone ⇒
  *      a block is a typed DEFER unless eventDriven (bypass record);
  *   3. mix gate — enforcement ONLY on P3 filler discretion
@@ -44,6 +47,7 @@
 
 import {
   ANTI_ROBOT_POLICY_VERSION,
+  MAX_CONSECUTIVE_SAME_LAYOUT,
   P1_GAP_MIN_MS,
   assessWeeklyMix,
   enforceCategoryShare,
@@ -134,6 +138,13 @@ export interface PublicationScheduleInputV1 {
    * and must not throttle the channel's only content.
    */
   readonly alternativeCategoryAvailable: boolean;
+  /**
+   * ADR-0078 — the EXPLICIT pool fact (see `LayoutRunInput`):
+   * false when the candidate pool holds no layout OTHER than the
+   * candidate's, so the layout run cap cannot shape a variety and
+   * must not throttle the channel's only layout.
+   */
+  readonly alternativeLayoutAvailable: boolean;
 }
 
 export type ScheduleWindowSummary = {
@@ -159,7 +170,7 @@ export type ScheduleAppliedRule =
   | {
       readonly rule: 'layout_run_cap';
       readonly trailingRun: number;
-      readonly result: 'within_cap' | 'blocked';
+      readonly result: 'within_cap' | 'bypassed_single_layout_pool' | 'blocked';
     }
   | {
       readonly rule: 'category_share_cap';
@@ -267,6 +278,9 @@ export function planPublicationTime(
   if (typeof input.alternativeCategoryAvailable !== 'boolean') {
     return { ok: false, reason: 'invalid_input' };
   }
+  if (typeof input.alternativeLayoutAvailable !== 'boolean') {
+    return { ok: false, reason: 'invalid_input' };
+  }
   if (typeof input.category !== 'string' || !isMixCategoryValue(input.category)) {
     return { ok: false, reason: 'unknown_category' };
   }
@@ -309,6 +323,7 @@ export function planPublicationTime(
   const layoutCheck = enforceLayoutRunCap({
     layout: input.candidateLayout,
     recentLayouts: input.recentLayouts,
+    alternativeLayoutAvailable: input.alternativeLayoutAvailable,
   });
   if (!layoutCheck.ok) return { ok: false, reason: 'invalid_input' };
   if (!layoutCheck.value.allowed) {
@@ -328,7 +343,11 @@ export function planPublicationTime(
   appliedRules.push({
     rule: 'layout_run_cap',
     trailingRun: layoutCheck.value.trailingRun,
-    result: 'within_cap',
+    result:
+      !input.alternativeLayoutAvailable &&
+      layoutCheck.value.trailingRun >= MAX_CONSECUTIVE_SAME_LAYOUT
+        ? 'bypassed_single_layout_pool'
+        : 'within_cap',
   });
 
   // --- 2. the category share cap (NOT time-resolvable by waiting) -------

@@ -23,7 +23,10 @@
  *   3. layout run cap — at most THREE consecutive posts with the same
  *      opaque layout label; the trailing run is counted from the END
  *      of the chronological history (oldest first — the order is
- *      pinned and tested).
+ *      pinned and tested). ADR-0078: the cap is a VARIETY rule — it
+ *      admits a candidate when the candidate pool holds no other
+ *      layout (explicit `alternativeLayoutAvailable`), because a
+ *      single-layout pool can never dilute its own trail.
  *   4. category share cap — a candidate category may not become more
  *      than 40% of the rolling six most recent posts unless the story
  *      layer marks the publication event-driven. EXACT integer math:
@@ -297,16 +300,35 @@ export interface LayoutRunInput {
   readonly layout: string;
   /** Chronological, OLDEST FIRST (pinned order), at most 64 entries. */
   readonly recentLayouts: readonly string[];
+  /**
+   * ADR-0078 — the EXPLICIT pool fact, never inferred: false when the
+   * candidate pool holds NO layout OTHER than the candidate's. The run
+   * cap is a VARIETY rule: it defers a fourth consecutive same-layout
+   * post so a different layout can take its place. When no alternative
+   * layout exists there is no variety to protect — deferring would only
+   * throttle the channel's only layout, and a single-layout pool stalls
+   * forever (the trail can never dilute without a publication, and no
+   * publication can ever happen: the Nov-28 live case — a 3-post
+   * `news_v1` trail plus an all-`news_v1` queue, every scan deferring
+   * every row). With the flag false the candidate is admitted whatever
+   * the trailing run.
+   */
+  readonly alternativeLayoutAvailable: boolean;
 }
 
 /**
  * At most three consecutive posts with the same opaque layout label.
  * The trailing run counts CONSECUTIVE equal labels from the END of
  * the chronological history; the candidate is allowed iff the run it
- * would extend is shorter than three (trailingRun < 3).
+ * would extend is shorter than three (trailingRun < 3) — or iff the
+ * candidate pool holds no other layout (ADR-0078: the cap cannot
+ * shape a variety that does not exist).
  */
 export function enforceLayoutRunCap(input: LayoutRunInput): LayoutRunResult {
   if (!input || typeof input !== 'object') return { ok: false, reason: 'invalid_input' };
+  if (typeof input.alternativeLayoutAvailable !== 'boolean') {
+    return { ok: false, reason: 'invalid_input' };
+  }
   if (!isValidOpaqueLabel(input.layout, MAX_OPAQUE_LABEL_LENGTH)) {
     return { ok: false, reason: 'invalid_input' };
   }
@@ -322,7 +344,13 @@ export function enforceLayoutRunCap(input: LayoutRunInput): LayoutRunResult {
     if (input.recentLayouts[index] !== input.layout) break;
     trailingRun++;
   }
-  return { ok: true, value: { allowed: trailingRun < MAX_CONSECUTIVE_SAME_LAYOUT, trailingRun } };
+  return {
+    ok: true,
+    value: {
+      allowed: trailingRun < MAX_CONSECUTIVE_SAME_LAYOUT || !input.alternativeLayoutAvailable,
+      trailingRun,
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
