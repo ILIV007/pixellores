@@ -91,6 +91,11 @@ export const JOB_ERROR_CODES = [
   'job_handler_permanent_error',
   'job_handler_timeout',
   'job_internal_error',
+  // ADR-0083 — budget parking: a handler-asked deferral past the next
+  // Tehran midnight (NOT backoff — decideRetry honors its floor past the
+  // 1h backoff cap ONLY for this code). Persisted in jobs.last_error so
+  // a parked job is diagnosable as parked, not merely retrying.
+  'job_budget_parked',
   // Phase 4 source ingestion (ADR-0038 §4) — stable, safe constants.
   'ingestion_source_missing',
   'ingestion_connector_unavailable',
@@ -134,13 +139,13 @@ export const JOB_ERROR_CODES = [
   'editorial_near_dup_merged',
   'editorial_near_dup_review',
   'editorial_negative_cache_skip',
-  // ai-policy-v2.2: the daily AI attempt budget is exhausted. Terminal
-  // for THIS job generation — the budget resets at Tehran midnight, so
-  // no same-day retry can succeed and retrying only churns the engine's
-  // attempt budget. A later re-enqueue after the reset decides again
-  // honestly. Distinct from the quality-gate codes: the item itself is
-  // NOT rejected, so the handler must NOT write it into the 30-day
-  // negative cache (see prepare-draft-handler).
+  // ai-policy-v2.2: the daily AI attempt budget is exhausted. Since
+  // ADR-0083 NOTHING produces this code anymore: a budget denial parks
+  // the job until after the next Tehran midnight (`job_budget_parked`)
+  // instead of dead-lettering. Kept in the registry because old rows
+  // still carry it in `jobs.last_error`. Distinct from the quality-gate
+  // codes: the item itself is NOT rejected, so the handler must NOT
+  // write it into the 30-day negative cache (see prepare-draft-handler).
   'editorial_budget_exhausted',
   // R1.15.1 (Posidon exact-content reuse correctness): the exact-content
   // GROUP anchor exists — one stable result for this full composed text is

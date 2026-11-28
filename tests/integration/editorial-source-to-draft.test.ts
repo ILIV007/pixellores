@@ -24,6 +24,7 @@ import {
 import { storyKeyForSnapshot } from '../../src/domain/editorial/identity';
 import { authorizeAiRequestAttempt, readAiBudget } from '../../src/adapters/db/ai-budget-store';
 import { findJobById, claimJob } from '../../src/adapters/db/job-store';
+import { msUntilNextTehranMidnight } from '../../src/shared/time/tehran-day';
 
 /**
  * Phase 5A integration suite (ADR-0042): the FIRST integrated local path
@@ -876,7 +877,7 @@ describe('scenario 6 — gates and typed failures stay offline', () => {
     expect(await readAiBudget(harness.rawExecutor, { provider: 'workers-ai', nowMs: NOW })).toBe(0);
   });
 
-  it('budget denied: TERMINAL editorial_budget_exhausted with zero provider calls and no new charge', async () => {
+  it('budget denied: PARKS until after the next Tehran midnight (ADR-0083) with zero provider calls and no new charge', async () => {
     const harness = createHarness();
     await seedSource(harness.rawExecutor);
     await seedItem(harness.rawExecutor, { id: 'item-6d', title: 'خبر شش‌د آزمایشی' });
@@ -894,19 +895,68 @@ describe('scenario 6 — gates and typed failures stay offline', () => {
       sourceItemId: 'item-6d',
     });
     const outcomes = await runPipeline(harness);
-    // ai-policy-v2.2: the daily budget resets at Tehran midnight, so no
-    // same-day retry can succeed — terminal dead_letter, not a retry.
-    expect(outcomes).toEqual(['ack:job_dead_lettered']);
+    // ADR-0083: the daily budget resets at Tehran midnight, so no
+    // same-day retry can succeed — the job PARKS past the reset instead
+    // of burning its 3 attempts in minutes and dead-lettering.
+    expect(outcomes).toEqual(['ack:retry_scheduled']);
     expect(harness.providerCalls).toHaveLength(0);
     expect(await readAiBudget(harness.rawExecutor, { provider: 'workers-ai', nowMs: NOW })).toBe(
       120,
     );
     expect(await rowCount(harness.rawExecutor, 'drafts')).toBe(0);
-    const job = await harness.rawExecutor.first<{ status: string; last_error: string }>({
-      sql: "SELECT status, last_error FROM jobs WHERE type = 'editorial.prepare_draft'",
+    const job = await harness.rawExecutor.first<{
+      status: string;
+      last_error: string;
+      attempts: number;
+      run_after: number;
+    }>({
+      sql: "SELECT status, last_error, attempts, run_after FROM jobs WHERE type = 'editorial.prepare_draft'",
     });
-    expect(job!.status).toBe('dead_letter');
-    expect(job!.last_error).toBe('editorial_budget_exhausted');
+    expect(job!.status).toBe('retry_wait');
+    expect(job!.last_error).toBe('job_budget_parked');
+    // One attempt consumed, two preserved for after the reset.
+    expect(job!.attempts).toBe(1);
+    expect(job!.run_after).toBe(NOW + msUntilNextTehranMidnight(NOW) + 5 * 60 * 1000);
+  });
+
+  it('budget pressure (reserve window): PARKS the same way (ADR-0083)', async () => {
+    const harness = createHarness();
+    await seedSource(harness.rawExecutor);
+    await seedItem(harness.rawExecutor, { id: 'item-6d2', title: 'خبر شش‌د۲ آزمایشی' });
+    // Fill the EFFECTIVE cap (120 − 6 reserve = 114) but not the hard
+    // cap: the authorization denies inside the reserve window, which
+    // classifies as the retryable `budget_pressure` deferral.
+    for (let i = 0; i < 114; i += 1) {
+      await authorizeAiRequestAttempt(harness.rawExecutor, {
+        provider: 'workers-ai',
+        cap: 120,
+        nowMs: NOW,
+      });
+    }
+    await enqueueEditorialPrepareDraft({
+      engine: harness.engine,
+      executor: harness.rawExecutor,
+      sourceItemId: 'item-6d2',
+    });
+    const outcomes = await runPipeline(harness);
+    expect(outcomes).toEqual(['ack:retry_scheduled']);
+    expect(harness.providerCalls).toHaveLength(0);
+    expect(await readAiBudget(harness.rawExecutor, { provider: 'workers-ai', nowMs: NOW })).toBe(
+      114,
+    );
+    expect(await rowCount(harness.rawExecutor, 'drafts')).toBe(0);
+    const job = await harness.rawExecutor.first<{
+      status: string;
+      last_error: string;
+      attempts: number;
+      run_after: number;
+    }>({
+      sql: "SELECT status, last_error, attempts, run_after FROM jobs WHERE type = 'editorial.prepare_draft'",
+    });
+    expect(job!.status).toBe('retry_wait');
+    expect(job!.last_error).toBe('job_budget_parked');
+    expect(job!.attempts).toBe(1);
+    expect(job!.run_after).toBe(NOW + msUntilNextTehranMidnight(NOW) + 5 * 60 * 1000);
   });
 
   it('budget store failure: distinct typed retry, zero provider calls', async () => {
