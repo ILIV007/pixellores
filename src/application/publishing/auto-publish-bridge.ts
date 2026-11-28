@@ -90,7 +90,12 @@
  * + the stored source item (the CURRENT folded lens) and replaces the
  * stored report when the rebuild validates — then the gate decides on
  * the REBUILT bytes. A re-evaluation that cannot validate leaves the
- * stored report untouched. And the scan itself is progress-ordered
+ * stored report untouched. ADR-0082 — the same trigger fires when the
+ * gate REFUSES a draft for a missing report (`report_absent`, the
+ * flag-off shape): the service BUILDS the report from the stored bytes
+ * and the gate re-decides on the rebuilt document. One attempt per
+ * draft per pass: after a successful build the report exists, so later
+ * passes never re-trigger. And the scan itself is progress-ordered
  * (migration 0013: `draft_gate_evaluations`): each pass records every
  * gate verdict and orders by consecutive failures, so
  * deterministically-failing drafts sink below unevaluated ones instead
@@ -407,15 +412,20 @@ export async function bridgeReadyDrafts(input: {
     // ADR-0074 — the gate verdict, on the CURRENT bytes. A
     // requires_review verdict on a numbers finding is the stale-report
     // family: re-run the fact-guard with the current folded lens and
-    // decide on the REBUILT bytes when the rebuild validates. Every
-    // other verdict stands as evaluated.
+    // decide on the REBUILT bytes when the rebuild validates. ADR-0082
+    // — a refused verdict on a MISSING report is the flag-off family:
+    // build the report from the stored bytes and decide on the rebuilt
+    // document the same way. Every other verdict stands as evaluated.
     let documentJson = draft.document_json;
     let verdict = evaluateAutoPublishGate(documentJson);
-    if (
-      verdict.kind === 'requires_review' &&
-      verdict.reason === 'fact_guard_findings' &&
-      verdict.claims.some((claim) => claim.findings.includes('number_not_observed_in_evidence'))
-    ) {
+    const needsReevaluation =
+      (verdict.kind === 'requires_review' &&
+        verdict.reason === 'fact_guard_findings' &&
+        verdict.claims.some((claim) =>
+          claim.findings.includes('number_not_observed_in_evidence'),
+        )) ||
+      (verdict.kind === 'refused' && verdict.reason === 'report_absent');
+    if (needsReevaluation) {
       try {
         const rebuilt = await reevaluateDraftFactGuard({
           executor: input.executor,
@@ -437,18 +447,20 @@ export async function bridgeReadyDrafts(input: {
         } else if (rebuilt.kind === 'concurrent_change') {
           // The document moved underneath us — the verdict we hold is
           // for stale bytes. Skip this draft this pass; the next pass
-          // re-reads the new bytes.
+          // re-reads the new bytes. The recorded verdict is the ORIGINAL
+          // one (requires_review for the numbers family, refused for a
+          // report built from absent — ADR-0082).
           reevaluationSkipped += 1;
           input.logger?.warn('publishing.bridge.fact_guard_reevaluation_concurrent_change', {
             draftId: draft.id,
           });
-          await recordGateEvaluationQuietly(
-            input,
-            draft.id,
-            'requires_review',
-            'fact_guard_findings',
-          );
-          requiresReview += 1;
+          if (verdict.kind === 'requires_review') {
+            await recordGateEvaluationQuietly(input, draft.id, 'requires_review', verdict.reason);
+            requiresReview += 1;
+          } else if (verdict.kind === 'refused') {
+            await recordGateEvaluationQuietly(input, draft.id, 'refused', verdict.reason);
+            refused += 1;
+          }
           continue;
         }
         // 'unchanged' / 'not_applicable': the stored report is current
