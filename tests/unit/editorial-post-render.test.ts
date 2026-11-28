@@ -248,6 +248,122 @@ describe('v3 — renderEditorialPostText reproduces the approved msg-16 form', (
     expect(countOccurrences(outcome.text, '32.5M')).toBe(1);
   });
 
+  it('merges a release date into ONE figure: the live msg-18 Temtem case (ADR-0077)', () => {
+    const outcome = renderEditorialPostText(
+      JSON.stringify({
+        schemaVersion: 1,
+        headlineFa: 'تاریخ عرضه Temtem: Swarm برای نینتندو سوییچ مشخص شد',
+        summaryFa:
+          'بازی اکشن و روگ‌لایک Temtem: Swarm قرار است در تاریخ ۲۱ ژانویه ۲۰۲۷ برای کنسول نینتندو سوییچ عرضه شود.',
+        modelClaims: [
+          {
+            text: 'نسخه نینتندو سوییچ بازی Temtem: Swarm در تاریخ ۲۱ ژانویه ۲۰۲۷ منتشر خواهد شد.',
+            status: 'unverified',
+          },
+        ],
+      }),
+    );
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    // ONE figure line: the full date, bold label + mono value (the
+    // hand-fixed msg-18 caption). The two split lines must be gone.
+    const mergedLine = `تاریخ عرضه: ${LRI}21 ژانویه 2027${PDI}`;
+    expect(outcome.text).toContain(mergedLine);
+    expect(countOccurrences(outcome.text, mergedLine)).toBe(1);
+    expect(outcome.text).not.toContain('Swarm در تاریخ:');
+    expect(outcome.text).not.toContain('ژانویه: 2027');
+    expect(outcome.text).not.toMatch(/[۰-۹٠-٩]/);
+    const figOffset = outcome.text.indexOf('تاریخ عرضه:');
+    expect(outcome.envelope.entities).toContainEqual({
+      type: 'bold',
+      offset: figOffset,
+      length: mergedLine.length,
+    });
+    expect(outcome.envelope.entities).toContainEqual({
+      type: 'code',
+      offset: outcome.text.indexOf('21 ژانویه 2027'),
+      length: '21 ژانویه 2027'.length,
+    });
+  });
+
+  it('merges a non-release date into one figure but keeps its mechanical label', () => {
+    const outcome = renderEditorialPostText(
+      JSON.stringify({
+        schemaVersion: 1,
+        headlineFa: 'رویداد معرفی بازی نمونه',
+        summaryFa: 'استودیوی نمونه تاریخ رویداد معرفی را اعلام کرد.',
+        modelClaims: [
+          { text: 'رویداد معرفی بازی در تاریخ ۱۵ مارس ۲۰۲۶ برگزار می‌شود.', status: 'unverified' },
+        ],
+      }),
+    );
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    // One figure: the full date. No release verb follows the date, so
+    // the label stays mechanical — never «تاریخ عرضه».
+    expect(outcome.text).toContain(`بازی در تاریخ: ${LRI}15 مارس 2026${PDI}`);
+    expect(outcome.text).not.toContain('تاریخ عرضه');
+    expect(outcome.text).not.toContain('مارس: 2026');
+    expect(countOccurrences(outcome.text, '15 مارس 2026')).toBe(1);
+  });
+
+  it('keeps a month+year date as one figure (no split to fix)', () => {
+    const outcome = renderEditorialPostText(
+      JSON.stringify({
+        schemaVersion: 1,
+        headlineFa: 'بازی نمونه در راه است',
+        summaryFa: 'استودیوی نمونه تاریخ انتشار را اعلام کرد.',
+        modelClaims: [{ text: 'بازی در ژانویه ۲۰۲۷ منتشر خواهد شد.', status: 'unverified' }],
+      }),
+    );
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.text).toContain(`بازی در ژانویه: ${LRI}2027${PDI}`);
+    expect(countOccurrences(outcome.text, '2027')).toBe(1);
+  });
+
+  it('keeps a year-only date as one figure with its mechanical label', () => {
+    const outcome = renderEditorialPostText(
+      JSON.stringify({
+        schemaVersion: 1,
+        headlineFa: 'بازی نمونه در راه است',
+        summaryFa: 'استودیوی نمونه سال انتشار را اعلام کرد.',
+        modelClaims: [{ text: 'بازی در سال ۲۰۲۷ منتشر خواهد شد.', status: 'unverified' }],
+      }),
+    );
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    // Single number: no cluster, so no release-date relabel — the
+    // mechanical label stands.
+    expect(outcome.text).toContain(`بازی در سال: ${LRI}2027${PDI}`);
+    expect(outcome.text).not.toContain('تاریخ عرضه');
+    expect(countOccurrences(outcome.text, '2027')).toBe(1);
+  });
+
+  it('merges the date but keeps a separate sales figure in the same claim', () => {
+    const outcome = renderEditorialPostText(
+      JSON.stringify({
+        schemaVersion: 1,
+        headlineFa: 'تاریخ عرضه بازی نمونه مشخص شد',
+        summaryFa: 'استودیوی نمونه تاریخ عرضه و فروش را اعلام کرد.',
+        modelClaims: [
+          {
+            text: 'بازی در تاریخ ۲۱ ژانویه ۲۰۲۷ منتشر خواهد شد و فروش آن ۳٫۷۹ میلیارد دلار بود.',
+            status: 'unverified',
+          },
+        ],
+      }),
+    );
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.text).toContain(`تاریخ عرضه: ${LRI}21 ژانویه 2027${PDI}`);
+    expect(outcome.text).toContain('$3.79B');
+    expect(outcome.text).not.toContain('Swarm در تاریخ:');
+    expect(outcome.text).not.toContain('ژانویه: 2027');
+    expect(countOccurrences(outcome.text, '21 ژانویه 2027')).toBe(1);
+    expect(countOccurrences(outcome.text, '$3.79B')).toBe(1);
+  });
+
   it('renders no figures block (and no invented content) when no claim carries a number', () => {
     const outcome = renderEditorialPostText(
       JSON.stringify({

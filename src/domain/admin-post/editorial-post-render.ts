@@ -98,6 +98,14 @@
  * structured `document.figures` field (prompt v3) overrides it. The
  * first derived figure is the MAIN figure.
  *
+ * DATE CLUSTERS (ADR-0077): consecutive number phrases separated ONLY by
+ * month words («21 ژانویه 2027») are one date, not two figures — they
+ * merge into a single figure whose value is the claim's own date text.
+ * A merged cluster followed within a few words by a release marker
+ * (منتشر / عرضه / انتشار) is the release date and takes the fixed house
+ * label «تاریخ عرضه»; any other merged cluster keeps its mechanical
+ * label. Single-number dates (month+year, year-only) are untouched.
+ *
  * The raw source excerpt is deliberately NOT part of the post: the channel
  * carries the editorial OUTPUT; the full evidence excerpt stays in the
  * editorial draft, reachable through the durable provenance link and the
@@ -547,6 +555,88 @@ function compactFigureValue(numberText: string, units: readonly string[]): strin
 }
 
 /**
+ * Month names that join two number phrases into one date figure
+ * (ADR-0077): Gregorian months in Persian transliteration, Jalali months,
+ * and English month names. A gap between two number phrases that holds
+ * ONLY these words is a date, not two figures.
+ */
+const FIGURE_MONTH_WORDS: ReadonlySet<string> = new Set([
+  // Gregorian, Persian transliteration.
+  'ژانویه',
+  'فوریه',
+  'مارس',
+  'آوریل',
+  'مه',
+  'ژوئن',
+  'ژوئیه',
+  'اوت',
+  'سپتامبر',
+  'اکتبر',
+  'نوامبر',
+  'دسامبر',
+  // Jalali.
+  'فروردین',
+  'اردیبهشت',
+  'خرداد',
+  'تیر',
+  'مرداد',
+  'شهریور',
+  'مهر',
+  'آبان',
+  'آذر',
+  'دی',
+  'بهمن',
+  'اسفند',
+  // English.
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+  'january',
+  'february',
+  'march',
+  'april',
+  'may',
+  'june',
+  'july',
+  'august',
+  'september',
+  'october',
+  'november',
+  'december',
+]);
+
+/** Release markers: a date figure followed by one of these is a release date (ADR-0077). */
+const FIGURE_RELEASE_MARKERS: ReadonlySet<string> = new Set(['منتشر', 'عرضه', 'انتشار']);
+
+/** How many words after a date cluster are scanned for a release marker. */
+const FIGURE_RELEASE_MARKER_WINDOW = 4 as const;
+
+/** The fixed label for a release-date figure (house phrasing, cf. the headline «تاریخ عرضه …»). */
+const FIGURE_RELEASE_DATE_LABEL = 'تاریخ عرضه' as const;
+
+/**
+ * One figure entry: a single number phrase (value compacted with its
+ * units) or a merged date cluster (value = the claim's own date text,
+ * e.g. «21 ژانویه 2027»).
+ */
+type FigureEntry = {
+  readonly start: number;
+  readonly end: number;
+  readonly units: readonly string[];
+  readonly isDateCluster: boolean;
+  readonly value: string;
+};
+
+/**
  * Derive the figures block from the model claims (one line per number
  * phrase, claim order, first figure = main). MECHANICAL best-effort: the
  * label is the up-to-3 words before the number (cleaned), falling back
@@ -554,6 +644,15 @@ function compactFigureValue(numberText: string, units: readonly string[]): strin
  * to empty is skipped; exact (label, value) duplicates collapse; the
  * block caps at EDITORIAL_POST_MAX_FIGURES. The structured
  * `document.figures` field overrides this entirely.
+ *
+ * DATE CLUSTERS (ADR-0077): consecutive number phrases in one claim
+ * separated ONLY by month words («21 ژانویه 2027») merge into ONE figure
+ * whose value is the claim's own date text — a date is one figure, never
+ * one line per number. A merged cluster followed within a few words by
+ * a release marker (منتشر / عرضه / انتشار) is the release date and
+ * takes the fixed house label «تاریخ عرضه»; any other merged cluster
+ * keeps its mechanical label. Single-number dates (month+year,
+ * year-only) are untouched: one number is already one figure.
  */
 function deriveFiguresFromClaims(claims: readonly RenderClaim[]): RenderFigure[] {
   const figures: RenderFigure[] = [];
@@ -595,11 +694,41 @@ function deriveFiguresFromClaims(claims: readonly RenderClaim[]): RenderFigure[]
       }
       phrases.push({ start, end, numberText, units });
     }
-    for (let index = 0; index < phrases.length; index += 1) {
-      const phrase = phrases[index]!;
-      const prevEnd = index === 0 ? 0 : phrases[index - 1]!.end;
+    // Merge adjacent date phrases: consecutive phrases separated only
+    // by month words are one date — one figure, value = the date text.
+    const entries: FigureEntry[] = [];
+    for (const phrase of phrases) {
+      const prev = entries[entries.length - 1];
+      if (prev !== undefined && prev.units.length === 0 && phrase.units.length === 0) {
+        const gapWords = folded
+          .slice(prev.end, phrase.start)
+          .split(/\s+/)
+          .map(stripWordPunctuation)
+          .filter((word) => word.length > 0);
+        if (gapWords.length > 0 && gapWords.every((word) => FIGURE_MONTH_WORDS.has(word))) {
+          entries[entries.length - 1] = {
+            start: prev.start,
+            end: phrase.end,
+            units: [],
+            isDateCluster: true,
+            value: folded.slice(prev.start, phrase.end),
+          };
+          continue;
+        }
+      }
+      entries.push({
+        start: phrase.start,
+        end: phrase.end,
+        units: phrase.units,
+        isDateCluster: false,
+        value: compactFigureValue(phrase.numberText, phrase.units),
+      });
+    }
+    for (let index = 0; index < entries.length; index += 1) {
+      const entry = entries[index]!;
+      const prevEnd = index === 0 ? 0 : entries[index - 1]!.end;
       const beforeWords = folded
-        .slice(prevEnd, phrase.start)
+        .slice(prevEnd, entry.start)
         .split(/\s+/)
         .filter((word) => word.length > 0)
         .slice(-3);
@@ -618,13 +747,25 @@ function deriveFiguresFromClaims(claims: readonly RenderClaim[]): RenderFigure[]
       if (label === '') {
         continue;
       }
-      const value = compactFigureValue(phrase.numberText, phrase.units);
-      const key = `${label}\n${value}`;
+      // Release-date label (ADR-0077): a merged date cluster followed
+      // within a few words by a release marker is the release date.
+      if (entry.isDateCluster) {
+        const afterWords = folded
+          .slice(entry.end)
+          .split(/\s+/)
+          .map(stripWordPunctuation)
+          .filter((word) => word.length > 0)
+          .slice(0, FIGURE_RELEASE_MARKER_WINDOW);
+        if (afterWords.some((word) => FIGURE_RELEASE_MARKERS.has(word))) {
+          label = FIGURE_RELEASE_DATE_LABEL;
+        }
+      }
+      const key = `${label}\n${entry.value}`;
       if (seen.has(key)) {
         continue;
       }
       seen.add(key);
-      figures.push({ label, value, main: figures.length === 0 });
+      figures.push({ label, value: entry.value, main: figures.length === 0 });
       if (figures.length >= EDITORIAL_POST_MAX_FIGURES) {
         return figures;
       }
