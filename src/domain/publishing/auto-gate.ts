@@ -39,6 +39,11 @@ import {
  *     DATA — it is never interpreted or obeyed; a claim it generated has no
  *     lexical basis in the stored excerpt and refuses here by CODE, not by
  *     any semantic detection claim).
+ *  5. THE SUBSTANCE (ADR-0079 §3.7a): at least AUTO_GATE_MIN_CLAIMS claims —
+ *     fewer go to human review, never auto-publish. It is checked LAST,
+ *     after the no-claims refusal and after the report basis, the
+ *     totality and the grounding — so the verdict names the FIRST failing
+ *     rule in gate order.
  *
  * WHAT THE VERDICT CARRIES: the report's own limitation labels ride EVERY
  * verdict verbatim — the machine never claims semantic proof; the labels
@@ -57,6 +62,15 @@ import {
 
 /** The gate's own version — bump ONLY with a documented contract change. */
 export const AUTO_GATE_VERSION = 'ag1' as const;
+
+/**
+ * Minimum substance for auto-publish (ADR-0079 §3.7a): a draft bridges
+ * ONLY with at least this many claims. Fewer claims go to human review,
+ * never auto-publish — a 1-claim story cannot prove a post's substance.
+ * Honest consequence: with 1-claim stories everywhere, NOTHING
+ * auto-publishes until ingestion improves — which is the point.
+ */
+export const AUTO_GATE_MIN_CLAIMS = 3 as const;
 
 /**
  * The typed refusal family: the gate found the stored basis UNUSABLE —
@@ -88,7 +102,7 @@ export type AutoGateVerdict =
     }
   | {
       readonly kind: 'requires_review';
-      readonly reason: 'fact_guard_findings';
+      readonly reason: 'fact_guard_findings' | 'insufficient_claims';
       readonly claims: readonly AutoGateReviewClaim[];
       readonly limitationLabels: readonly string[];
     }
@@ -110,8 +124,9 @@ const DOCUMENT_SHAPE_FAILURES: ReadonlySet<string> = new Set([
 /**
  * The gate order is FAIL-CLOSED and fixed: the document basis first (the
  * send path's own discipline), then the report basis, then the totality,
- * then the per-claim grounding. The first failure wins — nothing is
- * repaired, guessed or partially evaluated.
+ * then the per-claim grounding, then the substance (a thin draft that is
+ * otherwise fully grounded needs a human). The first failure wins —
+ * nothing is repaired, guessed or partially evaluated.
  */
 export function evaluateAutoPublishGate(documentJson: string): AutoGateVerdict {
   // 1. THE DOCUMENT RE-READ through the send path's strict reader: the
@@ -216,6 +231,24 @@ export function evaluateAutoPublishGate(documentJson: string): AutoGateVerdict {
       kind: 'requires_review',
       reason: 'fact_guard_findings',
       claims: reviewClaims,
+      limitationLabels: report.limitations,
+    };
+  }
+
+  // 6. THE SUBSTANCE (ADR-0079 §3.7a): fewer than AUTO_GATE_MIN_CLAIMS
+  // claims go to human review, never auto-publish. It sits LAST, after
+  // the no_claims refusal AND after the report basis, the totality and
+  // the grounding — so the verdict names the FIRST failing rule in gate
+  // order: a thin draft without a report is refused (not reviewed), a
+  // thin draft with an ungrounded claim reports its finding, and only a
+  // thin draft that is otherwise fully grounded reports the count. The
+  // per-claim entries carry no findings — the COUNT is the reason, not
+  // any one claim — and the report's limitation labels ride verbatim.
+  if (modelClaims.length < AUTO_GATE_MIN_CLAIMS) {
+    return {
+      kind: 'requires_review',
+      reason: 'insufficient_claims',
+      claims: modelClaims.map((_, index) => ({ claimIndex: index, findings: [] })),
       limitationLabels: report.limitations,
     };
   }

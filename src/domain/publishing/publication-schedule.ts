@@ -25,16 +25,17 @@
  *   4. time computation — P0: now + the selected gap jitter
  *      (anti-flood 2–4 min unrelated / normal 25–45 min related /
  *      none without a previous send); P1: now + jitterMs validated
- *      against the LATENCY bounds (5–20 min), raised to the fixed
- *      spacing floor (previous send + 8 min P1 gap minimum — the
- *      floor can dominate and that is recorded, never hidden);
+ *      against the LATENCY bounds (30–90 min, ADR-0079 §3.6), raised
+ *      to the fixed spacing floor (previous send + 30 min P1 gap
+ *      minimum — the floor can dominate and that is recorded, never
+ *      hidden);
  *      P2/P3: max(now, previous send + 25–45 min jitter), clamped so
  *      a due is NEVER in the past;
  *   5. same-game cooldown shift (time-resolvable: due = max(due,
  *      eligibleAt), recorded `shifted_to_eligible_at`);
  *   6. window gate LAST, quiet-gated classes ONLY (P2/P3 — the
  *      blueprint names quiet «for P2/P3»; P0 explicitly bypasses;
- *      P1's 5–20 minute contract is incompatible with a quiet
+ *      P1's 30–90 minute contract is incompatible with a quiet
  *      deferral — the documented pin): a due outside an ACTIVE
  *      window defers to the next active window START
  *      (`deferred_to_window_start`, the abandoned candidate recorded).
@@ -74,8 +75,15 @@ import {
 
 export const SCHEDULE_POLICY_VERSION = 'psp1' as const;
 
-const P1_LATENCY_MIN_MS = 5 * 60_000;
-const P1_LATENCY_MAX_MS = 20 * 60_000;
+/**
+ * ADR-0079 §3.6a — P1 latency 30–90 min (was 5–20): breaking news waits
+ * for the queue to breathe instead of firing minutes after enqueue. The
+ * scheduler-policy jitter band mirrors these bounds exactly (the unit
+ * suite cross-validates the two — a change here without the mirror fails
+ * every P1 with jitter_out_of_bounds).
+ */
+const P1_LATENCY_MIN_MS = 30 * 60_000;
+const P1_LATENCY_MAX_MS = 90 * 60_000;
 /** The composition's bounded layout-history input (anti-robot's pin). */
 const MAX_LAYOUT_HISTORY = 64;
 

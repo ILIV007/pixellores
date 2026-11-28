@@ -19,15 +19,16 @@
  *      (over-target category ⇒ typed DEFER); P0/P1/P2 carry the mix
  *      report as an ADVISORY — news is never blocked by mix («never
  *      forced per day», honored);
- *   4. the time computation — the P1 latency bound (5–20 min) with the
- *      fixed P1 spacing floor (previous send + 8 min), the P0 gap
+ *   4. the time computation — the P1 latency bound (30–90 min, ADR-0079
+ *      §3.6a) with the fixed P1 spacing floor (previous send + 30 min),
+ *      the P0 gap
  *      (anti-flood when unrelated, normal when related), the P2/P3
  *      normal gap with the caller-supplied deterministic jitter,
  *      clamped so a due is NEVER in the past;
  *   5. the same-game cooldown shift (time-resolvable: due = max(due,
  *      eligibleAt));
  *   6. the window gate LAST (P2/P3 only — the blueprint names quiet
- *      «for P2/P3» and P0 explicitly bypasses; P1's 5–20 minute
+ *      «for P2/P3» and P0 explicitly bypasses; P1's 30–90 minute
  *      contract is incompatible with a quiet deferral): a P2/P3 due
  *      outside an ACTIVE window defers to the next active window
  *      start.
@@ -156,45 +157,52 @@ describe('P0 — anytime, quiet bypass, the gap by relatedness', () => {
   });
 });
 
-describe('P1 — the 5–20 minute latency with the fixed spacing floor, NOT quiet-gated', () => {
+describe('P1 — the 30–90 minute latency with the fixed spacing floor, NOT quiet-gated', () => {
   it('a P1 with no previous send is due at now + jitter inside the latency bounds', () => {
     const now = tehranAt(2026, 11, 11, 3, 0); // quiet — P1 is NOT gated
     const decision = schedule(
-      planPublicationTime(baseInput({ nowMs: now, priorityScore: 80, jitterMs: 10 * MIN })),
+      planPublicationTime(baseInput({ nowMs: now, priorityScore: 80, jitterMs: 40 * MIN })),
     );
-    expect(decision.dueAtMs).toBe(now + 10 * MIN);
+    expect(decision.dueAtMs).toBe(now + 40 * MIN);
     expect(decision.window.kind).toBe('quiet');
     expect(decision.appliedRules).toContainEqual({ rule: 'latency_bound', class: 'P1' });
     expect(decision.appliedRules).toContainEqual({ rule: 'send_gap', gapRule: 'no_previous_send' });
   });
 
-  it('the spacing floor wins when the previous send is too recent (prev + 8 min)', () => {
+  it('the spacing floor wins when the previous send is too recent (prev + 30 min)', () => {
+    // The floor wins only when the latency anchor is OLDER than the
+    // previous send: the row was enqueued 60 min ago (its 30-min
+    // latency elapsed long ago) but the previous send was 10 min ago,
+    // so the floor (prev + 30) pushes the due to now + 20. With an
+    // anchor at now the minimum 30-min jitter could never lose to a
+    // 30-min floor — that is the shape the old 5-min jitter test had.
     const now = tehranAt(2026, 11, 11, 21, 0);
     const decision = schedule(
       planPublicationTime(
         baseInput({
           nowMs: now,
           priorityScore: 75,
-          jitterMs: 5 * MIN,
-          previousSend: { atMs: now, related: true, priorityClass: 'P1' },
+          jitterMs: 30 * MIN,
+          latencyAnchorMs: now - 60 * MIN,
+          previousSend: { atMs: now - 10 * MIN, related: true, priorityClass: 'P1' },
         }),
       ),
     );
-    expect(decision.dueAtMs).toBe(now + 8 * MIN);
+    expect(decision.dueAtMs).toBe(now + 20 * MIN);
     expect(decision.appliedRules).toContainEqual({ rule: 'latency_bound', class: 'P1' });
     expect(decision.appliedRules).toContainEqual({ rule: 'send_gap', gapRule: 'p1_gap' });
   });
 
-  it('the P1 jitter is validated against the LATENCY bounds (5–20 min), not the gap band', () => {
+  it('the P1 jitter is validated against the LATENCY bounds (30–90 min), not the gap band', () => {
     const now = tehranAt(2026, 11, 11, 21, 0);
     expect(
-      planPublicationTime(baseInput({ nowMs: now, priorityScore: 80, jitterMs: 4 * MIN })),
+      planPublicationTime(baseInput({ nowMs: now, priorityScore: 80, jitterMs: 29 * MIN })),
     ).toEqual({
       ok: false,
       reason: 'jitter_out_of_bounds',
     });
     expect(
-      planPublicationTime(baseInput({ nowMs: now, priorityScore: 80, jitterMs: 21 * MIN })),
+      planPublicationTime(baseInput({ nowMs: now, priorityScore: 80, jitterMs: 91 * MIN })),
     ).toEqual({
       ok: false,
       reason: 'jitter_out_of_bounds',
@@ -213,32 +221,32 @@ describe('P1 — the 5–20 minute latency with the fixed spacing floor, NOT qui
         baseInput({
           nowMs: anchor,
           priorityScore: 80,
-          jitterMs: 10 * MIN,
+          jitterMs: 40 * MIN,
           latencyAnchorMs: anchor,
         }),
       ),
     );
-    expect(first.dueAtMs).toBe(anchor + 10 * MIN);
-    // The second scan, 10 minutes later: the SAME due time, now elapsed.
+    expect(first.dueAtMs).toBe(anchor + 40 * MIN);
+    // The second scan, 40 minutes later: the SAME due time, now elapsed.
     const second = schedule(
       planPublicationTime(
         baseInput({
-          nowMs: anchor + 10 * MIN,
+          nowMs: anchor + 40 * MIN,
           priorityScore: 80,
-          jitterMs: 10 * MIN,
+          jitterMs: 40 * MIN,
           latencyAnchorMs: anchor,
         }),
       ),
     );
-    expect(second.dueAtMs).toBe(anchor + 10 * MIN);
+    expect(second.dueAtMs).toBe(anchor + 40 * MIN);
   });
 
   it('without an anchor the legacy behavior is preserved (due = now + jitter)', () => {
     const now = tehranAt(2026, 11, 11, 10, 0);
     const decision = schedule(
-      planPublicationTime(baseInput({ nowMs: now, priorityScore: 80, jitterMs: 10 * MIN })),
+      planPublicationTime(baseInput({ nowMs: now, priorityScore: 80, jitterMs: 40 * MIN })),
     );
-    expect(decision.dueAtMs).toBe(now + 10 * MIN);
+    expect(decision.dueAtMs).toBe(now + 40 * MIN);
   });
 
   it('a latency anchor in the future is an invalid input', () => {
@@ -248,7 +256,7 @@ describe('P1 — the 5–20 minute latency with the fixed spacing floor, NOT qui
         baseInput({
           nowMs: now,
           priorityScore: 80,
-          jitterMs: 10 * MIN,
+          jitterMs: 40 * MIN,
           latencyAnchorMs: now + MIN,
         }),
       ),

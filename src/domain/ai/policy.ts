@@ -125,7 +125,7 @@ export const AI_POLICY_VERSION = 'ai-policy-v2.3';
  * Gemini-only rewrite prompt v1. v2 prompts are still readable history
  * — the version is stamped on every ai_run, so a v2/v3 mix is always
  * attributable. */
-export const AI_PROMPT_VERSION = 'pixel-news-draft-v3';
+export const AI_PROMPT_VERSION = 'pixel-news-draft-v4';
 
 /** Rewrite-stage bounds (ADR-0070 §4–§5): Gemini-only, 1024 output
  * tokens (headline + summary + two enum fields); at most 2 rewrite

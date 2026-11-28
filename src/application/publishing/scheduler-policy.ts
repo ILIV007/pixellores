@@ -76,10 +76,11 @@ export function mapContentTypeToMixCategory(contentType: string): MixCategoryMap
  * The gap/latency bands. The gap bands are the EXPORTED arp1 constants' own
  * values; the P1 latency band mirrors psp1's private constants — the unit
  * suite's CROSS-VALIDATION against the real psp1 is the standing guard (a
- * psp1 bound change makes the cross-validation fail loudly).
+ * psp1 bound change makes the cross-validation fail loudly). ADR-0079
+ * §3.6a: P1 latency is 30–90 min (was 5–20) — this mirror moves with it.
  */
-const P1_LATENCY_BAND_MIN_MS = 5 * 60_000;
-const P1_LATENCY_BAND_MAX_MS = 20 * 60_000;
+const P1_LATENCY_BAND_MIN_MS = 30 * 60_000;
+const P1_LATENCY_BAND_MAX_MS = 90 * 60_000;
 const NORMAL_GAP_BAND_MIN_MS = 25 * 60_000;
 const NORMAL_GAP_BAND_MAX_MS = 45 * 60_000;
 const ANTI_FLOOD_BAND_MIN_MS = 2 * 60_000;

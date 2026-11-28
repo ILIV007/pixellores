@@ -64,9 +64,16 @@ export const ANTI_ROBOT_POLICY_VERSION = 'arp1' as const;
 export const NORMAL_GAP_MIN_MS = 25 * 60_000;
 export const NORMAL_GAP_MAX_MS = 45 * 60_000;
 
-/** 8–15 minutes — the P1 gap band (blueprint §16). */
-export const P1_GAP_MIN_MS = 8 * 60_000;
-export const P1_GAP_MAX_MS = 15 * 60_000;
+/**
+ * 30–45 minutes — the P1 gap band (blueprint §16, ADR-0079 §3.6a: the
+ * floor was 8 min, now 30). The floor is the live number (the P1 spacing
+ * floor in `planPublicationTime`); the ceiling rises with it so the band
+ * stays ordered — `resolveSendGapMs` validates a P1 candidate's jitter
+ * against this band, and an inverted band would fail every P1 gap
+ * resolution. Emergent spacing becomes ~30–60 min instead of ~10.
+ */
+export const P1_GAP_MIN_MS = 30 * 60_000;
+export const P1_GAP_MAX_MS = 45 * 60_000;
 
 /**
  * 2–4 minutes — the arp1 pin for the blueprint's unquantified

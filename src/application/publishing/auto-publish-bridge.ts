@@ -18,6 +18,11 @@
  *    approval-mode deployment never auto-approves a draft a human has
  *    not read. The mode is the caller-supplied (cron-read) D1 setting,
  *    never an env var.
+ *  - FRESHNESS (ADR-0079 §3.3): before the gate verdict, a draft whose
+ *    primary source item is older than 48h — or whose claims carry a
+ *    date already past — is RETIRED (a `quality_rejections` row + the
+ *    draft leaves `ready` for `rejected`), never bridged, never
+ *    deferred. A draft with no reference items skips the check.
  *  - THE GATE VERDICT: only an `eligible_auto` verdict reaches the
  *    transition. A `requires_review` verdict (a claim the fact-guard
  *    could not ground) or a `refused` verdict (no measurable basis)
@@ -36,11 +41,11 @@
  *
  * THE PRIORITY (P1, 80 — the documented breaking-news class): an
  * auto-approved draft is ag1-eligible (grounded, official/verified
- * claims), so it rides P1 — publish within 5–20 minutes, NOT
- * quiet-gated (a P2/P3 draft would defer to the next active Tehran
- * window, stranding same-night breaking news until morning). It is
- * NEVER P0: no daily-cap bypass, no auto-pin — P0 stays reserved for
- * human-flagged very-big news.
+ * claims), so it rides P1 — publish within 30–90 minutes (ADR-0079
+ * §3.6), NOT quiet-gated (a P2/P3 draft would defer to the next
+ * active Tehran window, stranding same-night breaking news until
+ * morning). It is NEVER P0: no daily-cap bypass, no auto-pin — P0
+ * stays reserved for human-flagged very-big news.
  *
  * BOUNDARIES: bounded work only (at most `limit` drafts per pass,
  * default 5); no transport, no send, no AI — the scheduler's scan is
@@ -98,7 +103,14 @@ import {
   listReadyDraftContentTypes,
   listReadyDraftsForBridge,
   recordGateEvaluation,
+  type EditorialSourceItemRow,
 } from '../../adapters/db/editorial-store';
+import { recordQualityRejection } from '../../adapters/db/near-dup-store';
+import {
+  FRESHNESS_MAX_AGE_MS,
+  isDraftStale,
+  readDraftClaimDatePhrases,
+} from '../../domain/publishing/draft-freshness';
 import { reevaluateDraftFactGuard } from '../editorial/fact-guard-reevaluation';
 import { approveDraftForAutoPublication } from '../../adapters/db/auto-approval-store';
 import {
@@ -125,7 +137,8 @@ import type { Logger } from '../../observability/logger';
 
 /**
  * The publication priority of an AUTO-approved draft — P1 (75–89), the
- * documented "publish within 5–20 minutes" class. See the module header.
+ * documented "publish within 30–90 minutes" class (ADR-0079 §3.6).
+ * See the module header.
  */
 export const AUTO_PUBLISH_PRIORITY_SCORE = 80;
 
@@ -154,6 +167,10 @@ export type AutoPublishBridgeReport =
       readonly requiresReview: number;
       /** Drafts the gate refused for lack of a measurable basis. */
       readonly refused: number;
+      /** ADR-0079 §3.3: stale drafts retired this pass (quality_rejections
+       * row + draft left `ready` for `rejected`) — terminal, never a
+       * deferral. */
+      readonly retiredStale: number;
       /** ADR-0074: stored fact-guard reports rebuilt with the current
        * folded lens this pass (their stored findings cleared or moved). */
       readonly reevaluated: number;
@@ -288,6 +305,7 @@ export async function bridgeReadyDrafts(input: {
   let duplicates = 0;
   let requiresReview = 0;
   let refused = 0;
+  let retiredStale = 0;
   let reevaluated = 0;
   let reevaluationSkipped = 0;
   let deferredGuideLane = 0;
@@ -316,6 +334,73 @@ export async function bridgeReadyDrafts(input: {
       }
       if (rewriteStatus !== 'rewritten') {
         deferredRewrite += 1;
+        continue;
+      }
+    }
+    // ADR-0079 §3.3 — the freshness gate runs BEFORE the auto gate: a
+    // stale draft is RETIRED, never bridged, never deferred (a deferral
+    // would re-evaluate forever — the livelock family). The primary
+    // reference item (first by id — the story's anchor source, the same
+    // item the lane rule reads below) supplies the source age; the
+    // claim date phrases supply the past-date rule. A draft with NO
+    // reference items skips the check (no evidence to judge — the gate
+    // decides on it instead). A lookup failure skips the draft this
+    // pass (rejected): a read failure must never retire news.
+    let references: readonly EditorialSourceItemRow[];
+    try {
+      references = await findStoryReferenceItems(input.executor, draft.story_id, 1);
+    } catch {
+      rejected += 1;
+      input.logger?.warn('publishing.bridge.reference_lookup_failed', {
+        draftId: draft.id,
+      });
+      continue;
+    }
+    const primaryReference = references[0];
+    if (primaryReference !== undefined) {
+      const freshness = isDraftStale({
+        sourcePublishedAtMs: primaryReference.published_at_ms,
+        claimDatePhrases: readDraftClaimDatePhrases(draft.document_json),
+        nowMs: input.nowMs,
+        maxAgeMs: FRESHNESS_MAX_AGE_MS,
+      });
+      if (freshness.stale) {
+        // Terminal retirement: a quality_rejections row (the fingerprint
+        // is namespaced `stale:<content_hash>` so it never collides with
+        // the near-dup namespace) + the draft leaves `ready` for
+        // `rejected` — migration 0001 CHECK-constrains drafts.status and
+        // `rejected` is the fitting terminal value (the bridge only scans
+        // `ready`, so it never re-enqueues). The rejection write runs
+        // first; the fenced status update follows — a failure between
+        // them leaves the draft `ready` and the next pass refreshes the
+        // rejection row and retries the update (convergent, never lost).
+        try {
+          await recordQualityRejection(input.executor, {
+            id: `qr:stale:${draft.id}`,
+            fingerprint: `stale:${primaryReference.content_hash}`,
+            reason: freshness.reason,
+            sourceItemId: primaryReference.id,
+            nowMs: input.nowMs,
+          });
+          const fence = await input.executor.run({
+            sql: `UPDATE drafts SET status = 'rejected' WHERE id = ? AND status = 'ready'`,
+            params: [draft.id],
+          });
+          if (fence.changes !== 1) {
+            rejected += 1;
+            input.logger?.warn('publishing.bridge.stale_retirement_fence_rejected', {
+              draftId: draft.id,
+            });
+            continue;
+          }
+        } catch {
+          rejected += 1;
+          input.logger?.warn('publishing.bridge.stale_retirement_failed', {
+            draftId: draft.id,
+          });
+          continue;
+        }
+        retiredStale += 1;
         continue;
       }
     }
@@ -379,7 +464,7 @@ export async function bridgeReadyDrafts(input: {
     }
     if (verdict.kind === 'requires_review') {
       requiresReview += 1;
-      await recordGateEvaluationQuietly(input, draft.id, 'requires_review', 'fact_guard_findings');
+      await recordGateEvaluationQuietly(input, draft.id, 'requires_review', verdict.reason);
       continue;
     }
     if (verdict.kind === 'refused') {
@@ -402,7 +487,8 @@ export async function bridgeReadyDrafts(input: {
         const mapped = mapContentTypeToMixCategory(contentType);
         if (mapped.ok) category = mapped.category;
       }
-      const references = await findStoryReferenceItems(input.executor, draft.story_id, 1);
+      // The references were already resolved for the freshness gate above
+      // (one read per draft, not two) — the lane reads the same row.
       lane = classifyPostLane(references[0]?.canonical_url ?? null);
     } catch {
       rejected += 1;
@@ -490,6 +576,7 @@ export async function bridgeReadyDrafts(input: {
     duplicates,
     requiresReview,
     refused,
+    retiredStale,
     reevaluated,
     reevaluationSkipped,
     deferredGuideLane,

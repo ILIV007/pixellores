@@ -295,6 +295,25 @@ export function buildDraftDocument(input: {
       readonly evidenceIds: readonly string[];
       readonly status: 'unverified';
     }[];
+    /**
+     * Prompt v4 (ADR-0080 §3.8ii): the model's structured fields —
+     * present ONLY when the model actually extracted them (never
+     * invented, never backfilled). The render consumes them directly:
+     * figures gated on `significance: 'headline'`, quote/verdict as
+     * stored, gameName on its own title line.
+     */
+    readonly figures?: readonly {
+      readonly label: string;
+      readonly value: string;
+      readonly significance?: 'headline' | 'context';
+      readonly main?: boolean;
+    }[];
+    readonly quote?: {
+      readonly text: string;
+      readonly attribution?: string;
+    };
+    readonly verdict?: string;
+    readonly gameName?: string;
     readonly evidenceGuard: EvidenceGuardReport;
     readonly candidateDiscovery: CandidateDiscoveryReport;
     readonly candidateAssessment: CandidateAssessmentReport;
@@ -365,6 +384,20 @@ export function buildDraftDocument(input: {
         truncated: input.excerpt.truncated,
       },
       modelClaims,
+      // ADR-0080 §3.8ii — prompt v4: the four structured fields ride
+      // through ONLY when the model actually gave them. Absent is the
+      // honest shape (the render composes their sections as absent);
+      // nothing is ever derived or invented here.
+      ...(input.semanticDraft.figures !== undefined
+        ? { figures: input.semanticDraft.figures }
+        : {}),
+      ...(input.semanticDraft.quote !== undefined ? { quote: input.semanticDraft.quote } : {}),
+      ...(input.semanticDraft.verdict !== undefined
+        ? { verdict: input.semanticDraft.verdict }
+        : {}),
+      ...(input.semanticDraft.gameName !== undefined
+        ? { gameName: input.semanticDraft.gameName }
+        : {}),
       evidenceGuard: input.evidenceGuard,
       candidateDiscovery: input.candidateDiscovery,
       candidateAssessment: input.candidateAssessment,
@@ -456,6 +489,20 @@ export interface StoredDraftDocument {
     readonly evidenceIds: readonly string[];
     readonly status: 'unverified';
   }[];
+  /** Prompt v4 (ADR-0080 §3.8ii): the model's structured fields — see the
+   * mapper's document type. Optional; absent = never extracted. */
+  readonly figures?: readonly {
+    readonly label: string;
+    readonly value: string;
+    readonly significance?: 'headline' | 'context';
+    readonly main?: boolean;
+  }[];
+  readonly quote?: {
+    readonly text: string;
+    readonly attribution?: string;
+  };
+  readonly verdict?: string;
+  readonly gameName?: string;
   readonly soulForm?: {
     readonly categoryEmoji: string;
     readonly trustLabel: string;

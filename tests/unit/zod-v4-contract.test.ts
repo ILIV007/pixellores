@@ -205,6 +205,61 @@ describe('zod v4 migration: the AI provider-output contract is preserved', () =>
     expect(parsed.draft.claims.length).toBe(1);
   });
 
+  it('ADR-0080 §3.8ii: parses a prompt-v4 draft with all four structured fields', () => {
+    const parsed = parseAiSemanticDraftJson(
+      JSON.stringify({
+        headlineFa: 'تیتر',
+        summaryFa: 'خلاصه',
+        claims: [{ text: 'ادعا', evidenceIds: ['e1'] }],
+        figures: [
+          { label: 'فروش روز اول', value: '$3.79B', significance: 'headline', main: true },
+          { label: 'قیمت', value: '$70', significance: 'context' },
+        ],
+        quote: { text: 'A real quote.', attribution: 'Sam Houser' },
+        verdict: 'این تازه شروعشه.',
+        gameName: 'Grand Theft Auto VI',
+      }),
+    );
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.draft.figures).toHaveLength(2);
+    expect(parsed.draft.figures?.[0]?.significance).toBe('headline');
+    expect(parsed.draft.quote?.attribution).toBe('Sam Houser');
+    expect(parsed.draft.verdict).toBe('این تازه شروعشه.');
+    expect(parsed.draft.gameName).toBe('Grand Theft Auto VI');
+  });
+
+  it('ADR-0080 §3.8ii: the four fields are optional (absent = absent, never invented)', () => {
+    const parsed = parseAiSemanticDraftJson(validDraft);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.draft.figures).toBeUndefined();
+    expect(parsed.draft.quote).toBeUndefined();
+    expect(parsed.draft.verdict).toBeUndefined();
+    expect(parsed.draft.gameName).toBeUndefined();
+  });
+
+  it('ADR-0080 §3.8ii: rejects a figure with an unknown significance or an oversized label', () => {
+    const badSignificance = parseAiSemanticDraftJson(
+      JSON.stringify({
+        headlineFa: 'h',
+        summaryFa: 's',
+        claims: [],
+        figures: [{ label: 'الف', value: '1', significance: 'viral' }],
+      }),
+    );
+    expect(badSignificance.ok).toBe(false);
+    const oversized = parseAiSemanticDraftJson(
+      JSON.stringify({
+        headlineFa: 'h',
+        summaryFa: 's',
+        claims: [],
+        figures: [{ label: 'x'.repeat(121), value: '1' }],
+      }),
+    );
+    expect(oversized.ok).toBe(false);
+  });
+
   it('classifies empty, malformed and schema-mismatched output (stable codes)', () => {
     expect(parseAiSemanticDraftJson('   ').ok).toBe(false);
     expect(parseAiSemanticDraftJson('not json {').ok).toBe(false);

@@ -157,7 +157,7 @@ describe('versioned prompt contract', () => {
     const second = buildNewsDraftSystemPrompt();
     expect(first).toBe(second);
     expect(first).toContain(AI_PROMPT_VERSION);
-    expect(AI_PROMPT_VERSION).toBe('pixel-news-draft-v3');
+    expect(AI_PROMPT_VERSION).toBe('pixel-news-draft-v4');
   });
 
   it('frames news text as untrusted data and forbids tools/HTML/publishing', () => {
@@ -184,6 +184,30 @@ describe('versioned prompt contract', () => {
     // The prompt SAYS the Soul is not this stage's job.
     expect(system).toContain('صدای Pixel');
     expect(system).toContain('مال این مرحله نیست');
+  });
+
+  it('ADR-0080 §3.8ii: prompt v4 asks for figures/quote/verdict/gameName, with the significance criterion VERBATIM', () => {
+    const system = buildNewsDraftSystemPrompt();
+    // The four structured fields are in the schema (rule 2) — and
+    // optional: absent when the evidence has none, never invented.
+    expect(system).toContain('"figures"');
+    expect(system).toContain('"quote"');
+    expect(system).toContain('"verdict"');
+    expect(system).toContain('"gameName"');
+    expect(system).toContain('هرگز نساز و هرگز حدس نزن');
+    // The significance criterion from ADR-0080 §3.8(i), VERBATIM —
+    // the whole rule turns on this sentence, so it is pinned here.
+    expect(system).toContain(
+      'a figure earns the block iff it is a headline stat — remove the number and there is no story left.',
+    );
+    // The earn / does-not-earn lists ride with it.
+    expect(system).toContain('نتایج فروش');
+    expect(system).toContain('تعداد پیش‌خرید');
+    expect(system).toContain('تاریخ عرضه');
+    expect(system).toContain('قیمت‌ها');
+    // Quote + verdict + gameName are never invented (rule 7).
+    expect(system).toContain('هرگز نساخته نمی‌شوند');
+    expect(system).toContain('بدون ترجمه، بدون حدس');
   });
 
   it('wraps every evidence snippet with its stable id and untrusted markers', () => {

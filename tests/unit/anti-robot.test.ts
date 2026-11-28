@@ -4,7 +4,7 @@
  * Blueprint §16 «Anti-robot rules» as TOTAL, DETERMINISTIC, PURE
  * policy functions under the pinned policy version `arp1`:
  *
- * - the send-gap bands: 25–45 minutes normal, 8–15 minutes P1, and
+ * - the send-gap bands: 25–45 minutes normal, 30–45 minutes P1 (ADR-0079 §3.6a), and
  *   the unrelated-P0 bypass with a SMALL anti-flood gap — the
  *   blueprint leaves «small» unquantified, so `arp1` PINS it honestly
  *   as 2–4 minutes (recorded in the module header, the ADR and here);
@@ -69,8 +69,11 @@ describe('anti-robot policy identity and pinned constants', () => {
   it('the pinned bands match the blueprint §16 numbers exactly', () => {
     expect(NORMAL_GAP_MIN_MS).toBe(25 * MIN);
     expect(NORMAL_GAP_MAX_MS).toBe(45 * MIN);
-    expect(P1_GAP_MIN_MS).toBe(8 * MIN);
-    expect(P1_GAP_MAX_MS).toBe(15 * MIN);
+    // ADR-0079 §3.6a: the P1 gap floor is 30 min (was 8); the ceiling
+    // rises with it so the band stays ordered (resolveSendGapMs
+    // validates a P1 candidate's jitter against this band).
+    expect(P1_GAP_MIN_MS).toBe(30 * MIN);
+    expect(P1_GAP_MAX_MS).toBe(45 * MIN);
     expect(SAME_GAME_COOLDOWN_MS).toBe(90 * MIN);
     expect(MAX_CONSECUTIVE_SAME_LAYOUT).toBe(3);
     expect(CATEGORY_ROLLING_WINDOW).toBe(6);
@@ -125,10 +128,10 @@ describe('resolveSendGapMs — band selection', () => {
     expect(result.value.boundsMs).toEqual({ minMs: NORMAL_GAP_MIN_MS, maxMs: NORMAL_GAP_MAX_MS });
   });
 
-  it('a P1 candidate uses the P1 band (8–15 min) regardless of the previous class', () => {
+  it('a P1 candidate uses the P1 band (30–45 min) regardless of the previous class', () => {
     const result = resolveSendGapMs({
       candidateClass: 'P1',
-      jitterMs: 10 * MIN,
+      jitterMs: 35 * MIN,
       previousSend: prev(Date.now(), true, 'P0'),
     });
     if (!result.ok) throw new Error(result.reason);
@@ -178,15 +181,15 @@ describe('resolveSendGapMs — the jitter is validated against the SELECTED band
     });
   });
 
-  it('the P1 band accepts exactly 8..15 minutes', () => {
+  it('the P1 band accepts exactly 30..45 minutes', () => {
     const base = { candidateClass: 'P1' as const, previousSend: prev(1, true, 'P2') };
-    expect(resolveSendGapMs({ ...base, jitterMs: 8 * MIN }).ok).toBe(true);
-    expect(resolveSendGapMs({ ...base, jitterMs: 15 * MIN }).ok).toBe(true);
-    expect(resolveSendGapMs({ ...base, jitterMs: 8 * MIN - 1 })).toEqual({
+    expect(resolveSendGapMs({ ...base, jitterMs: 30 * MIN }).ok).toBe(true);
+    expect(resolveSendGapMs({ ...base, jitterMs: 45 * MIN }).ok).toBe(true);
+    expect(resolveSendGapMs({ ...base, jitterMs: 30 * MIN - 1 })).toEqual({
       ok: false,
       reason: 'jitter_out_of_bounds',
     });
-    expect(resolveSendGapMs({ ...base, jitterMs: 15 * MIN + 1 })).toEqual({
+    expect(resolveSendGapMs({ ...base, jitterMs: 45 * MIN + 1 })).toEqual({
       ok: false,
       reason: 'jitter_out_of_bounds',
     });

@@ -376,6 +376,61 @@ describe('conservative mapping (ADR-0042 §2)', () => {
     });
   });
 
+  it('ADR-0080 §3.8ii: writes the four prompt-v4 fields through when the model gives them (present = present, verbatim)', () => {
+    const document = buildDraftDocument({
+      sourceItemId: ITEM_ID,
+      sourceName: 'منبع رسمی',
+      excerpt,
+      semanticDraft: {
+        headlineFa: 'تیتر مدل',
+        summaryFa: 'خلاصه مدل',
+        claims: [{ text: 'ادعای مدل', evidenceIds: [ITEM_ID] }],
+        figures: [
+          { label: 'فروش روز اول', value: '$3.79B', significance: 'headline', main: true },
+          { label: 'قیمت', value: '$70', significance: 'context' },
+        ],
+        quote: { text: 'A real quote.', attribution: 'Sam Houser' },
+        verdict: 'این تازه شروعشه.',
+        gameName: 'Grand Theft Auto VI',
+      },
+      evidenceGuard: GUARD_REPORT,
+      candidateDiscovery: NO_CANDIDATES_REPORT,
+      candidateAssessment: NO_CANDIDATES_ASSESSMENT,
+      entityMentions: NO_MENTIONS_REPORT,
+      eventRelation: DISABLED_EVENT_RELATION_REPORT,
+    });
+    expect(document.document.figures).toEqual([
+      { label: 'فروش روز اول', value: '$3.79B', significance: 'headline', main: true },
+      { label: 'قیمت', value: '$70', significance: 'context' },
+    ]);
+    expect(document.document.quote).toEqual({ text: 'A real quote.', attribution: 'Sam Houser' });
+    expect(document.document.verdict).toBe('این تازه شروعشه.');
+    expect(document.document.gameName).toBe('Grand Theft Auto VI');
+    expect(document.document.schemaVersion).toBe(1);
+  });
+
+  it('ADR-0080 §3.8ii: absent prompt-v4 fields stay absent (never invented, never backfilled)', () => {
+    const document = buildDraftDocument({
+      sourceItemId: ITEM_ID,
+      sourceName: 'منبع رسمی',
+      excerpt,
+      semanticDraft: {
+        headlineFa: 'تیتر مدل',
+        summaryFa: 'خلاصه مدل',
+        claims: [{ text: 'ادعای مدل', evidenceIds: [ITEM_ID] }],
+      },
+      evidenceGuard: GUARD_REPORT,
+      candidateDiscovery: NO_CANDIDATES_REPORT,
+      candidateAssessment: NO_CANDIDATES_ASSESSMENT,
+      entityMentions: NO_MENTIONS_REPORT,
+      eventRelation: DISABLED_EVENT_RELATION_REPORT,
+    });
+    expect(document.document.figures).toBeUndefined();
+    expect(document.document.quote).toBeUndefined();
+    expect(document.document.verdict).toBeUndefined();
+    expect(document.document.gameName).toBeUndefined();
+  });
+
   it('embeds the versioned Evidence Guard report additively (R1.12, 5B)', () => {
     const document = buildDraftDocument({
       sourceItemId: ITEM_ID,

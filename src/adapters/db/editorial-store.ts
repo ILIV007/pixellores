@@ -68,6 +68,9 @@ export interface EditorialSourceItemRow {
   readonly canonical_url: string | null;
   readonly content_hash: string;
   readonly processing_status: string;
+  /** ADR-0079 §3.3: the source item's publication instant — the freshness
+   * gate's age input. Null when the feed carried no date (undated). */
+  readonly published_at_ms: number | null;
 }
 
 /** Editorial-owned read shape of a sources row (attribution only). */
@@ -83,7 +86,7 @@ export async function findEditorialSourceItem(
 ): Promise<EditorialSourceItemRow | null> {
   return executor.first<EditorialSourceItemRow>({
     sql: `SELECT id, source_id, title, body_excerpt, canonical_url, content_hash,
-                 processing_status
+                 processing_status, published_at AS published_at_ms
             FROM source_items WHERE id = ?`,
     params: [sourceItemId],
   });
@@ -564,7 +567,7 @@ export async function findStoryReferenceItems(
 ): Promise<readonly EditorialSourceItemRow[]> {
   const { rows } = await executor.query<EditorialSourceItemRow>({
     sql: `SELECT si.id, si.source_id, si.title, si.body_excerpt, si.canonical_url,
-                 si.content_hash, si.processing_status
+                 si.content_hash, si.processing_status, si.published_at AS published_at_ms
             FROM claims c
             JOIN evidence e ON e.claim_id = c.id
             JOIN source_items si ON si.id = e.source_item_id

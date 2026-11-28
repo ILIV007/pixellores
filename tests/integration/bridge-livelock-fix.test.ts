@@ -23,8 +23,12 @@ import front5Fixture from '../fixtures/bridge-livelock-front5.json';
  *
  * This suite proves, on those exact bytes:
  *  - the re-evaluation path rebuilds each stored report with the
- *    CURRENT folded lens, the findings clear, and all five bridge in
- *    ONE pass (audited, Soul-stamped, enqueued);
+ *    CURRENT folded lens and the findings clear (audited, five
+ *    `fact_guard_reevaluated` rows) — and the drafts then go to HUMAN
+ *    REVIEW on substance (ADR-0079 §3.7a: the live drafts carry ONE
+ *    claim each, so the gate sends them to review instead of bridging
+ *    them; the re-evaluation layer is what this suite pins, and the
+ *    substance verdict is the new gate doing its job);
  *  - a genuinely ungrounded number is NOT laundered: the rebuild is
  *    byte-identical to the stored report, nothing is written, and the
  *    draft still requires review;
@@ -32,7 +36,8 @@ import front5Fixture from '../fixtures/bridge-livelock-front5.json';
  *    content-hash mismatch both leave the stored report untouched;
  *  - the progress layer rotates the scan: five deterministically-failing
  *    oldest drafts cannot block the passable draft behind them — the
- *    second pass reaches it.
+ *    second pass reaches it (and evaluates it, substance verdict
+ *    included) instead of rescanning the same front five.
  *
  * The ONLY artificial pieces are the seeded rows themselves (the live
  * D1 values, copied verbatim) and the logger sink.
@@ -208,7 +213,7 @@ beforeEach(async () => {
 });
 
 describe('ADR-0074 — bridge livelock: re-evaluation + progress', () => {
-  it('the live front 5 clear under the folded lens and bridge in one pass', async () => {
+  it('the live front 5 clear under the folded lens and go to human review on substance (ADR-0079 §3.7a)', async () => {
     const executor = createDbExecutor(env.DB);
     await seedFront5WithItems(executor);
 
@@ -219,14 +224,18 @@ describe('ADR-0074 — bridge livelock: re-evaluation + progress', () => {
       nowMs: NOW,
       logger,
     });
+    // The re-evaluation clears the folded-lens findings (reevaluated 5)
+    // — and the substance gate then sends all five to human review:
+    // the live drafts carry ONE claim each, so none is eligible_auto.
     expect(bridged).toEqual({
       kind: 'bridged',
       scanned: 5,
-      approved: 5,
-      enqueued: 5,
+      approved: 0,
+      enqueued: 0,
       duplicates: 0,
-      requiresReview: 0,
+      requiresReview: 5,
       refused: 0,
+      retiredStale: 0,
       reevaluated: 5,
       reevaluationSkipped: 0,
       deferredGuideLane: 0,
@@ -236,9 +245,10 @@ describe('ADR-0074 — bridge livelock: re-evaluation + progress', () => {
       rejected: 0,
     });
 
-    // All five left `ready` for `auto_approved`, Soul-stamped, enqueued.
+    // All five stay `ready` (human review), their stored reports
+    // rebuilt with the findings cleared and their claims untouched.
     for (const entry of FRONT5) {
-      expect(await draftStatus(executor, entry.draftId)).toBe('auto_approved');
+      expect(await draftStatus(executor, entry.draftId)).toBe('ready');
       const stored = JSON.parse(await draftDocumentJson(executor, entry.draftId)) as Record<
         string,
         unknown
@@ -255,10 +265,7 @@ describe('ADR-0074 — bridge livelock: re-evaluation + progress', () => {
     const publications = await executor.query<{ soul_version: number | null }>({
       sql: `SELECT soul_version FROM publications ORDER BY created_at ASC`,
     });
-    expect(publications.rows).toHaveLength(5);
-    for (const row of publications.rows) {
-      expect(row.soul_version).toBe(1);
-    }
+    expect(publications.rows).toHaveLength(0);
     // ONE audit event per rebuilt report (ids and counts only).
     const audits = await executor.query<{ target_id: string; metadata_json: string }>({
       sql: `SELECT target_id, metadata_json FROM audit_events WHERE action = 'fact_guard_reevaluated' ORDER BY target_id ASC`,
@@ -272,7 +279,7 @@ describe('ADR-0074 — bridge livelock: re-evaluation + progress', () => {
       expect(metadata['claimsRequiringReviewAfter']).toBe(0);
       expect(metadata['factGuardVersion']).toBe(1);
     }
-    // The progress table remembers the eligible verdicts.
+    // The progress table remembers the substance verdicts.
     const evaluations = await executor.query<{
       last_outcome: string;
       consecutive_failures: number;
@@ -281,8 +288,8 @@ describe('ADR-0074 — bridge livelock: re-evaluation + progress', () => {
     });
     expect(evaluations.rows).toHaveLength(5);
     for (const row of evaluations.rows) {
-      expect(row.last_outcome).toBe('eligible_auto');
-      expect(row.consecutive_failures).toBe(0);
+      expect(row.last_outcome).toBe('requires_review');
+      expect(row.consecutive_failures).toBe(1);
     }
   });
 
@@ -349,6 +356,7 @@ describe('ADR-0074 — bridge livelock: re-evaluation + progress', () => {
       duplicates: 0,
       requiresReview: 1,
       refused: 0,
+      retiredStale: 0,
       reevaluated: 0,
       reevaluationSkipped: 0,
       deferredGuideLane: 0,
@@ -391,6 +399,7 @@ describe('ADR-0074 — bridge livelock: re-evaluation + progress', () => {
       duplicates: 0,
       requiresReview: 2,
       refused: 0,
+      retiredStale: 0,
       reevaluated: 0,
       reevaluationSkipped: 2,
       deferredGuideLane: 0,
@@ -519,6 +528,7 @@ describe('ADR-0074 — bridge livelock: re-evaluation + progress', () => {
       duplicates: 0,
       requiresReview: 5,
       refused: 0,
+      retiredStale: 0,
       reevaluated: 0,
       reevaluationSkipped: 5,
       deferredGuideLane: 0,
@@ -529,9 +539,13 @@ describe('ADR-0074 — bridge livelock: re-evaluation + progress', () => {
     });
     expect(await draftStatus(executor, passableId)).toBe('ready');
 
-    // Pass 2 reaches the passable draft FIRST (zero failures) and bridges
-    // it — without the progress layer it would rescan the same front
-    // five and never reach it.
+    // Pass 2 reaches the passable draft FIRST (zero failures) and
+    // evaluates it — without the progress layer it would rescan the
+    // same front five and never reach it. The draft is reached, not
+    // bridged: the template carries ONE claim, so the substance gate
+    // (ADR-0079 §3.7a) sends it to human review; the point here is
+    // reachability, and the evaluation row below proves the pass got
+    // there at all.
     const second = await bridgeReadyDrafts({
       executor,
       destination: DESTINATION,
@@ -542,18 +556,20 @@ describe('ADR-0074 — bridge livelock: re-evaluation + progress', () => {
     expect(second.kind).toBe('bridged');
     if (second.kind === 'bridged') {
       expect(second.scanned).toBe(5);
-      expect(second.approved).toBe(1);
-      expect(second.enqueued).toBe(1);
+      expect(second.approved).toBe(0);
+      expect(second.enqueued).toBe(0);
+      expect(second.requiresReview).toBe(5);
       expect(second.reevaluated).toBe(0);
     }
-    expect(await draftStatus(executor, passableId)).toBe('auto_approved');
+    expect(await draftStatus(executor, passableId)).toBe('ready');
     const publications = await executor.query<{ draft_id: string }>({
       sql: `SELECT draft_id FROM publications`,
     });
-    expect(publications.rows.map((row) => row.draft_id)).toEqual([passableId]);
+    expect(publications.rows).toHaveLength(0);
 
-    // The progress table tells the story: the passable draft is eligible
-    // with zero failures; the four re-scanned front drafts sit at two
+    // The progress table tells the story: the passable draft was
+    // reached and evaluated (requires_review on substance, one
+    // failure); the four re-scanned front drafts sit at two
     // consecutive failures; the one front draft the second pass never
     // reached sits at one.
     const evaluations = await executor.query<{
@@ -567,8 +583,8 @@ describe('ADR-0074 — bridge livelock: re-evaluation + progress', () => {
     const byId = new Map(evaluations.rows.map((row) => [row.draft_id, row]));
     expect(byId.get(passableId)).toEqual({
       draft_id: passableId,
-      last_outcome: 'eligible_auto',
-      consecutive_failures: 0,
+      last_outcome: 'requires_review',
+      consecutive_failures: 1,
     });
     const failingCounts = FRONT5.map(
       (entry) => byId.get(entry.draftId)?.consecutive_failures,

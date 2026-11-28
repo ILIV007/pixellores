@@ -4,7 +4,7 @@
  *
  * DESIGN_2026-11-15.md §9.2/§9.3/§10.2/§10.6, MERGE_MAP_FREDY_AIADMIN.md §8:
  * - ONE mode setting with four values; default is direct (`auto`).
- * - Daily cap 12–18 (default 15), adjustable from the panel; a cap change
+ * - Daily cap 6–18 (default 15), adjustable from the panel; a cap change
  *   takes effect from the NEXT Tehran day, never retroactively mid-day.
  * - Event mode lifts the cap and shortens the min gap (8–15 min) with a
  *   MANDATORY end: owner turns it off, or auto-off after 6 hours, or
@@ -31,9 +31,13 @@ export function isPublishMode(value: string): value is PublishMode {
 /** Default mode is direct (owner decision): scheduled + direct, no preview. */
 export const DEFAULT_PUBLISH_MODE: PublishMode = 'auto';
 
-/** Daily cap bounds (DESIGN §9.2): 12–18, default 15. */
+/** Daily cap bounds (DESIGN §9.2): 6–18, default 15. ADR-0079 §3.6b: the
+ * floor was 12 — the owner set the cap to 6/day (2026-11-28), and a
+ * stored cap of 6 must validate (the store's read path silently falls
+ * back to the 15 default for an out-of-range stored cap, so widening
+ * the bound here is what makes the owner's cap actually bind). */
 export const DEFAULT_DAILY_CAP = 15;
-export const MIN_DAILY_CAP = 12;
+export const MIN_DAILY_CAP = 6;
 export const MAX_DAILY_CAP = 18;
 
 export function isValidDailyCap(value: number): boolean {
